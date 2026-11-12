@@ -3,9 +3,12 @@ import re
 
 from gmail_auto.errors import ConfigError, ProfileError
 from gmail_auto.paths import atomic_write, root
+from gmail_auto.storage import load_doc, save_doc
+from gmail_auto.token_store import storage_ready
 
 _SECRET = re.compile(r"sk-[A-Za-z0-9]{10,}|BEGIN PRIVATE KEY")
-_PLACEHOLDER_MARKS = ("请填写", "请用几句", "请描述")
+_PLACEHOLDER_NAMES = {"", "示例用户", "example user", "your name"}
+_PLACEHOLDER_MARKS = ("请填写", "请用几句", "请描述", "(please fill", "(describe", "(a few facts")
 
 
 def profile_path():
@@ -14,38 +17,45 @@ def profile_path():
 
 def clean_profile(data: object) -> dict:
     if not isinstance(data, dict):
-        raise ProfileError("个人资料格式不对。")
+        raise ProfileError("The profile has the wrong format.")
     cleaned = {
-        "name": _text(data.get("name"), "请填写身份里的名字。", 80),
-        "role": _text(data.get("role"), "请填写身份。", 120),
-        "introduction": _text(data.get("introduction"), "请填写自我介绍。", 4000),
-        "tone": _text(data.get("tone"), "请填写语气。", 1000),
-        "cannot_promise": _lines(data.get("cannot_promise"), "请至少写一件不能承诺的事。"),
-        "sample_phrases": _lines(data.get("sample_phrases"), "请至少写一句本人会说的话。"),
+        "name": _text(data.get("name"), "Enter your name.", 80),
+        "role": _text(data.get("role"), "Enter your role.", 120),
+        "introduction": _text(data.get("introduction"), "Enter a short introduction.", 4000),
+        "tone": _text(data.get("tone"), "Describe your tone.", 1000),
+        "cannot_promise": _lines(data.get("cannot_promise"), "Write at least one thing you cannot promise."),
+        "sample_phrases": _lines(data.get("sample_phrases"), "Write at least one phrase you would say."),
     }
     blob = json.dumps(cleaned, ensure_ascii=False)
     if _SECRET.search(blob):
-        raise ProfileError("个人资料里不要写密钥或私钥。")
+        raise ProfileError("Do not put API keys or private keys in the profile.")
     return cleaned
 
 
 def load_profile() -> dict:
+    if storage_ready():
+        saved = load_doc("profile", None)
+        if isinstance(saved, dict):
+            return clean_profile(saved)
     path = profile_path()
     if not path.exists():
-        raise ConfigError("没有找到 profile.json。")
+        raise ConfigError("profile.json was not found.")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
-        raise ConfigError("profile.json 不是合法的 JSON，请在后台页面重新保存。") from exc
+        raise ConfigError("profile.json is not valid JSON. Save the profile again from the Settings page.") from exc
     return clean_profile(data)
 
 
 def save_profile(data: dict) -> dict:
     cleaned = clean_profile(data)
-    atomic_write(
-        profile_path(),
-        json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n",
-    )
+    if storage_ready():
+        save_doc("profile", cleaned)
+        return cleaned
+    try:
+        atomic_write(profile_path(), json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n")
+    except OSError as exc:
+        raise ConfigError("The profile could not be saved here. Connect Vercel KV so hosted changes persist.") from exc
     return cleaned
 
 
@@ -63,10 +73,10 @@ def profile_from_form(form) -> dict:
 
 
 def profile_is_placeholder(profile: dict) -> bool:
-    if profile.get("name", "").strip() in {"", "示例用户"}:
+    if profile.get("name", "").strip().lower() in _PLACEHOLDER_NAMES:
         return True
     for key in ("role", "introduction", "tone"):
-        text = profile.get(key, "")
+        text = profile.get(key, "").lower()
         if any(mark in text for mark in _PLACEHOLDER_MARKS):
             return True
     return False
@@ -76,12 +86,12 @@ def profile_as_prompt(profile: dict) -> str:
     cannot = "\n".join(f"- {item}" for item in profile["cannot_promise"])
     phrases = "\n".join(f"- {item}" for item in profile["sample_phrases"])
     return (
-        "姓名：" + profile["name"] + "\n"
-        "身份：" + profile["role"] + "\n"
-        "自我介绍：" + profile["introduction"] + "\n"
-        "语气：" + profile["tone"] + "\n"
-        "不能承诺的事：\n" + cannot + "\n"
-        "本人会说的话：\n" + phrases
+        "Name: " + profile["name"] + "\n"
+        "Role: " + profile["role"] + "\n"
+        "Introduction: " + profile["introduction"] + "\n"
+        "Tone: " + profile["tone"] + "\n"
+        "Things I cannot promise:\n" + cannot + "\n"
+        "Phrases I would say:\n" + phrases
     )
 
 
@@ -92,7 +102,7 @@ def _text(value: object, message: str, limit: int) -> str:
     if not text:
         raise ProfileError(message)
     if len(text) > limit:
-        raise ProfileError("有一项写得太长了。")
+        raise ProfileError("One of the fields is too long.")
     return text
 
 
@@ -103,17 +113,17 @@ def _lines(value: object, message: str) -> list[str]:
         items = []
         for item in value:
             if not isinstance(item, str) or not item.strip():
-                raise ProfileError("请按一行一条写不能承诺的事，以及本人会说的话。")
+                raise ProfileError("Write one item per line.")
             items.append(item.strip())
     else:
         raise ProfileError(message)
     if not items:
         raise ProfileError(message)
     if len(items) > 30:
-        raise ProfileError("条目太多了，请留在 30 条以内。")
+        raise ProfileError("Too many items. Keep it to 30 or fewer.")
     for item in items:
         if len(item) > 200:
-            raise ProfileError("有一条写得太长了。")
+            raise ProfileError("One of the items is too long.")
     return items
 
 

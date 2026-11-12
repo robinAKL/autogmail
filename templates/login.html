@@ -1,17 +1,22 @@
 {% extends "base.html" %}
-{% block title %}登录{% endblock %}
-{% block body %}
-<div class="auth-shell">
+{% block title %}Sign in{% endblock %}
+{% block layout %}
+<main class="auth-shell">
   <section class="auth-copy">
-    <p class="eyebrow">邮件自动回复</p>
-    <h1>用邮箱进入</h1>
-    <p>邮箱就是用户名。注册时把验证码发到这个邮箱，填对以后才登录。</p>
-    <p>Gmail 授权在登录之后单独进行。长时间不登录或授权过期时，可以在工作台里手工重新授权。</p>
+    <p class="brand"><span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l9 6 9-6"/><rect x="3" y="5" width="18" height="14" rx="2.5"/></svg>
+    </span><span>Mail Autopilot</span></p>
+    <h1>Your inbox, answered the way you would.</h1>
+    <ul class="points">
+      <li>Replies are written from your own profile and knowledge base.</li>
+      <li>Anything that needs a decision is sent to you on WhatsApp first.</li>
+      <li>Works with Gmail and Outlook.</li>
+    </ul>
   </section>
   <section class="auth-card">
     <div class="tabs">
-      <a class="{% if mode == 'login' %}on{% endif %}" href="{{ url_for('login_page', mode='login') }}">登录</a>
-      <a class="{% if mode == 'register' %}on{% endif %}" href="{{ url_for('login_page', mode='register') }}">注册</a>
+      <a class="{% if mode == 'login' %}on{% endif %}" href="{{ url_for('login_page', mode='login') }}">Sign in</a>
+      <a class="{% if mode == 'register' %}on{% endif %}" href="{{ url_for('login_page', mode='register') }}">Register</a>
     </div>
     {% if error %}
     <p class="banner danger">{{ error }}</p>
@@ -25,25 +30,25 @@
     <form method="post" action="{{ url_for('login_code') }}" class="stack">
       <input type="hidden" name="mode" value="{{ mode }}">
       <label>
-        邮箱
-        <input name="email" type="email" autocomplete="username" inputmode="email" maxlength="254" required placeholder="you@gmail.com" value="{{ email }}">
+        Email
+        <input name="email" type="email" autocomplete="username" inputmode="email" maxlength="254" required placeholder="you@example.com" value="{{ email }}">
       </label>
-      <button type="submit">{% if mode == 'register' %}获取验证码并注册{% else %}获取验证码并登录{% endif %}</button>
-      <p class="hint">验证码会发到这个邮箱，10 分钟内有效。</p>
+      <button type="submit">{% if mode == 'register' %}Email me a code to register{% else %}Email me a code to sign in{% endif %}</button>
+      <p class="hint">Your email is your username. A 6-digit code is sent to it and works for 10 minutes.</p>
     </form>
     {% else %}
     <form method="post" action="{{ url_for('login_submit') }}" class="stack">
       <input type="hidden" name="mode" value="{{ mode }}">
       <input type="hidden" name="email" value="{{ email }}">
-      <p class="account">验证码已发到 {{ email }}</p>
+      <p class="account-line">A code was sent to {{ email }}</p>
       <label>
-        验证码
-        <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required placeholder="6 位数字">
+        Code
+        <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required placeholder="6 digits">
       </label>
-      <button type="submit">{% if mode == 'register' %}验证并完成注册{% else %}验证并登录{% endif %}</button>
-      <p class="hint"><a href="{{ url_for('login_page', mode=mode) }}">换一个邮箱</a></p>
+      <button type="submit">{% if mode == 'register' %}Verify and register{% else %}Verify and sign in{% endif %}</button>
+      <p class="hint"><a href="{{ url_for('login_page', mode=mode) }}">Use a different email</a></p>
     </form>
     {% endif %}
   </section>
-</div>
+</main>
 {% endblock %}

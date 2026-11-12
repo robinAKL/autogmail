@@ -72,6 +72,7 @@ _SENSITIVE = re.compile(
 class Skip:
     reason: str
     sensitive: bool = False
+    code: str = "other"
 
 
 @dataclass(frozen=True)
@@ -81,32 +82,32 @@ class Allow:
 
 def classify(mail: Mail, user_email: str) -> Skip | Allow:
     if is_sensitive(mail.subject) or is_sensitive(mail.body):
-        return Skip("涉及密码、验证码、证件或银行卡", sensitive=True)
+        return Skip("mentions passwords, codes, ID or bank details", sensitive=True, code="sensitive")
     if not mail.from_email:
-        return Skip("没有发件人")
+        return Skip("no sender")
     reply_to = mail.reply_email or mail.from_email
     if same_mailbox(mail.from_email, user_email) or same_mailbox(reply_to, user_email):
-        return Skip("不回复自己")
+        return Skip("from yourself", code="self")
     if is_system_address(mail.from_email) or is_system_address(reply_to):
-        return Skip("系统地址，不回复")
+        return Skip("system or no-reply address", code="system")
     headers = {key.lower(): value for key, value in mail.headers.items()}
     if _is_auto(headers, mail.subject):
-        return Skip("自动回复，不回复")
+        return Skip("automatic reply", code="auto")
     if _is_list(headers):
-        return Skip("邮件列表，不回复")
+        return Skip("mailing list", code="list")
     labels = set(mail.label_ids)
     if "SPAM" in labels or "TRASH" in labels:
-        return Skip("垃圾邮件或已删除，不回复")
+        return Skip("spam or deleted")
     if "DRAFT" in labels:
-        return Skip("草稿，不回复")
+        return Skip("draft")
     if "CATEGORY_PROMOTIONS" in labels:
-        return Skip("促销邮件，不回复")
+        return Skip("promotion", code="promotions")
     if "CATEGORY_SOCIAL" in labels:
-        return Skip("社交邮件，不回复")
+        return Skip("social notification", code="social")
     if "CATEGORY_FORUMS" in labels:
-        return Skip("论坛邮件，不回复")
+        return Skip("forum mail", code="forums")
     if not mail.body.strip():
-        return Skip("没有可回复的正文")
+        return Skip("no text to answer", code="empty")
     return Allow(detect_language(f"{mail.subject}\n{mail.body}"))
 
 
@@ -158,7 +159,7 @@ def is_sensitive(text: str) -> bool:
 def reply_subject(subject: str) -> str:
     text = re.sub(r"\s+", " ", (subject or "").strip())
     if not text:
-        text = "(无主题)"
+        text = "(no subject)"
     if re.match(r"(?i)^re\s*[:：]\s*", text):
         return text
     return f"Re: {text}"
@@ -167,7 +168,7 @@ def reply_subject(subject: str) -> str:
 def short_subject(subject: str) -> str:
     text = re.sub(r"\s+", " ", (subject or "").strip())
     if not text:
-        return "（无主题）"
+        return "(no subject)"
     if len(text) > 60:
         return text[:60] + "…"
     return text

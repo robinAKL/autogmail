@@ -1,14 +1,106 @@
-document.querySelectorAll("form[data-confirm]").forEach(function (form) {
-  form.addEventListener("submit", function (event) {
-    var message = form.getAttribute("data-confirm");
-    if (message && !window.confirm(message)) {
-      event.preventDefault();
-      return;
-    }
-    var button = form.querySelector("button[type=submit]");
-    if (button) {
-      button.disabled = true;
-      button.textContent = "正在跑这一轮…";
-    }
+(function () {
+  // Confirm before anything that sends or removes, and show that work is under way.
+  document.querySelectorAll("form").forEach(function (form) {
+    form.addEventListener("submit", function (event) {
+      var button = event.submitter || form.querySelector("button[type=submit]");
+      var message = form.getAttribute("data-confirm");
+      var skip = button && button.hasAttribute("data-skip-confirm");
+      if (message && !skip && !window.confirm(message)) {
+        event.preventDefault();
+        return;
+      }
+      var busy = form.getAttribute("data-busy");
+      if (button && busy) {
+        // Disabling would drop the button's own name/value from the submission, so only mark it.
+        window.setTimeout(function () {
+          button.classList.add("busy");
+          button.setAttribute("aria-busy", "true");
+          button.textContent = busy;
+        }, 0);
+      }
+    });
   });
-});
+
+  // The reading frame grows to the height of the letter inside it.
+  document.querySelectorAll("iframe[data-autosize]").forEach(function (frame) {
+    function fit() {
+      try {
+        var doc = frame.contentDocument;
+        if (!doc || !doc.documentElement) { return; }
+        var height = Math.max(doc.documentElement.scrollHeight, doc.body ? doc.body.scrollHeight : 0);
+        frame.style.height = Math.min(Math.max(height, 160), 6000) + "px";
+      } catch (error) {
+        frame.style.height = "70vh";
+      }
+    }
+    frame.addEventListener("load", function () {
+      fit();
+      try {
+        var doc = frame.contentDocument;
+        if (window.ResizeObserver && doc && doc.body) {
+          new ResizeObserver(fit).observe(doc.body);
+        }
+        Array.prototype.forEach.call(doc.images || [], function (image) {
+          image.addEventListener("load", fit);
+        });
+      } catch (error) { /* the frame stays at its fallback height */ }
+      window.setTimeout(fit, 600);
+    });
+  });
+
+  // Keep the opened letter in view in the list after a page load.
+  var current = document.querySelector(".row[data-current]");
+  var list = current && current.closest(".list");
+  if (list) {
+    var top = current.offsetTop - list.offsetTop;
+    if (top < list.scrollTop || top + current.offsetHeight > list.scrollTop + list.clientHeight) {
+      list.scrollTop = Math.max(0, top - 12);
+    }
+  }
+
+  // Sending modes need an explicit yes; draft-only does not.
+  var modeForm = document.querySelector("[data-mode-form]");
+  if (modeForm) {
+    var row = modeForm.querySelector("[data-confirm-row]");
+    var sync = function () {
+      var chosen = modeForm.querySelector("input[name=mode]:checked");
+      if (row) { row.hidden = !chosen || chosen.getAttribute("data-sends") !== "1"; }
+    };
+    modeForm.addEventListener("change", sync);
+    sync();
+  }
+
+  // File picker: show what was chosen, and accept a drop.
+  document.querySelectorAll("[data-drop]").forEach(function (zone) {
+    var input = zone.querySelector("input[type=file]");
+    var label = zone.querySelector("[data-drop-label]");
+    var show = function () {
+      var count = input.files ? input.files.length : 0;
+      if (count === 1) { label.textContent = input.files[0].name; }
+      else if (count > 1) { label.textContent = count + " files chosen"; }
+    };
+    input.addEventListener("change", show);
+    ["dragenter", "dragover"].forEach(function (name) {
+      zone.addEventListener(name, function () { zone.classList.add("over"); });
+    });
+    ["dragleave", "drop"].forEach(function (name) {
+      zone.addEventListener(name, function () { zone.classList.remove("over"); });
+    });
+  });
+
+  // Hover details for chart marks.
+  var tip = document.getElementById("tip");
+  if (tip) {
+    document.querySelectorAll("[data-tip]").forEach(function (mark) {
+      mark.addEventListener("mousemove", function (event) {
+        tip.textContent = mark.getAttribute("data-tip");
+        tip.hidden = false;
+        var x = Math.min(event.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+        var y = Math.max(event.clientY - tip.offsetHeight - 12, 8);
+        tip.style.left = x + "px";
+        tip.style.top = y + "px";
+      });
+      mark.addEventListener("mouseleave", function () { tip.hidden = true; });
+    });
+  }
+})();

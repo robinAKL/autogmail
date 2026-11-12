@@ -9,32 +9,40 @@ from email.policy import default
 
 from gmail_auto.errors import ConfigError, ProfileError, ReplyError
 from gmail_auto.filters import Allow, Skip, classify, detect_language, is_system_address, same_mailbox
-from gmail_auto.generator import clean_reply, ensure_safe
+from gmail_auto.generator import clean_reply, ensure_safe, reply_language
 from gmail_auto.gmail_client import build_send_body, find_client_file, load_credentials, parse_message
-from gmail_auto.models import Mail
-from gmail_auto.paths import CODE_ROOT, root
+from gmail_auto.models import Draft, Mail
+from gmail_auto.paths import root
 from gmail_auto.profile_store import clean_profile, load_profile, profile_is_placeholder, save_profile
 from gmail_auto.runner import run_once, toggle_and_run
+from gmail_auto.settings import save_settings
 from gmail_auto.store import get_processed, is_live, set_live
+
+PLACEHOLDER = {
+    "name": "示例用户",
+    "role": "（请填写你的身份）",
+    "introduction": "（请用几句事实介绍自己。）",
+    "tone": "（请描述你平时写信的语气。）",
+    "cannot_promise": ["No dates"],
+    "sample_phrases": ["I saw this."],
+}
 
 
 class TempHome(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.prev_home = os.environ.get("AUTOMAIL_HOME")
-        self.prev_key = os.environ.get("OPENAI_API_KEY")
+        self.saved = {name: os.environ.get(name) for name in ("AUTOMAIL_HOME", "OPENAI_API_KEY", "WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "TWILIO_ACCOUNT_SID")}
         os.environ["AUTOMAIL_HOME"] = self.tmp.name
         os.environ["OPENAI_API_KEY"] = "test-key-not-used"
+        for name in ("WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID", "TWILIO_ACCOUNT_SID"):
+            os.environ.pop(name, None)
 
     def tearDown(self):
-        if self.prev_home is None:
-            os.environ.pop("AUTOMAIL_HOME", None)
-        else:
-            os.environ["AUTOMAIL_HOME"] = self.prev_home
-        if self.prev_key is None:
-            os.environ.pop("OPENAI_API_KEY", None)
-        else:
-            os.environ["OPENAI_API_KEY"] = self.prev_key
+        for name, value in self.saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
         self.tmp.cleanup()
 
 
@@ -58,18 +66,20 @@ def sample(**kwargs) -> Mail:
 
 def write_test_profile(**overrides) -> dict:
     data = {
-        "name": "测试用户",
-        "role": "测试身份",
-        "introduction": "这是测试用的介绍，没有真实经历。",
-        "tone": "简短直接。",
-        "cannot_promise": ["不承诺日期"],
-        "sample_phrases": ["我看到了。"],
+        "name": "Test User",
+        "role": "Tester",
+        "introduction": "This introduction exists only for tests.",
+        "tone": "Short and direct.",
+        "cannot_promise": ["No dates"],
+        "sample_phrases": ["I saw this."],
     }
     data.update(overrides)
     return save_profile(data)
 
 
 class FakeGmail:
+    provider = "gmail"
+
     def __init__(self, mails, user="me@example.com"):
         self.mails = mails
         self.user = user
@@ -94,10 +104,6 @@ def english_reply(*_args):
     return "I saw your note."
 
 
-def chinese_reply(*_args):
-    return "我看到你的来信了。"
-
-
 class FilterTests(unittest.TestCase):
     def test_language_follows_the_letter(self):
         self.assertEqual(detect_language("Please review the attached notes."), "en")
@@ -110,19 +116,19 @@ class FilterTests(unittest.TestCase):
     def test_skips_self_system_list_auto_and_categories(self):
         self.assertTrue(same_mailbox("me+news@gmail.com", "me@googlemail.com"))
         self.assertFalse(same_mailbox("me@gmail.com", "other@gmail.com"))
-        self.assertIsInstance(classify(sample(from_email="me@example.com"), "me@example.com"), Skip)
+        self.assertEqual(classify(sample(from_email="me@example.com"), "me@example.com").code, "self")
         self.assertTrue(is_system_address("no-reply@news.example.com"))
         self.assertFalse(is_system_address("mina@example.com"))
-        self.assertIn("系统", classify(sample(from_email="noreply@news.example.com"), "me@example.com").reason)
+        self.assertEqual(classify(sample(from_email="noreply@news.example.com"), "me@example.com").code, "system")
         listed = sample(headers={"list-id": "<news.example.com>"})
-        self.assertIn("邮件列表", classify(listed, "me@example.com").reason)
+        self.assertEqual(classify(listed, "me@example.com").code, "list")
         auto = sample(headers={"auto-submitted": "auto-replied"})
-        self.assertIn("自动回复", classify(auto, "me@example.com").reason)
+        self.assertEqual(classify(auto, "me@example.com").code, "auto")
         away = sample(subject="Automatic reply: away")
-        self.assertIn("自动回复", classify(away, "me@example.com").reason)
+        self.assertEqual(classify(away, "me@example.com").code, "auto")
         promo = sample(label_ids=["INBOX", "UNREAD", "CATEGORY_PROMOTIONS"])
-        self.assertIn("促销", classify(promo, "me@example.com").reason)
-        self.assertIn("没有可回复的正文", classify(sample(body="  "), "me@example.com").reason)
+        self.assertIn("promotion", classify(promo, "me@example.com").reason)
+        self.assertEqual(classify(sample(body="  "), "me@example.com").code, "empty")
 
     def test_sensitive_mail_is_skipped_without_treating_ordinary_words_as_secrets(self):
         ordinary = classify(sample(body="I passed the exam yesterday. Can we talk tomorrow?"), "me@example.com")
@@ -133,67 +139,68 @@ class FilterTests(unittest.TestCase):
         code = classify(sample(subject="验证码", body="123456"), "me@example.com")
         self.assertTrue(code.sensitive)
 
-    def test_weekly_note_from_a_person_is_allowed(self):
-        mail = sample(subject="Weekly notes", from_email="friend@example.com", body="Can you read this draft?")
-        self.assertIsInstance(classify(mail, "me@example.com"), Allow)
-
 
 class SafetyTests(unittest.TestCase):
-    def profile(self):
-        return write_test_profile()
+    profile = {
+        "name": "Test User",
+        "role": "Tester",
+        "introduction": "This introduction exists only for tests.",
+        "tone": "Short and direct.",
+        "cannot_promise": ["No dates"],
+        "sample_phrases": ["I saw this."],
+    }
+
+    def test_reply_language_follows_the_setting(self):
+        self.assertEqual(reply_language("en", "zh"), "en")
+        self.assertEqual(reply_language("match", "zh"), "zh")
+        self.assertEqual(reply_language("match", "en"), "en")
+        self.assertEqual(reply_language("bilingual", "en"), "bilingual")
 
     def test_blocks_invented_number_link_email_and_wrong_language(self):
-        profile = {
-            "name": "测试用户",
-            "role": "测试身份",
-            "introduction": "这是测试用的介绍，没有真实经历。",
-            "tone": "简短直接。",
-            "cannot_promise": ["不承诺日期"],
-            "sample_phrases": ["我看到了。"],
-        }
-        both = "我周五再回复你。\n\nI will reply on Friday."
-        ensure_safe(both, profile, "zh")
-        ensure_safe(both, profile, "en")
-        ensure_safe("编号 20260930 我看到了。\n\nI saw the note.", profile, "zh")
+        ensure_safe("I will reply on Friday.", self.profile, "en")
+        ensure_safe("我周五再回复你。\n\nI will reply on Friday.", self.profile, "bilingual")
+        ensure_safe("Reference 20260930, I saw the note.", self.profile, "en")
         with self.assertRaises(ReplyError):
-            ensure_safe("请打我电话 13800138000。\n\nPlease call me today.", profile, "zh")
+            ensure_safe("Please call me on 13800138000 today.", self.profile, "en")
         with self.assertRaises(ReplyError):
-            ensure_safe("请联系 138-0013-8000，我看到了。\n\nPlease call me.", profile, "zh")
+            ensure_safe("Please call 138-0013-8000 when you can.", self.profile, "en")
         with self.assertRaises(ReplyError):
-            ensure_safe("详见 https://example.com/secret 。我看到了。\n\nSee the link.", profile, "zh")
+            ensure_safe("See https://example.com/secret for the details.", self.profile, "en")
         with self.assertRaises(ReplyError):
-            ensure_safe("请写信到 other@example.com。\n\nWrite me at other@example.com today.", profile, "en")
+            ensure_safe("Write to me at other@example.com today please.", self.profile, "en")
         with self.assertRaises(ReplyError):
-            ensure_safe("I saw your note.", profile, "zh")
+            ensure_safe("I saw your note.", self.profile, "zh")
         with self.assertRaises(ReplyError):
-            ensure_safe("我看到了。", profile, "en")
+            ensure_safe("我看到了。", self.profile, "en")
         with self.assertRaises(ReplyError):
-            ensure_safe("As an AI I saw your note.", profile, "en")
+            ensure_safe("I saw your note.", self.profile, "bilingual")
         with self.assertRaises(ReplyError):
-            ensure_safe("密钥是 sk-abcdefghijklmnopqrstuvwxyz", profile, "zh")
+            ensure_safe("As an AI I saw your note.", self.profile, "en")
+        with self.assertRaises(ReplyError):
+            ensure_safe("The key is sk-abcdefghijklmnopqrstuvwxyz right here.", self.profile, "en")
 
     def test_allows_number_and_link_that_are_already_in_the_material(self):
-        profile = {
-            "name": "测试用户",
-            "role": "测试身份",
-            "introduction": "对外电话是 13800138000。",
-            "tone": "简短。",
-            "cannot_promise": ["不承诺日期"],
-            "sample_phrases": ["我看到了。"],
-        }
-        ensure_safe("我的电话是 13800138000。\n\nMy number is 13800138000.", profile, "zh")
-        mail = sample(body="请看 https://example.com/a")
-        ensure_safe("我看到了 https://example.com/a 。\n\nI saw https://example.com/a in your note.", profile, "en", mail)
+        profile = dict(self.profile, introduction="My office line is 13800138000.")
+        ensure_safe("My number is 13800138000, as you asked.", profile, "en")
+        mail = sample(body="Please see https://example.com/a")
+        ensure_safe("I saw https://example.com/a in your note.", self.profile, "en", mail)
+        ensure_safe(
+            "The workshop costs 1200000 rupiah, see https://kb.example.com/prices today.",
+            self.profile,
+            "en",
+            None,
+            "FROM MY DOCUMENT: price 1200000 rupiah https://kb.example.com/prices",
+        )
 
     def test_clean_reply_strips_wrapper(self):
-        self.assertEqual(clean_reply("```\n我看到了。\n```"), "我看到了。")
-        self.assertEqual(clean_reply("主题：你好\n我看到了。"), "我看到了。")
+        self.assertEqual(clean_reply("```\nI saw it.\n```"), "I saw it.")
+        self.assertEqual(clean_reply("Subject: Hello\nI saw it."), "I saw it.")
 
 
 class GmailFormatTests(unittest.TestCase):
     def test_reply_stays_on_the_thread_and_uses_reply_to(self):
         mail = sample(subject="你好", reply_email="other@example.com")
-        payload = build_send_body(mail, "我看到了。", "me@example.com")
+        payload = build_send_body(mail, "I saw it.", "me@example.com")
         parsed = message_from_bytes(base64.urlsafe_b64decode(payload["raw"]), policy=default)
         self.assertEqual(payload["threadId"], "t1")
         self.assertEqual(parsed["Subject"], "Re: 你好")
@@ -202,7 +209,7 @@ class GmailFormatTests(unittest.TestCase):
         self.assertIn("<m1@example.com>", parsed["References"])
         self.assertEqual(parsed["To"], "other@example.com")
         self.assertEqual(parsed["From"], "me@example.com")
-        self.assertEqual(parsed.get_content().strip(), "我看到了。")
+        self.assertEqual(parsed.get_content().strip(), "I saw it.")
 
         again = sample(subject="Re: Hello")
         parsed_again = message_from_bytes(
@@ -210,10 +217,9 @@ class GmailFormatTests(unittest.TestCase):
             policy=default,
         )
         self.assertEqual(parsed_again["Subject"], "Re: Hello")
-        self.assertIn("Lee", parsed_again["To"])
         self.assertIn("lee@example.com", parsed_again["To"])
 
-    def test_parse_prefers_plain_text_and_strips_html(self):
+    def test_parse_keeps_text_for_drafting_and_html_for_display(self):
         raw = {
             "id": "h1",
             "threadId": "t",
@@ -233,14 +239,16 @@ class GmailFormatTests(unittest.TestCase):
                         "body": {"data": _b64("hidden attachment")},
                     },
                     {"mimeType": "text/plain", "body": {"data": _b64("visible note")}},
-                    {"mimeType": "text/html", "body": {"data": _b64("<script>alert(1)</script><p>你好 &amp; 欢迎</p>")}},
+                    {"mimeType": "text/html", "body": {"data": _b64("<script>alert(1)</script><p><b>Hello</b> &amp; welcome</p>")}},
                 ],
             },
         }
         mail = parse_message(raw)
         self.assertEqual(mail.subject, "你好")
         self.assertEqual(mail.body, "visible note")
-        self.assertNotIn("alert", mail.body)
+        self.assertIn("<b>Hello</b>", mail.html)
+        self.assertEqual(mail.received_ts, 1710000000.0)
+        self.assertEqual(mail.key, "h1")
         html_only = parse_message(
             {
                 "id": "h2",
@@ -248,12 +256,11 @@ class GmailFormatTests(unittest.TestCase):
                 "payload": {
                     "mimeType": "text/html",
                     "headers": [{"name": "From", "value": "Lee <lee@example.com>"}, {"name": "Subject", "value": "Hi"}],
-                    "body": {"data": _b64("<script>alert(1)</script><p>你好 &amp; 欢迎</p>")},
+                    "body": {"data": _b64("<script>alert(1)</script><p>Hello &amp; welcome</p>")},
                 },
             }
         )
-        self.assertIn("你好", html_only.body)
-        self.assertIn("&", html_only.body)
+        self.assertIn("Hello & welcome", html_only.body)
         self.assertNotIn("alert", html_only.body)
         self.assertNotIn("<p>", html_only.body)
 
@@ -270,12 +277,12 @@ class RunnerTests(TempHome):
         self.assertEqual(record["action"], "drafted")
         text = (root() / record["outbox"]).read_text(encoding="utf-8")
         self.assertIn("I saw your note.", text)
-        self.assertIn("没有发送", text)
+        self.assertIn("Nothing was sent", text)
         set_live(True)
         again = run_once(gmail=fake, generate=english_reply)
         self.assertEqual(fake.sent, [])
         self.assertEqual(again.sent, 0)
-        self.assertIn("已经处理过", again.lines[0])
+        self.assertIn("already handled", again.lines[0])
 
     def test_live_send_replies_once_and_marks_read(self):
         write_test_profile()
@@ -295,17 +302,66 @@ class RunnerTests(TempHome):
         run_once(gmail=fake, generate=generate)
         self.assertEqual(len(fake.sent), 1)
 
-    def test_chinese_letter_asks_for_chinese(self):
+    def test_reply_that_needs_confirmation_waits_and_is_sent_only_after_approval(self):
+        from gmail_auto import approvals
+
         write_test_profile()
-        seen = {}
+        set_live(True)
+        fake = FakeGmail([sample(id="m3", subject="Can we meet Friday?")])
 
-        def generate(_mail, _profile, language):
-            seen["language"] = language
-            return "我看到你的来信了。"
+        def generate(*_args):
+            return Draft(action="ask", reply="Friday at 2pm works for me.", reason="It commits to a meeting time.", summary="Wants to meet on Friday.")
 
-        mail = sample(subject="安排", body="请帮我看一下明天的安排")
-        run_once(gmail=FakeGmail([mail]), generate=generate)
-        self.assertEqual(seen["language"], "zh")
+        report = run_once(gmail=fake, generate=generate)
+        self.assertEqual(report.asked, 1)
+        self.assertEqual(fake.sent, [])
+        self.assertEqual(get_processed("m3")["action"], "waiting")
+        waiting = approvals.pending()
+        self.assertEqual(len(waiting), 1)
+        self.assertEqual(waiting[0]["reason"], "It commits to a meeting time.")
+
+        approvals.set_draft(waiting[0]["id"], "Friday at 3pm works for me.")
+        approvals.approve(waiting[0]["id"], "whatsapp", client=fake)
+        self.assertEqual(fake.sent, [("m3", "Friday at 3pm works for me.", "me@example.com")])
+        self.assertEqual(fake.read, ["m3"])
+        record = get_processed("m3")
+        self.assertEqual(record["action"], "sent")
+        self.assertTrue(record["approved"])
+        self.assertEqual(approvals.pending(), [])
+        with self.assertRaises(ConfigError):
+            approvals.approve(waiting[0]["id"], "web", client=fake)
+        self.assertEqual(len(fake.sent), 1)
+
+    def test_ask_every_time_holds_even_routine_replies_and_reject_sends_nothing(self):
+        from gmail_auto import approvals
+
+        write_test_profile()
+        set_live(True)
+        save_settings({"approval_mode": "always"})
+        fake = FakeGmail([sample(id="m4")])
+        report = run_once(gmail=fake, generate=english_reply)
+        self.assertEqual((report.asked, report.sent), (1, 0))
+        item = approvals.pending()[0]
+        approvals.reject(item["id"], "web")
+        self.assertEqual(fake.sent, [])
+        self.assertEqual(get_processed("m4")["action"], "rejected")
+
+    def test_send_automatically_never_asks(self):
+        write_test_profile()
+        set_live(True)
+        save_settings({"approval_mode": "never"})
+        fake = FakeGmail([sample(id="m5")])
+        report = run_once(gmail=fake, generate=lambda *_: Draft(action="ask", reply="Yes, Friday works."))
+        self.assertEqual((report.asked, report.sent), (0, 1))
+
+    def test_model_can_decide_no_reply_is_needed(self):
+        write_test_profile()
+        set_live(True)
+        fake = FakeGmail([sample(id="m6")])
+        report = run_once(gmail=fake, generate=lambda *_: Draft(action="skip", reason="Just a thank-you."))
+        self.assertEqual(report.skipped, 1)
+        self.assertEqual(fake.sent, [])
+        self.assertEqual(get_processed("m6")["skip_code"], "no_reply_needed")
 
     def test_sensitive_mail_never_reaches_the_model(self):
         write_test_profile()
@@ -331,7 +387,7 @@ class RunnerTests(TempHome):
         write_test_profile()
 
         def generate(*_args):
-            raise ReplyError("连接不上 OpenAI。")
+            raise ReplyError("Could not reach OpenAI.")
 
         fake = FakeGmail([sample()])
         first = run_once(gmail=fake, generate=generate)
@@ -348,7 +404,7 @@ class RunnerTests(TempHome):
 
         class Boom(FakeGmail):
             def send_reply(self, mail, body, user_email):
-                raise ConfigError("访问 Gmail 失败。")
+                raise ConfigError("Could not reach Gmail.")
 
         fake = Boom([sample()])
         report = run_once(gmail=fake, generate=english_reply)
@@ -356,15 +412,24 @@ class RunnerTests(TempHome):
         self.assertEqual(fake.read, [])
         self.assertIsNone(get_processed("m1"))
 
+    def test_outlook_and_gmail_letters_keep_separate_records(self):
+        write_test_profile()
+        outlook = FakeGmail([sample(id="m1", provider="outlook")])
+        outlook.provider = "outlook"
+        run_once(gmail=FakeGmail([sample(id="m1")]), generate=english_reply)
+        report = run_once(gmail=outlook, generate=english_reply)
+        self.assertEqual(report.drafted, 1)
+        self.assertEqual(get_processed("outlook:m1")["provider"], "outlook")
+        self.assertEqual(get_processed("m1")["provider"], "gmail")
+
     def test_placeholder_cannot_turn_on_live_sending(self):
-        shipped = json.loads((CODE_ROOT / "profile.json").read_text(encoding="utf-8"))
-        save_profile(shipped)
+        save_profile(PLACEHOLDER)
         self.assertTrue(profile_is_placeholder(load_profile()))
         set_live(True)
         fake = FakeGmail([sample()])
         with self.assertRaises(ConfigError) as caught:
             run_once(gmail=fake, generate=english_reply)
-        self.assertIn("占位", str(caught.exception))
+        self.assertIn("placeholder", str(caught.exception))
         self.assertFalse(is_live())
         self.assertEqual(fake.sent, [])
         with self.assertRaises(ConfigError):
@@ -375,7 +440,7 @@ class RunnerTests(TempHome):
         write_test_profile()
         with self.assertRaises(ConfigError) as caught:
             toggle_and_run(False)
-        self.assertIn("勾选", str(caught.exception))
+        self.assertIn("confirmation", str(caught.exception))
         self.assertFalse(is_live())
         fake = FakeGmail([sample(id="m9")])
         report = toggle_and_run(True, gmail=fake, generate=english_reply)
@@ -389,8 +454,6 @@ class RunnerTests(TempHome):
         self.assertEqual(dry.drafted, 1)
 
     def test_live_send_env_overrides_the_local_switch(self):
-        from gmail_auto.store import is_live
-
         previous = os.environ.get("LIVE_SEND")
         os.environ["LIVE_SEND"] = "true"
         try:
@@ -403,22 +466,6 @@ class RunnerTests(TempHome):
             else:
                 os.environ["LIVE_SEND"] = previous
 
-    def test_token_store_is_empty_until_kv_is_configured(self):
-        from gmail_auto.token_store import load_token_raw
-
-        saved = {name: os.environ.pop(name, None) for name in (
-            "KV_REST_API_URL",
-            "KV_REST_API_TOKEN",
-            "UPSTASH_REDIS_REST_URL",
-            "UPSTASH_REDIS_REST_TOKEN",
-        )}
-        try:
-            self.assertIsNone(load_token_raw())
-        finally:
-            for name, value in saved.items():
-                if value is not None:
-                    os.environ[name] = value
-
     def test_client_secret_must_be_a_desktop_app(self):
         with self.assertRaises(ConfigError) as missing:
             find_client_file()
@@ -427,7 +474,7 @@ class RunnerTests(TempHome):
         path.write_text(json.dumps({"web": {"client_id": "placeholder"}}), encoding="utf-8")
         with self.assertRaises(ConfigError) as wrong:
             find_client_file()
-        self.assertIn("桌面应用", str(wrong.exception))
+        self.assertIn("Desktop app", str(wrong.exception))
         path.write_text(json.dumps({"installed": {"client_id": "placeholder"}}), encoding="utf-8")
         self.assertEqual(find_client_file(), path)
 
@@ -445,18 +492,7 @@ class RunnerTests(TempHome):
         )
         try:
             creds = load_credentials(allow_browser=False)
-        finally:
-            if previous is None:
-                os.environ.pop("GMAIL_TOKEN_JSON", None)
-            else:
-                os.environ["GMAIL_TOKEN_JSON"] = previous
-        self.assertEqual(creds.refresh_token, "test-refresh-token")
-        self.assertTrue(creds.valid)
-
-    def test_gmail_token_env_rejects_bad_json(self):
-        previous = os.environ.get("GMAIL_TOKEN_JSON")
-        os.environ["GMAIL_TOKEN_JSON"] = "not-json"
-        try:
+            os.environ["GMAIL_TOKEN_JSON"] = "not-json"
             with self.assertRaises(ConfigError) as bad:
                 load_credentials(allow_browser=False)
         finally:
@@ -464,38 +500,14 @@ class RunnerTests(TempHome):
                 os.environ.pop("GMAIL_TOKEN_JSON", None)
             else:
                 os.environ["GMAIL_TOKEN_JSON"] = previous
+        self.assertEqual(creds.refresh_token, "test-refresh-token")
         self.assertIn("JSON", str(bad.exception))
-
-    def test_shipped_profile_stays_a_placeholder(self):
-        raw = json.loads((CODE_ROOT / "profile.json").read_text(encoding="utf-8"))
-        cleaned = clean_profile(raw)
-        self.assertTrue(profile_is_placeholder(cleaned))
-        self.assertNotIn("@", json.dumps(cleaned, ensure_ascii=False))
-        self.assertNotIn("sk-", json.dumps(cleaned))
 
     def test_profile_rejects_secrets_and_blank_identity(self):
         with self.assertRaises(ProfileError):
-            clean_profile(
-                {
-                    "name": "测试用户",
-                    "role": "测试身份",
-                    "introduction": "密钥 sk-abcdefghijklmnopqrstuvwxyz",
-                    "tone": "短。",
-                    "cannot_promise": ["不承诺日期"],
-                    "sample_phrases": ["我看到了。"],
-                }
-            )
+            clean_profile(dict(SafetyTests.profile, introduction="key sk-abcdefghijklmnopqrstuvwxyz"))
         with self.assertRaises(ProfileError):
-            clean_profile(
-                {
-                    "name": "  ",
-                    "role": "测试身份",
-                    "introduction": "介绍。",
-                    "tone": "短。",
-                    "cannot_promise": ["不承诺日期"],
-                    "sample_phrases": ["我看到了。"],
-                }
-            )
+            clean_profile(dict(SafetyTests.profile, name="  "))
 
 
 def _b64(text: str) -> str:

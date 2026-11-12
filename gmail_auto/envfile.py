@@ -8,7 +8,7 @@ def load_env() -> None:
     try:
         from dotenv import load_dotenv
     except ImportError as exc:
-        raise ConfigError("还没安装依赖。请先运行 pip install -r requirements.txt。") from exc
+        raise ConfigError("Dependencies are not installed. Run: pip install -r requirements.txt") from exc
     load_dotenv(CODE_ROOT / ".env")
     if root() != CODE_ROOT:
         load_dotenv(root() / ".env", override=True)
@@ -18,10 +18,12 @@ def require_openai_key() -> str:
     load_env()
     key = os.getenv("OPENAI_API_KEY", "").strip()
     if not key:
-        raise ConfigError(
-            "没有找到 OPENAI_API_KEY。请把 .env.example 复制成 .env，并填入你自己的密钥。"
-        )
+        raise ConfigError("OPENAI_API_KEY was not found. Copy .env.example to .env and add your own key.")
     return key
+
+
+def has_openai_key() -> bool:
+    return bool(os.getenv("OPENAI_API_KEY", "").strip())
 
 
 def openai_model() -> str:

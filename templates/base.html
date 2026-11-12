@@ -1,16 +1,77 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
-  <title>{% block title %}邮件自动回复{% endblock %}</title>
+  <title>{% block title %}Mail Autopilot{% endblock %} · Mail Autopilot</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-  <main>
+{% block layout %}
+<div class="app">
+  <aside class="side">
+    <a class="brand" href="{{ url_for('home') }}">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l9 6 9-6"/><rect x="3" y="5" width="18" height="14" rx="2.5"/></svg>
+      </span>
+      <span>Mail Autopilot</span>
+    </a>
+    {% set here = request.endpoint %}
+    <nav class="nav" aria-label="Main">
+      <a href="{{ url_for('home') }}" class="{% if here == 'home' %}on{% endif %}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h4l2 3h4l2-3h4"/><path d="M5.5 5h13l1.5 8v6H4v-6z"/></svg>
+        <span>Inbox</span>
+      </a>
+      <a href="{{ url_for('approvals_page') }}" class="{% if here == 'approvals_page' %}on{% endif %}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>
+        <span>Approvals</span>
+        {% if nav_waiting %}<b class="badge">{{ nav_waiting }}</b>{% endif %}
+      </a>
+      <a href="{{ url_for('dashboard_page') }}" class="{% if here == 'dashboard_page' %}on{% endif %}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-7"/></svg>
+        <span>Dashboard</span>
+      </a>
+      <a href="{{ url_for('knowledge_page') }}" class="{% if here in ('knowledge_page', 'knowledge_doc') %}on{% endif %}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h10a3 3 0 0 1 3 3V20H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h10"/></svg>
+        <span>Knowledge</span>
+      </a>
+      <a href="{{ url_for('connections_page') }}" class="{% if here == 'connections_page' %}on{% endif %}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.5 14.5l5-5"/><path d="M11 6.5l1.5-1.5a4.2 4.2 0 0 1 6 6L17 12.5"/><path d="M13 17.5L11.5 19a4.2 4.2 0 0 1-6-6L7 11.500"/></svg>
+        <span>Connections</span>
+      </a>
+      <a href="{{ url_for('profile_page') }}" class="{% if here == 'profile_page' %}on{% endif %}">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8.500" r="3.5"/><path d="M5 20c.8-3.6 3.6-5.500 7-5.500s6.200 1.900 7 5.500"/></svg>
+        <span>Settings</span>
+      </a>
+    </nav>
+    <div class="side-foot">
+      <a class="mode-pill {{ nav_mode }}" href="{{ url_for('profile_page') }}#mode" title="Change the sending mode">
+        <i aria-hidden="true"></i>{{ nav_mode_label }}
+      </a>
+      {% if user %}
+      <p class="who" title="{{ user }}">{{ user }}</p>
+      <a class="quiet-link" href="{{ url_for('logout') }}">Sign out</a>
+      {% elif not hosted %}
+      <p class="who">Running on this computer</p>
+      {% endif %}
+    </div>
+  </aside>
+  <main class="content">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+      <div class="flashes" role="status">
+        {% for category, message in messages %}
+        <p class="banner {% if category == 'error' %}danger{% else %}ok{% endif %}">{{ message }}</p>
+        {% endfor %}
+      </div>
+      {% endif %}
+    {% endwith %}
     {% block body %}{% endblock %}
   </main>
-  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</div>
+{% endblock %}
+<div class="tip" id="tip" hidden></div>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>
 </html>

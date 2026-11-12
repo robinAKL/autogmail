@@ -1,4 +1,4 @@
-"""邮箱账号和验证码。验证码放在这次登录的会话里，不依赖 Vercel KV。"""
+"""Sign-in by email code. The code lives in the login session, so it works without Vercel KV."""
 
 import hashlib
 import json
@@ -31,7 +31,7 @@ def start_verification(email: str, purpose: str, pending: dict | None = None) ->
     sent_at = float(current.get("sent_at") or 0)
     same = current.get("email") == email and current.get("purpose") == purpose
     if same and sent_at and time.time() - sent_at < _RESEND_WAIT:
-        raise ConfigError("验证码刚刚发过，请等一分钟再获取。")
+        raise ConfigError("A code was just sent. Wait a minute before asking for another.")
     code = f"{secrets.randbelow(1_000_000):06d}"
     salt = secrets.token_hex(8)
     return code, {
@@ -51,19 +51,19 @@ def finish_verification(email: str, purpose: str, code: str, pending: dict | Non
     entered = "".join(ch for ch in code if ch.isdigit())
     current = pending if isinstance(pending, dict) else {}
     if current.get("email") != email or current.get("purpose") != purpose:
-        raise ConfigError("请先获取验证码。")
+        raise ConfigError("Ask for a code first.")
     if time.time() > float(current.get("expires") or 0):
         current.clear()
-        raise ConfigError("验证码已过期，请重新获取。")
+        raise ConfigError("That code has expired. Ask for a new one.")
     if int(current.get("tries") or 0) >= _MAX_TRIES:
         current.clear()
-        raise ConfigError("验证码已失效，请重新获取。")
+        raise ConfigError("That code is no longer valid. Ask for a new one.")
     salt = str(current.get("salt") or "")
     expected = str(current.get("hash") or "")
     actual = _digest(salt, entered)
     if len(actual) != len(expected) or not secrets.compare_digest(actual, expected):
         current["tries"] = int(current.get("tries") or 0) + 1
-        raise ConfigError("验证码不对。")
+        raise ConfigError("That code is not right.")
     current.clear()
     _remember_user(email, purpose)
     return email
@@ -74,9 +74,9 @@ def _check_known_user(email: str, purpose: str) -> None:
         return
     users = _load().get("users") or {}
     if purpose == "register" and email in users:
-        raise ConfigError("这个邮箱已经注册，请直接登录。")
+        raise ConfigError("This email is already registered. Sign in instead.")
     if purpose == "login" and email not in users:
-        raise ConfigError("这个邮箱还没注册。")
+        raise ConfigError("This email is not registered yet.")
 
 
 def _remember_user(email: str, purpose: str) -> None:
@@ -114,7 +114,7 @@ def gmail_status() -> dict:
 
 def _purpose(value: str) -> str:
     if value not in {"login", "register"}:
-        raise ConfigError("请选择登录或注册。")
+        raise ConfigError("Choose sign in or register.")
     return value
 
 
@@ -124,7 +124,7 @@ def _ensure_allowed(email: str) -> None:
         return
     allowed = {normalize_email(item) for item in raw.split(",") if item.strip()}
     if email not in allowed:
-        raise ConfigError("这个邮箱不能用来登录。")
+        raise ConfigError("This email is not allowed to sign in.")
 
 
 def _digest(salt: str, code: str) -> str:

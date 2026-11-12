@@ -1,64 +1,116 @@
-# 个人 Gmail 自动回复
+# Mail Autopilot
 
-定时查看自己的未读信，按 `profile.json` 里的事实，用你的语气起草回复。默认只演练：回复写在本机，不发信。后台页面只绑定 `127.0.0.1`。
+Reads your unread Gmail and Outlook mail and answers it the way you would, using only your
+profile and your own knowledge base. Replies that would commit you to something are sent to
+you on WhatsApp first, and go out only after you say yes.
 
-## 准备
+It starts in **draft only** mode: replies are written and saved, nothing is sent.
 
-1. 安装 Python 3.10 或更新版本，然后在这个目录执行：
+## What it does
+
+- **Inbox** – Gmail and Outlook side by side. Letters are shown with their original formatting
+  (HTML), in a locked frame that cannot run scripts or submit forms.
+- **Knowledge base** – upload files (PDF, Word, PowerPoint, Excel, text, HTML, .eml), write notes,
+  let it summarise your past sent and received email, or read documents from SharePoint.
+  From all of that plus your rules it writes **“What I understand about you”**, which you can edit.
+  Every reply is drafted from the profile, that understanding, your rules and the most relevant
+  passages of your documents.
+- **Approvals** – each reply is marked either routine or *needs your OK* (dates, meetings, prices,
+  money, decisions, sensitive topics, missing facts, or your own rules say so). Waiting replies can
+  be sent, edited, rewritten or dropped on the Approvals page or on WhatsApp.
+- **WhatsApp** – you get the letter, the reason and the draft. Answer `YES` / `同意` to send,
+  `NO` to drop it, or type what to change and it rewrites the draft. `LIST`, `STATUS`, `PAUSE`
+  and plain questions about your mail also work. A morning summary of yesterday is optional.
+- **Dashboard** – yesterday at a glance (checked, sent automatically and after approval, reply time,
+  time saved, skipped, waiting), and 7 / 30 / 90-day history: outcomes per day, why mail was skipped,
+  who writes most, when mail arrives, how often the knowledge base was used, your approval rate and
+  how long you take to decide.
+
+### Sending modes (Settings page)
+
+| Mode | What happens |
+|---|---|
+| Draft only | Replies are saved. Nothing is sent. |
+| Ask every time | Every reply waits for your OK. |
+| Ask when needed | Routine replies go out; anything with a commitment waits for your OK. |
+| Send automatically | Everything is sent without asking. |
+
+Real sending cannot be turned on while the profile is still the placeholder example.
+
+### What is never answered
+
+Mail to or from yourself, no-reply and system addresses, mailing lists, automatic replies,
+promotions, social and forum mail, and anything mentioning passwords, codes, ID or bank details
+(those never reach the model). A reply containing a phone number, link or email address that is not
+in your material is held back.
+
+## Run it on this computer
+
+1. Python 3.10 or newer, then in this folder:
+
+   ```powershell
+   python -m venv .venv
+   .venv\Scripts\activate
+   pip install -r requirements.txt
+   copy .env.example .env
+   ```
+
+2. Put your `OPENAI_API_KEY` in `.env`.
+3. **Gmail**: in [Google Cloud](https://console.cloud.google.com/) enable the Gmail API, create an
+   OAuth client of type *Desktop app*, download the JSON into this folder as `credentials.json`.
+4. Start it:
+
+   ```powershell
+   python main.py
+   ```
+
+   The first time, a browser opens to approve Gmail. Then open <http://127.0.0.1:8765>.
+   `python main.py --once` checks mail once and exits; `python main.py --no-check` opens only
+   the web page without checking mail.
+
+### Outlook and SharePoint
+
+1. In the [Microsoft Entra admin center](https://entra.microsoft.com/) → *App registrations* →
+   *New registration*. Supported account types: any organisational directory and personal accounts
+   (or only your organisation).
+2. Redirect URI, type *Web*: `http://localhost:8765/oauth/microsoft/callback`
+   (add `https://<your-domain>/oauth/microsoft/callback` for the hosted site).
+3. *Certificates & secrets* → new client secret. Put the IDs in `.env` as `MS_CLIENT_ID`,
+   `MS_CLIENT_SECRET` (and `MS_TENANT_ID` to limit it to your organisation).
+4. Open **Connections** and choose *Connect Outlook* and/or *Connect SharePoint*. Outlook asks for
+   `Mail.ReadWrite` and `Mail.Send`; SharePoint asks for read-only `Sites.Read.All` and
+   `Files.Read.All`, which some organisations require an admin to approve.
+
+Then on **Knowledge**, paste a link to a SharePoint site, library folder or single file.
+
+### WhatsApp
+
+Use either the **Meta WhatsApp Cloud API** (`WHATSAPP_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`,
+`WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_APP_SECRET`) or **Twilio** (`TWILIO_ACCOUNT_SID`,
+`TWILIO_AUTH_TOKEN`, `TWILIO_WHATSAPP_FROM`). Save your own number on **Connections** and send a
+test message.
+
+To answer from your phone, the provider must reach the webhook `https://<address>/whatsapp/webhook`.
+On this computer that means a tunnel to port 8765 (for example `ngrok http 8765`); on Vercel it is
+the site address. Only your number is written to and obeyed, and Meta / Twilio signatures are checked.
+
+WhatsApp lets a business write freely only within 24 hours of your last message to it. If the chat
+has been quiet longer, send the bot any message (or set `WHATSAPP_TEMPLATE` to an approved template
+that invites you to).
+
+## Hosted on Vercel
+
+Set the variables from `.env.example` in Vercel, connect **Vercel KV (Upstash)** — without it the
+knowledge base, approvals, WhatsApp and dashboard cannot keep anything — and set `CRON_SECRET`.
+`vercel.json` calls `/cron` on a schedule. Uploads are limited to about 4 MB per request there.
+
+## Your data
+
+`.env`, `token.json`, `credentials.json` and the `data/` folder hold keys and your mail records:
+do not share them. `profile.json` becomes your personal profile; look at it before committing.
+
+## Tests
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-copy .env.example .env
-```
-
-2. 在 `.env` 里填 `OPENAI_API_KEY`。要换模型就改 `OPENAI_MODEL`。密钥不要写进代码。
-
-3. 在 [Google Cloud](https://console.cloud.google.com/) 里启用 Gmail API，创建 OAuth 客户端，类型选「桌面应用」。把下载的 JSON 放到本目录，命名为 `credentials.json`。同意屏幕如果还在测试状态，把你自己的 Gmail 加为测试用户。测试状态的授权大约 7 天后会过期，过期后需要再同意一次。
-
-4. 打开 `profile.json`，把占位内容改成你自己的事实。也可以等程序启动后在页面里改。
-
-## 运行
-
-```powershell
-python main.py
-```
-
-浏览器会在第一次授权时打开。同意之后，凭证留在本机的 `token.json`，以后再运行不会为了授权打开浏览器。终端会打印：
-
-`http://127.0.0.1:8765`
-
-只跑一轮、不打开页面：
-
-```powershell
-python main.py --once
-```
-
-## 页面上能做的事
-
-- 看最近的收件箱，正文按文本显示。
-- 区分已自动回复、演练已保存、已跳过、未处理。
-- 按当前模式立刻跑一轮。
-- 勾选确认后，开启真实发送并立刻跑一轮；再次点击会关掉真实发送并再跑一轮。
-- 编辑个人资料。
-
-程序开着的时候，大约每小时自动跑一轮。
-
-## 它会怎么处理信
-
-- 只处理收件箱里的未读信，跳过促销、社交、论坛和聊天。
-- 回复用第一人称，先回应来信里的具体事情。英文来信整封英文，中文来信整封中文。
-- 只用资料里写明的事实。没有的经历、电话、地址和承诺不会编。
-- 不回复自己、系统地址、邮件列表、自动回复，以及涉及密码、验证码、证件、银行卡的信。这类信也不会交给模型。
-- 同一封信只处理一次。生成失败时下一轮会再试一次，还是不行就停止。
-- 演练时把回复写到 `data/outbox/`，不标已读。真实发送时回复留在原会话，并把原信标成已读。
-- 个人资料仍是「示例用户」或带「请填写」这类占位文字时，不能开启真实发送。
-
-不要把 `.env`、`token.json`、`credentials.json` 发给别人。`profile.json` 会变成你的个人资料，放进仓库前先看一遍。
-
-## 测试
-
-```powershell
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests -t . -v
 ```

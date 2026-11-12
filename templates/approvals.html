@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Approvals{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <h1>Approvals</h1>
+    <p class="sub">Replies that wait for your OK before they are sent.
+      {% if whatsapp_ready %}You are also asked on WhatsApp — answer in either place.{% else %}<a href="{{ url_for('connections_page') }}#whatsapp">Connect WhatsApp</a> to be asked on your phone.{% endif %}
+    </p>
+  </div>
+</header>
+
+{% if waiting %}
+<div class="stack-lg">
+  {% for item in waiting %}
+  <article class="card approval" id="a{{ item.id }}">
+    <header class="approval-head">
+      <div>
+        <p class="kicker">#{{ item.id }} · asked {{ item.created_text }}</p>
+        <h2>{{ item.subject or '(no subject)' }}</h2>
+        <p class="meta"><strong>{{ item.from_name or item.from_email }}</strong>{% if item.from_name %} &lt;{{ item.from_email }}&gt;{% endif %}
+          <span class="dot">·</span> {{ item.date }}
+          <span class="dot">·</span> <span class="chip tiny {{ item.provider }}">{{ item.provider|title }}</span></p>
+      </div>
+      <span class="tag waiting">Waiting for your OK</span>
+    </header>
+    <div class="approval-grid">
+      <div class="approval-side">
+        {% if item.summary %}<p class="ai-note"><b>What they want</b> {{ item.summary }}</p>{% endif %}
+        {% if item.reason %}<p class="ai-note ask"><b>Why it is asking</b> {{ item.reason }}</p>{% endif %}
+        <details class="original">
+          <summary>Show the original letter</summary>
+          <div class="reply-text">{{ item.body }}</div>
+        </details>
+        <form class="rewrite" method="post" action="{{ url_for('approvals_act', item_id=item.id, action='rewrite') }}" data-busy="Rewriting…">
+          <label for="instruction{{ item.id }}">Ask for a rewrite</label>
+          <div class="inline-form">
+            <input id="instruction{{ item.id }}" name="instruction" maxlength="500" placeholder="e.g. shorter, and say I can meet on Friday at 2pm" required>
+            <button class="quiet" type="submit">Rewrite</button>
+          </div>
+        </form>
+      </div>
+      <form class="approval-main" method="post" action="{{ url_for('approvals_act', item_id=item.id, action='send') }}" data-busy="Sending…" data-confirm="Send this reply to {{ item.from_name or item.from_email }} now?">
+        <label for="draft{{ item.id }}">Reply{% if item.edited %} <span class="muted">(edited)</span>{% endif %}</label>
+        <textarea id="draft{{ item.id }}" name="draft" rows="10" maxlength="5000" required>{{ item.draft }}</textarea>
+        {% if item.sources %}
+        <p class="sources">Written using {% for title in item.sources %}<span class="chip tiny">{{ title }}</span>{% endfor %}</p>
+        {% endif %}
+        <div class="button-row">
+          <button type="submit">Send reply</button>
+          <button class="quiet" type="submit" formaction="{{ url_for('approvals_act', item_id=item.id, action='save') }}" data-skip-confirm>Save changes</button>
+          <button class="quiet danger-text" type="submit" formaction="{{ url_for('approvals_act', item_id=item.id, action='reject') }}" data-skip-confirm formnovalidate>Don't send</button>
+        </div>
+      </form>
+    </div>
+  </article>
+  {% endfor %}
+</div>
+{% else %}
+<section class="card empty-state">
+  <h2>Nothing is waiting for you</h2>
+  <p>When a reply would make a commitment, involves money or a decision, or needs a fact that is not in your knowledge base, it shows up here and on WhatsApp first.</p>
+</section>
+{% endif %}
+
+{% if decided %}
+<section class="card">
+  <h2 class="card-title">Recent decisions</h2>
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Decided</th><th>Email</th><th>From</th><th>Outcome</th><th>Where</th></tr></thead>
+      <tbody>
+        {% for item in decided %}
+        <tr>
+          <td class="nowrap">{{ item.decided_text }}</td>
+          <td>{{ item.subject or '(no subject)' }}</td>
+          <td>{{ item.from_name or item.from_email }}</td>
+          <td>
+            {% if item.status == 'sent' %}<span class="tag sent">Sent{% if item.edited %}, edited{% endif %}</span>
+            {% elif item.status == 'rejected' %}<span class="tag skipped">Not sent</span>
+            {% else %}<span class="tag skipped">{{ item.status|title }}</span>{% endif %}
+          </td>
+          <td>{{ {'whatsapp': 'WhatsApp', 'web': 'This page', 'timeout': 'No answer'}.get(item.via, item.via) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

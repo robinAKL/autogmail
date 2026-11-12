@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% block title %}Connections{% endblock %}
+{% macro state(on, on_text='Connected', off_text='Not connected') %}
+<span class="state {% if on %}on{% endif %}"><i aria-hidden="true"></i>{{ on_text if on else off_text }}</span>
+{% endmacro %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <h1>Connections</h1>
+    <p class="sub">Mailboxes to answer, sources to learn from, and the channel that reaches you.</p>
+  </div>
+</header>
+
+<section class="section">
+  <div class="section-head"><h2>Mailboxes</h2></div>
+  <div class="grid-2">
+    <article class="card conn" id="gmail">
+      <div class="conn-head">
+        <span class="logo gmail" aria-hidden="true">G</span>
+        <div><h3>Gmail</h3>{{ state(gmail.connected) }}</div>
+      </div>
+      {% if gmail.connected %}
+      <p class="account-line">{{ gmail.account }}</p>
+      <p class="muted">Unread mail is read and answered from this mailbox.{% if gmail.when %} Connected {{ gmail.when }}.{% endif %}</p>
+      {% else %}
+      <p class="muted">{% if local and not gmail.web_ready %}On this computer Gmail connects when the program starts: put the Desktop-app <code>credentials.json</code> in the folder and restart.{% else %}Sign in with Google and allow reading and sending mail.{% endif %}</p>
+      {% endif %}
+      {% if gmail.error %}<p class="banner danger">{{ gmail.error }}</p>{% endif %}
+      {% if gmail.stale %}<p class="banner warn">It has been a while since this was connected. If mail stops loading, connect again.</p>{% endif %}
+      <div class="button-row">
+        <a class="button {% if gmail.connected %}quiet{% endif %}" href="{{ url_for('oauth_start') }}">{% if gmail.connected %}Connect again{% else %}Connect Gmail{% endif %}</a>
+        {% if gmail.connected %}
+        <form method="post" action="{{ url_for('disconnect', name='gmail') }}" data-confirm="Disconnect Gmail? Mail will stop being checked there.">
+          <button class="quiet danger-text" type="submit">Disconnect</button>
+        </form>
+        {% endif %}
+      </div>
+    </article>
+
+    <article class="card conn" id="outlook">
+      <div class="conn-head">
+        <span class="logo outlook" aria-hidden="true">O</span>
+        <div><h3>Outlook</h3>{{ state(outlook.connected) }}</div>
+      </div>
+      {% if outlook.connected %}
+      <p class="account-line">{{ outlook.account or 'Microsoft account' }}</p>
+      <p class="muted">Works with Microsoft 365 and Outlook.com mailboxes. Connected {{ outlook.connected_at }}.</p>
+      {% elif ms_ready %}
+      <p class="muted">Sign in with Microsoft and allow reading and sending mail. Works with Microsoft 365 and Outlook.com.</p>
+      {% else %}
+      <p class="muted">Needs a Microsoft app registration first. Set <code>MS_CLIENT_ID</code> and <code>MS_CLIENT_SECRET</code>, and register this redirect address:</p>
+      <p class="copy-line"><code>{{ ms_redirect }}</code></p>
+      {% endif %}
+      <div class="button-row">
+        {% if ms_ready %}
+        <a class="button {% if outlook.connected %}quiet{% endif %}" href="{{ url_for('microsoft_start', kind='outlook') }}">{% if outlook.connected %}Connect again{% else %}Connect Outlook{% endif %}</a>
+        {% endif %}
+        {% if outlook.connected %}
+        <form method="post" action="{{ url_for('disconnect', name='outlook') }}" data-confirm="Disconnect Outlook? Mail will stop being checked there.">
+          <button class="quiet danger-text" type="submit">Disconnect</button>
+        </form>
+        {% endif %}
+      </div>
+    </article>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Reaching you</h2></div>
+  <article class="card conn" id="whatsapp">
+    <div class="conn-head">
+      <span class="logo whatsapp" aria-hidden="true">W</span>
+      <div><h3>WhatsApp</h3>{{ state(whatsapp.ready, 'Ready', 'Not set up') }}</div>
+    </div>
+    <div class="grid-2 flush">
+      <div class="stack">
+        <p class="muted">When a reply needs your OK you get the email, the reason and the draft on WhatsApp. Answer <b>YES</b> to send, <b>NO</b> to drop it, or just type what to change. You can also ask <b>LIST</b>, <b>STATUS</b> or <b>PAUSE</b>.</p>
+        <form method="post" action="{{ url_for('whatsapp_save') }}" class="stack">
+          <label for="wa">Your WhatsApp number, with country code</label>
+          <div class="inline-form">
+            <input id="wa" name="whatsapp_to" inputmode="tel" placeholder="+64 21 123 4567" value="{% if whatsapp.to %}+{{ whatsapp.to }}{% endif %}">
+            <button class="quiet" type="submit">Save</button>
+          </div>
+          <p class="hint">Only this number is written to, and only messages from it are obeyed.</p>
+        </form>
+        {% if whatsapp.ready %}
+        <form method="post" action="{{ url_for('whatsapp_save') }}" data-busy="Sending…">
+          <button type="submit" name="test" value="1">Send a test message</button>
+        </form>
+        {% endif %}
+      </div>
+      <div class="setup">
+        <h4>Setup</h4>
+        <ol class="checks">
+          <li class="{% if whatsapp.provider %}done{% endif %}">
+            <b>Sender account</b>
+            {% if whatsapp.provider %}Using {{ whatsapp.provider_label }}.
+            {% else %}Set either <code>WHATSAPP_TOKEN</code> + <code>WHATSAPP_PHONE_NUMBER_ID</code> (Meta WhatsApp Cloud API), or <code>TWILIO_ACCOUNT_SID</code> + <code>TWILIO_AUTH_TOKEN</code> + <code>TWILIO_WHATSAPP_FROM</code> (Twilio).{% endif %}
+          </li>
+          <li class="{% if whatsapp.to %}done{% endif %}"><b>Your number</b> {% if whatsapp.to %}+{{ whatsapp.to }}{% else %}Save it on the left.{% endif %}</li>
+          <li class="{% if whatsapp.provider == 'twilio' or (whatsapp.verify_set and whatsapp.secret_set) %}done{% endif %}">
+            <b>Incoming messages</b>
+            Point the provider's webhook at:
+            <span class="copy-line"><code>{{ whatsapp.webhook }}</code></span>
+            {% if whatsapp.needs_tunnel %}<span class="hint">This address is only reachable on this computer. To answer from your phone, run a tunnel (for example ngrok) to port 8765 and use its https address, or use the hosted site.</span>{% endif %}
+            {% if whatsapp.provider != 'twilio' %}<span class="hint">Meta also needs <code>WHATSAPP_VERIFY_TOKEN</code>{% if whatsapp.verify_set %} ✓{% endif %} and <code>WHATSAPP_APP_SECRET</code>{% if whatsapp.secret_set %} ✓{% endif %}.</span>{% endif %}
+          </li>
+        </ol>
+      </div>
+    </div>
+  </article>
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>Knowledge sources</h2></div>
+  <div class="grid-2">
+    <article class="card conn" id="sharepoint">
+      <div class="conn-head">
+        <span class="logo sharepoint" aria-hidden="true">S</span>
+        <div><h3>SharePoint</h3>{{ state(sharepoint.connected) }}</div>
+      </div>
+      {% if sharepoint.connected %}
+      <p class="account-line">{{ sharepoint.account or 'Microsoft 365 account' }}</p>
+      <p class="muted">Documents are read with your own access, read-only. Choose what to read on the Knowledge page.</p>
+      {% elif ms_ready %}
+      <p class="muted">Sign in with a Microsoft 365 work or school account to read documents from sites and libraries you can open. Read-only.</p>
+      {% else %}
+      <p class="muted">Uses the same Microsoft app registration as Outlook: set <code>MS_CLIENT_ID</code> and <code>MS_CLIENT_SECRET</code>.</p>
+      {% endif %}
+      <div class="button-row">
+        {% if sharepoint.connected %}<a class="button" href="{{ url_for('knowledge_page') }}#sharepoint">Choose documents</a>{% endif %}
+        {% if ms_ready %}<a class="button quiet" href="{{ url_for('microsoft_start', kind='sharepoint') }}">{% if sharepoint.connected %}Connect again{% else %}Connect SharePoint{% endif %}</a>{% endif %}
+        {% if sharepoint.connected %}
+        <form method="post" action="{{ url_for('disconnect', name='sharepoint') }}" data-confirm="Disconnect SharePoint? Documents already read stay in the knowledge base.">
+          <button class="quiet danger-text" type="submit">Disconnect</button>
+        </form>
+        {% endif %}
+      </div>
+    </article>
+
+    <article class="card conn">
+      <div class="conn-head">
+        <span class="logo files" aria-hidden="true">F</span>
+        <div><h3>Files and email history</h3>{{ state(true, 'Available') }}</div>
+      </div>
+      <p class="muted">Upload documents, write notes, or let it summarise your past email. No connection needed.</p>
+      <div class="button-row"><a class="button quiet" href="{{ url_for('knowledge_page') }}">Open the knowledge base</a></div>
+    </article>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head"><h2>System</h2></div>
+  <div class="grid-2">
+    <article class="card conn">
+      <div class="conn-head">
+        <span class="logo ai" aria-hidden="true">AI</span>
+        <div><h3>Writing model</h3>{{ state(ai.ready, 'Key set', 'Key missing') }}</div>
+      </div>
+      <p class="muted">{% if ai.ready %}Replies and summaries are written with <code>{{ ai.model }}</code>.{% else %}Set <code>OPENAI_API_KEY</code> in <code>.env</code>. Without it nothing can be drafted.{% endif %}</p>
+    </article>
+    <article class="card conn">
+      <div class="conn-head">
+        <span class="logo store" aria-hidden="true">DB</span>
+        <div><h3>Storage</h3>{{ state(storage.persistent, 'Saving', 'Not saving') }}</div>
+      </div>
+      {% if storage.persistent %}
+      <p class="muted">Knowledge, approvals and history are kept in: {{ storage.kind }}.</p>
+      {% else %}
+      <p class="banner warn">This hosted site has no storage connected, so the knowledge base, approvals, WhatsApp and the dashboard cannot keep anything between requests. Connect Vercel KV (Upstash) to the project.</p>
+      {% endif %}
+    </article>
+  </div>
+</section>
+{% endblock %}

@@ -1,4 +1,4 @@
-"""把 Gmail 授权存在 Vercel KV / Upstash，而不是写在会消失的磁盘上。"""
+"""Vercel KV / Upstash access. Used for everything that must outlive a hosted request."""
 
 import json
 import os
@@ -20,7 +20,7 @@ def load_token_raw() -> str | None:
     try:
         result = _command(["GET", _KEY])
     except Exception as exc:
-        raise ConfigError("读不到已保存的 Gmail 授权。请检查 Vercel KV 是否已连接。") from exc
+        raise ConfigError("Could not read the saved Gmail grant. Check that Vercel KV is connected.") from exc
     if not result:
         return None
     return str(result)
@@ -34,8 +34,14 @@ def kv_get(key: str):
 
 def kv_set(key: str, value: str) -> None:
     if not storage_ready():
-        raise ConfigError("没有可保存的存储。请先连接 Vercel KV。")
+        raise ConfigError("There is nowhere to save this. Connect Vercel KV first.")
     _command(["SET", key, value])
+
+
+def kv_delete(key: str) -> None:
+    if not storage_ready():
+        return
+    _command(["DEL", key])
 
 
 def save_token_raw(raw: str) -> bool:
@@ -44,8 +50,13 @@ def save_token_raw(raw: str) -> bool:
     try:
         _command(["SET", _KEY, raw])
     except Exception as exc:
-        raise ConfigError("Gmail 授权没有保存成功。请检查 Vercel KV 是否已连接。") from exc
+        raise ConfigError("The Gmail grant was not saved. Check that Vercel KV is connected.") from exc
     return True
+
+
+def clear_token() -> None:
+    if storage_ready():
+        _command(["DEL", _KEY])
 
 
 def _redis() -> tuple[str, str] | None:
@@ -74,7 +85,7 @@ def _command(command: list[str]):
         with urllib.request.urlopen(request, timeout=15) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.URLError as exc:
-        raise ConfigError("连不上 Vercel KV。") from exc
+        raise ConfigError("Could not reach Vercel KV.") from exc
     if not isinstance(payload, dict) or payload.get("error"):
-        raise ConfigError("Vercel KV 没有完成这次读写。")
+        raise ConfigError("Vercel KV did not complete this read or write.")
     return payload.get("result")

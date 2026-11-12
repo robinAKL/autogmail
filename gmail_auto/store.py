@@ -1,12 +1,13 @@
-import json
 import os
 import re
 from datetime import datetime
 
 from gmail_auto.errors import ConfigError
 from gmail_auto.paths import atomic_write, data_dir
+from gmail_auto.storage import LOCK, load_doc, save_doc
 
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_-]")
+_KEEP_RECORDS = 3000
 
 
 def now_text() -> str:
@@ -26,33 +27,66 @@ def is_live() -> bool:
     forced = live_from_env()
     if forced is not None:
         return forced
-    data = _read(data_dir(create=False) / "state.json", {"live_send": False})
+    data = load_doc("state", {"live_send": False})
     return bool(isinstance(data, dict) and data.get("live_send"))
 
 
 def set_live(live: bool) -> None:
-    _write(data_dir() / "state.json", {"live_send": bool(live)})
+    with LOCK:
+        data = load_doc("state", {})
+        if not isinstance(data, dict):
+            data = {}
+        data["live_send"] = bool(live)
+        save_doc("state", data)
+
+
+def get_state(key: str, default=None):
+    data = load_doc("state", {})
+    if not isinstance(data, dict):
+        return default
+    return data.get(key, default)
+
+
+def set_state(key: str, value) -> None:
+    with LOCK:
+        data = load_doc("state", {})
+        if not isinstance(data, dict):
+            data = {}
+        data[key] = value
+        save_doc("state", data)
 
 
 def load_processed() -> dict:
-    data = _read(data_dir(create=False) / "processed.json", {})
+    data = load_doc("processed", {})
     if not isinstance(data, dict):
-        raise ConfigError("data/processed.json 格式不对，程序没有改它。")
+        raise ConfigError("The processed-mail record has the wrong format. It was left unchanged.")
     return data
 
 
-def get_processed(message_id: str) -> dict | None:
-    item = load_processed().get(message_id)
+def get_processed(key: str) -> dict | None:
+    item = load_processed().get(key)
     return item if isinstance(item, dict) else None
 
 
 def mark_processed(record: dict) -> None:
-    path = data_dir() / "processed.json"
-    data = _read(path, {})
-    if not isinstance(data, dict):
-        raise ConfigError("data/processed.json 格式不对，程序没有改它。")
-    data[record["id"]] = record
-    _write(path, data)
+    with LOCK:
+        data = load_processed()
+        data[record["id"]] = record
+        if len(data) > _KEEP_RECORDS:
+            ordered = sorted(data.items(), key=lambda pair: str(pair[1].get("processed_at", "")) if isinstance(pair[1], dict) else "")
+            data = dict(ordered[-_KEEP_RECORDS:])
+        save_doc("processed", data)
+
+
+def update_processed(key: str, changes: dict) -> dict | None:
+    with LOCK:
+        data = load_processed()
+        record = data.get(key)
+        if not isinstance(record, dict):
+            return None
+        record.update(changes)
+        save_doc("processed", data)
+        return record
 
 
 def list_processed(limit: int = 25) -> list[dict]:
@@ -61,74 +95,58 @@ def list_processed(limit: int = 25) -> list[dict]:
     return rows[:limit]
 
 
-def bump_failure(message_id: str) -> int:
-    path = data_dir() / "failures.json"
-    data = _read(path, {})
-    if not isinstance(data, dict):
-        data = {}
-    count = int(data.get(message_id, 0) or 0) + 1
-    data[message_id] = count
-    _write(path, data)
-    return count
+def bump_failure(key: str) -> int:
+    with LOCK:
+        data = load_doc("failures", {})
+        if not isinstance(data, dict):
+            data = {}
+        count = int(data.get(key, 0) or 0) + 1
+        data[key] = count
+        save_doc("failures", data)
+        return count
 
 
-def clear_failure(message_id: str) -> None:
-    path = data_dir(create=False) / "failures.json"
-    if not path.exists():
-        return
-    data = _read(path, {})
-    if isinstance(data, dict) and message_id in data:
-        data.pop(message_id, None)
-        _write(path, data)
+def clear_failure(key: str) -> None:
+    with LOCK:
+        data = load_doc("failures", {})
+        if isinstance(data, dict) and key in data:
+            data.pop(key, None)
+            save_doc("failures", data)
 
 
 def load_last_run() -> dict | None:
-    data = _read(data_dir(create=False) / "last_run.json", None)
+    data = load_doc("last_run", None)
     return data if isinstance(data, dict) else None
 
 
 def save_last_run(payload: dict) -> None:
-    _write(data_dir() / "last_run.json", payload)
+    save_doc("last_run", payload)
 
 
-def write_draft(mail, reply: str, language: str) -> str:
-    name = safe_id(mail.id) + ".txt"
-    path = data_dir() / "outbox" / name
-    who = mail.from_name or mail.from_email or "未知发件人"
+def write_draft(mail, reply: str, note: str = "Draft only. Nothing was sent.") -> str:
+    """Keep a readable copy of a draft on this computer. Hosted runs have no disk, so they skip it."""
+    if os.environ.get("VERCEL"):
+        return ""
+    name = safe_id(mail.key) + ".txt"
+    who = mail.from_name or mail.from_email or "Unknown sender"
     if mail.from_name and mail.from_email:
         who = f"{mail.from_name} <{mail.from_email}>"
     text = (
-        f"发件人：{who}\n"
-        f"主题：{mail.subject or '（无主题）'}\n"
-        f"时间：{mail.date}\n"
-        "语言：中文和英文\n"
-        "说明：演练稿，没有发送。\n\n"
+        f"From: {who}\n"
+        f"Subject: {mail.subject or '(no subject)'}\n"
+        f"Received: {mail.date}\n"
+        f"Note: {note}\n\n"
         f"{reply}\n"
     )
-    atomic_write(path, text)
+    try:
+        atomic_write(data_dir() / "outbox" / name, text)
+    except OSError as exc:
+        raise ConfigError("Could not write local records right now.") from exc
     return f"data/outbox/{name}"
 
 
 def safe_id(value: str) -> str:
     cleaned = _SAFE_ID.sub("_", value or "")
     if not cleaned:
-        raise ConfigError("邮件编号无效。")
-    return cleaned
-
-
-def _read(path, default):
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ConfigError(f"{path.name} 损坏了，程序没有改它。") from exc
-
-
-def _write(path, data) -> None:
-    try:
-        atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
-    except OSError:
-        if os.environ.get("VERCEL"):
-            return
-        raise ConfigError("暂时写不了本机记录。")
+        raise ConfigError("Invalid message id.")
+    return cleaned[-120:]

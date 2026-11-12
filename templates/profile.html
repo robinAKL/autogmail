@@ -1,53 +1,113 @@
 {% extends "base.html" %}
-{% block title %}个人资料{% endblock %}
+{% block title %}Settings{% endblock %}
 {% block body %}
-<header class="top">
+<header class="page-head">
   <div>
-    <p class="eyebrow">只使用写明的事实</p>
-    <h1>个人资料</h1>
+    <h1>Settings</h1>
+    <p class="sub">How replies are sent, how they sound, and who they speak for.</p>
   </div>
-  <a class="button quiet" href="{{ url_for('home') }}">返回工作台</a>
 </header>
 
 {% if error %}
 <p class="banner danger">{{ error }}</p>
 {% endif %}
-{% with messages = get_flashed_messages() %}
-  {% for message in messages %}
-  <p class="banner">{{ message }}</p>
-  {% endfor %}
-{% endwith %}
 {% if placeholder %}
-<p class="banner warn">现在还是占位示例。改成你自己的事实之前，不能开启真实发送。</p>
+<p class="banner warn">The profile is still the placeholder example. Real sending stays off until you replace it with your own facts.</p>
 {% endif %}
 
-<form method="post" action="{{ url_for('profile_save') }}" class="profile module">
-  <label>
-    名字
-    <input name="name" maxlength="80" required value="{{ profile.name }}">
-  </label>
-  <label>
-    身份
-    <input name="role" maxlength="120" required value="{{ profile.role }}">
-  </label>
-  <label>
-    自我介绍
-    <textarea name="introduction" maxlength="4000" required rows="6">{{ profile.introduction }}</textarea>
-  </label>
-  <label>
-    语气
-    <textarea name="tone" maxlength="1000" required rows="3">{{ profile.tone }}</textarea>
-  </label>
-  <label>
-    不能承诺的事
-    <textarea name="cannot_promise" required rows="5">{{ profile.cannot_promise_text }}</textarea>
-    <span class="hint">一行一条。没写在资料里的经历、电话、地址和承诺，回复里不会编。</span>
-  </label>
-  <label>
-    本人会说的话
-    <textarea name="sample_phrases" required rows="5">{{ profile.sample_phrases_text }}</textarea>
-    <span class="hint">一行一句。用来靠近你的口气，不会被生硬塞进每封信。</span>
-  </label>
-  <button type="submit">保存个人资料</button>
-</form>
+<section class="card" id="mode">
+  <h2 class="card-title">Sending mode</h2>
+  <p class="muted">Choose how much happens without you.</p>
+  {% if mode_locked %}
+  <p class="banner warn">Sending on or off is fixed by the <code>LIVE_SEND</code> environment variable on the server, so only the asking behaviour can change here.</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('set_mode') }}" class="stack" data-mode-form>
+    <div class="options">
+      {% for key, pair in modes.items() %}
+      <label class="option {% if mode == key %}on{% endif %}">
+        <input type="radio" name="mode" value="{{ key }}" {% if mode == key %}checked{% endif %} data-sends="{{ '0' if key == 'draft' else '1' }}">
+        <span class="option-body">
+          <strong>{{ pair[0] }}</strong>
+          <span>{{ pair[1] }}</span>
+        </span>
+      </label>
+      {% endfor %}
+    </div>
+    {% if mode == 'draft' %}
+    <label class="check" data-confirm-row>
+      <input type="checkbox" name="confirm" value="1">
+      <span>I understand that replies will really be sent from my mailbox.</span>
+    </label>
+    {% endif %}
+    <div class="button-row">
+      <button type="submit">Save mode</button>
+      {% if not whatsapp_ready %}<span class="hint">Approvals show on the Approvals page. <a href="{{ url_for('connections_page') }}#whatsapp">Connect WhatsApp</a> to be asked on your phone too.</span>{% endif %}
+    </div>
+  </form>
+</section>
+
+<section class="card" id="replies">
+  <h2 class="card-title">Replies and notifications</h2>
+  <form method="post" action="{{ url_for('settings_save') }}" class="form-grid">
+    <label>
+      Reply language
+      <select name="reply_language">
+        {% for key, label in languages.items() %}
+        <option value="{{ key }}" {% if settings.reply_language == key %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Morning summary hour
+      <select name="digest_hour">
+        {% for hour in range(5, 13) %}
+        <option value="{{ hour }}" {% if settings.digest_hour == hour %}selected{% endif %}>{{ '%02d'|format(hour) }}:00</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="check span-2">
+      <input type="checkbox" name="notify_auto_replies" value="1" {% if settings.notify_auto_replies %}checked{% endif %}>
+      <span>Tell me on WhatsApp when a reply was sent automatically</span>
+    </label>
+    <label class="check span-2">
+      <input type="checkbox" name="daily_digest" value="1" {% if settings.daily_digest %}checked{% endif %}>
+      <span>Send me yesterday's numbers on WhatsApp every morning</span>
+    </label>
+    <div class="span-2"><button type="submit">Save</button></div>
+  </form>
+</section>
+
+<section class="card" id="profile">
+  <h2 class="card-title">Profile</h2>
+  <p class="muted">Who the replies speak for. Together with the <a href="{{ url_for('knowledge_page') }}">knowledge base</a>, this is the only source of facts.</p>
+  <form method="post" action="{{ url_for('profile_save') }}" class="form-grid">
+    <label>
+      Name
+      <input name="name" maxlength="80" required value="{{ profile.name }}">
+    </label>
+    <label>
+      Role
+      <input name="role" maxlength="120" required value="{{ profile.role }}">
+    </label>
+    <label class="span-2">
+      Introduction
+      <textarea name="introduction" maxlength="4000" required rows="5">{{ profile.introduction }}</textarea>
+    </label>
+    <label class="span-2">
+      Tone
+      <textarea name="tone" maxlength="1000" required rows="2">{{ profile.tone }}</textarea>
+    </label>
+    <label>
+      Things I cannot promise
+      <textarea name="cannot_promise" required rows="6">{{ profile.cannot_promise_text }}</textarea>
+      <span class="hint">One per line. Experience, phone numbers, addresses and promises that are not written down are never made up.</span>
+    </label>
+    <label>
+      Phrases I would say
+      <textarea name="sample_phrases" required rows="6">{{ profile.sample_phrases_text }}</textarea>
+      <span class="hint">One per line. Used to sound like you, not pasted into every reply.</span>
+    </label>
+    <div class="span-2"><button type="submit">Save profile</button></div>
+  </form>
+</section>
 {% endblock %}

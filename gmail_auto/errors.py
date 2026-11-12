@@ -1,10 +1,14 @@
 class ConfigError(Exception):
-    """配置、授权或本机记录有问题。消息给界面和终端看，用中文。"""
+    """Setup, sign-in or saved records are wrong. The message is shown to the user."""
 
 
 class ProfileError(ConfigError):
-    """个人资料不符合要求。"""
+    """The profile does not meet the requirements."""
 
 
 class ReplyError(ConfigError):
-    """这封信这一轮没有生成可发送的回复。"""
+    """No sendable reply was produced for this letter in this round."""
+
+
+class NotConnected(ConfigError):
+    """This mailbox or service has not been connected yet. Not an error worth alarming the user about."""

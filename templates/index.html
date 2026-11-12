@@ -1,154 +1,156 @@
 {% extends "base.html" %}
-{% block title %}工作台{% endblock %}
+{% block title %}Inbox{% endblock %}
 {% block body %}
-<header class="top">
+<header class="page-head">
   <div>
-    <p class="eyebrow">{% if hosted %}线上运行{% else %}只在本机打开{% endif %}</p>
-    <h1>邮件自动回复</h1>
+    <h1>Inbox</h1>
+    <p class="sub">
+      {% if accounts %}
+        {% for item in accounts %}<span class="chip {{ item.provider }}">{{ item.label }} · {{ item.email }}</span>{% endfor %}
+      {% else %}
+        No mailbox connected yet
+      {% endif %}
+    </p>
   </div>
-  <div class="top-actions">
-    {% if user %}
-    <span class="account">{{ user }}</span>
-    {% endif %}
-    <a class="button quiet" href="{{ url_for('profile_page') }}">个人资料</a>
-    {% if user %}
-    <a class="button quiet" href="{{ url_for('logout') }}">退出</a>
-    {% endif %}
+  <div class="head-actions">
+    <form method="post" action="{{ url_for('run_now') }}" data-busy="Checking mail…" {% if live %}data-confirm="Sending is on. This round will really answer unread mail that has not been handled yet."{% endif %}>
+      <button type="submit" {% if not connected %}disabled{% endif %}>Check mail now</button>
+    </form>
   </div>
 </header>
 
 {% if placeholder %}
-<p class="banner warn">个人资料还是占位示例。可以先演练，但不能开启真实发送。</p>
+<p class="banner warn">Your profile is still the placeholder example. Drafts work, but real sending stays off until you <a href="{{ url_for('profile_page') }}#profile">fill it in</a>.</p>
 {% endif %}
-{% with messages = get_flashed_messages() %}
-  {% for message in messages %}
-  <p class="banner">{{ message }}</p>
-  {% endfor %}
-{% endwith %}
 {% for message in errors %}
 <p class="banner danger">{{ message }}</p>
 {% endfor %}
-
-<div class="modules">
-  <section class="module">
-    <div class="module-body">
-      <p class="kicker">运行</p>
-      {% if live %}
-      <h2>真实发送</h2>
-      <p class="hint">新的未读信会按个人资料回复，并标成已读。</p>
-      {% else %}
-      <h2>只演练</h2>
-      <p class="hint">{% if hosted %}现在不会发信。授权 Gmail 之后，下面才会出现邮件。{% else %}回复写在本机，不发信，也不把原信标成已读。{% endif %}</p>
-      {% endif %}
-    </div>
-    <div class="module-actions">
-      <form method="post" action="{{ url_for('run_now') }}" {% if live %}data-confirm="当前是真实发送。这一轮会真正回复还没处理过的未读信，并把原信标成已读。"{% endif %}>
-        <button type="submit">跑一轮</button>
-      </form>
-    </div>
-  </section>
-
-  <section class="module">
-    <div class="module-body">
-      <p class="kicker">Gmail 授权</p>
-      {% if account or gmail_email %}
-      <h2>已授权</h2>
-      <p class="account">{{ account or gmail_email }}</p>
-      <p class="hint">{% if gmail_when %}上次授权 {{ gmail_when }}。{% endif %}久未登录或授权过期时，点下面重新同意。</p>
-      {% else %}
-      <h2>尚未授权</h2>
-      <p class="hint">授权后读取收件箱，并按小时自动检查。久未登录时，也可以在这里手工授权。</p>
-      {% endif %}
-      {% if auth_error %}
-      <p class="banner danger">{{ auth_error }}</p>
-      {% endif %}
-      {% if gmail_stale %}
-      <p class="banner warn">已经较长时间没有授权。如果登不上，或一直看不到邮件，请手工重新授权。</p>
-      {% endif %}
-    </div>
-    <div class="module-actions">
-      <a class="button" href="{{ url_for('oauth_start') }}">{% if account or gmail_email %}重新授权{% else %}授权 Gmail{% endif %}</a>
-    </div>
-  </section>
-
-  <section class="module">
-    <div class="module-body">
-      <p class="kicker">最近一轮</p>
-      {% if last_run and last_run.summary %}
-      <h2>已有记录</h2>
-      <p>{{ last_run.summary }}</p>
-      {% if last_run.error %}
-      <p class="banner danger">{{ last_run.error }}</p>
-      {% endif %}
-      {% if last_run.lines %}
-      <ul class="lines">
-        {% for line in last_run.lines %}
-        <li>{{ line }}</li>
-        {% endfor %}
-      </ul>
-      {% endif %}
-      {% else %}
-      <h2>还没跑过</h2>
-      <p class="hint">{% if hosted %}大约每小时自动检查一次。同一封信只处理一次。{% else %}程序开着时大约每小时检查一次。同一封信只处理一次。{% endif %}</p>
-      {% endif %}
-    </div>
-    <div class="module-actions">
-      <p class="status-line">{% if hosted %}每小时自动检查{% else %}程序开着时检查{% endif %}</p>
-    </div>
-  </section>
-</div>
-
-{% if live %}
-<form class="live-bar" method="post" action="{{ url_for('toggle') }}" data-confirm="将关闭真实发送。这一轮只把回复写在本机，不会发信。">
-  <p class="hint">真实发送已开启。新的未读信会按个人资料回复。</p>
-  <button class="quiet" type="submit">关闭真实发送</button>
-</form>
-{% else %}
-<form class="live-bar" method="post" action="{{ url_for('toggle') }}" data-confirm="确定开启真实发送？这一轮会回复还没处理过的未读信，并把原信标成已读。已经处理过的信不会再发。">
-  <label class="check">
-    <input type="checkbox" name="confirm" value="1" required>
-    <span>我确认这一轮会真实发信</span>
-  </label>
-  <button class="danger" type="submit">开启真实发送</button>
-</form>
+{% if auth_error %}
+<p class="banner danger">{{ auth_error }}</p>
 {% endif %}
 
-<section class="module inbox">
-  <div class="inbox-head">
-    <p class="kicker">收件箱</p>
-    <h2>最近的邮件</h2>
-    <ul class="legend">
-      <li><span class="tag sent">已自动回复</span></li>
-      <li><span class="tag drafted">演练已保存</span></li>
-      <li><span class="tag skipped">已跳过 / 不会自动回复</span></li>
-      <li><span class="tag pending">未处理</span></li>
-      <li><span class="tag read">已读，未曾自动回复</span></li>
-    </ul>
+<section class="status-strip">
+  <div class="status-item">
+    <span class="label">Mode</span>
+    <strong>{{ nav_mode_label }}</strong>
+    <a href="{{ url_for('profile_page') }}#mode">Change</a>
   </div>
-  {% if rows %}
-    {% for row in rows %}
-    <article class="mail">
-      <div class="mail-head">
-        <div>
-          <h3>{{ row.subject }}</h3>
-          <p class="meta">{{ row.who }} · {{ row.date }}</p>
-        </div>
-        <span class="tag {{ row.kind }}">{{ row.status }}</span>
-      </div>
-      <pre>{{ row.body }}</pre>
-      {% if row.reply %}
-      <div class="reply">
-        <p class="meta">生成的回复</p>
-        <pre>{{ row.reply }}</pre>
-        {% if row.outbox %}
-        <p class="hint">{{ row.outbox }}</p>
-        {% endif %}
-      </div>
-      {% endif %}
-    </article>
-    {% endfor %}
-  {% else %}
-  <p class="empty">这里还没有邮件。点上面的「授权 Gmail」，同意一次后刷新即可。</p>
-  {% endif %}
+  <div class="status-item grow">
+    <span class="label">Last check</span>
+    {% if last_run and last_run.summary %}
+    <span>{{ last_run.summary }}</span>
+    {% if last_run.lines %}
+    <details class="inline-details">
+      <summary>Details</summary>
+      <ul class="lines">{% for line in last_run.lines %}<li>{{ line }}</li>{% endfor %}</ul>
+    </details>
+    {% endif %}
+    {% else %}
+    <span class="muted">Not run yet</span>
+    {% endif %}
+    <span class="hint schedule">Mail is checked {{ interval }}.</span>
+  </div>
 </section>
+{% if last_run and last_run.error %}
+<p class="banner danger">{{ last_run.error }}</p>
+{% endif %}
+
+{% if not connected and not rows %}
+<section class="card empty-state">
+  <h2>Connect a mailbox to begin</h2>
+  <p>Mail Autopilot reads your unread mail, drafts replies from your profile and knowledge base, and asks you on WhatsApp when a reply needs your OK.</p>
+  <a class="button" href="{{ url_for('connections_page') }}">Open Connections</a>
+</section>
+{% else %}
+{% if offline %}
+<p class="banner warn">The mailbox could not be reached, so this shows saved records only. Letter text is not available.</p>
+{% endif %}
+<nav class="tabs-row" aria-label="Filter">
+  {% for name, label in filters.items() %}
+  <a class="tab {% if show == name %}on{% endif %}" href="{{ url_for('home', show=name) }}">{{ label }}<span>{{ counts[name] }}</span></a>
+  {% endfor %}
+</nav>
+
+<div class="split">
+  <section class="list" aria-label="Emails">
+    {% for row in rows %}
+    <a class="row {% if opened and opened.key == row.key %}on{% endif %} {% if row.unread %}unread{% endif %}" href="{{ url_for('home', show=show, open=row.key) }}" {% if opened and opened.key == row.key %}aria-current="true" data-current{% endif %}>
+      <span class="row-top">
+        <span class="row-who">{{ row.who }}</span>
+        <span class="row-date">{{ row.short_date }}</span>
+      </span>
+      <span class="row-subject">{{ row.subject }}</span>
+      <span class="row-snippet">{{ row.snippet }}</span>
+      <span class="row-foot">
+        <span class="tag {{ row.kind }}">{{ row.status }}</span>
+        {% if accounts|length > 1 %}<span class="chip tiny {{ row.provider }}">{{ row.provider_label }}</span>{% endif %}
+      </span>
+    </a>
+    {% else %}
+    <p class="empty">Nothing here.</p>
+    {% endfor %}
+  </section>
+
+  <section class="reader" aria-label="Selected email">
+    {% if opened %}
+    <header class="reader-head">
+      <div class="reader-title">
+        <h2>{{ opened.subject }}</h2>
+        <span class="tag {{ opened.kind }}">{{ opened.status }}</span>
+      </div>
+      <p class="meta">
+        <strong>{{ opened.who }}</strong>{% if opened.email and opened.email != opened.who %} &lt;{{ opened.email }}&gt;{% endif %}
+        <span class="dot">·</span> {{ opened.date }}
+        <span class="dot">·</span> <span class="chip tiny {{ opened.provider }}">{{ opened.provider_label }}</span>
+      </p>
+      {% if opened.summary %}
+      <p class="ai-note"><b>What they want</b> {{ opened.summary }}</p>
+      {% endif %}
+    </header>
+
+    {% if opened.has_body %}
+    <iframe class="mail-frame" title="Email content" src="{{ url_for('mail_body', key=opened.key) }}"
+            sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" data-autosize></iframe>
+    {% else %}
+    <p class="empty">The original letter is not available offline.</p>
+    {% endif %}
+
+    {% if waiting_item %}
+    <div class="reply-box waiting">
+      <div class="reply-head">
+        <h3>Reply waiting for your OK</h3>
+        {% if waiting_item.reason %}<p class="hint">Why it is asking: {{ waiting_item.reason }}</p>{% endif %}
+      </div>
+      <form method="post" action="{{ url_for('approvals_act', item_id=waiting_item.id, action='send') }}" data-busy="Sending…" data-confirm="Send this reply now?">
+        <input type="hidden" name="next" value="{{ url_for('home', show=show, open=opened.key) }}">
+        <textarea name="draft" rows="9" maxlength="5000" required>{{ waiting_item.draft }}</textarea>
+        {% if waiting_item.sources %}
+        <p class="sources">Written using {% for title in waiting_item.sources %}<span class="chip tiny">{{ title }}</span>{% endfor %}</p>
+        {% endif %}
+        <div class="button-row">
+          <button type="submit">Send reply</button>
+          <button class="quiet" type="submit" formaction="{{ url_for('approvals_act', item_id=waiting_item.id, action='save') }}" data-skip-confirm>Save changes</button>
+          <button class="quiet danger-text" type="submit" formaction="{{ url_for('approvals_act', item_id=waiting_item.id, action='reject') }}" data-skip-confirm formnovalidate>Don't send</button>
+        </div>
+      </form>
+    </div>
+    {% elif opened.reply %}
+    <div class="reply-box {{ opened.kind }}">
+      <div class="reply-head">
+        <h3>{% if opened.kind == 'sent' %}Reply that was sent{% else %}Drafted reply{% endif %}</h3>
+        {% if opened.reason %}<p class="hint">{{ opened.reason }}</p>{% endif %}
+      </div>
+      <div class="reply-text">{{ opened.reply }}</div>
+      {% if opened.sources %}
+      <p class="sources">Written using {% for title in opened.sources %}<span class="chip tiny">{{ title }}</span>{% endfor %}</p>
+      {% endif %}
+      {% if opened.outbox %}<p class="hint">Saved as {{ opened.outbox }}</p>{% endif %}
+    </div>
+    {% endif %}
+    {% else %}
+    <p class="empty">Select an email to read it.</p>
+    {% endif %}
+  </section>
+</div>
+{% endif %}
 {% endblock %}

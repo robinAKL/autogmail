@@ -1,4 +1,4 @@
-"""把登录验证码发到用户填写的邮箱。"""
+"""Send the sign-in code to the address the user typed."""
 
 import os
 import smtplib
@@ -8,14 +8,14 @@ from gmail_auto.errors import ConfigError
 
 
 def deliver_code(to: str, code: str) -> None:
-    subject = "邮件自动回复验证码"
-    body = f"验证码：{code}\n\n10 分钟内有效。如果不是你本人操作，忽略这封邮件。"
+    subject = "Your Mail Autopilot sign-in code"
+    body = f"Your sign-in code: {code}\n\nIt works for 10 minutes. If you did not ask for it, ignore this email."
     if _smtp_ready():
         _send_smtp(to, subject, body)
         return
     if _send_via_gmail(to, subject, body):
         return
-    raise ConfigError("验证码发不出去。请在 Vercel 设置 SMTP_USER 和 SMTP_PASSWORD。")
+    raise ConfigError("The code could not be sent. Set SMTP_USER and SMTP_PASSWORD.")
 
 
 def _smtp_ready() -> bool:
@@ -39,7 +39,7 @@ def _send_smtp(to: str, subject: str, body: str) -> None:
             smtp.login(user, password)
             smtp.send_message(message)
     except (OSError, smtplib.SMTPException) as exc:
-        raise ConfigError("验证码没有发出去。请检查 SMTP 账号和密码。") from exc
+        raise ConfigError("The code was not sent. Check the SMTP account and password.") from exc
 
 
 def _send_via_gmail(to: str, subject: str, body: str) -> bool:

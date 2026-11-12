@@ -1,0 +1,177 @@
+{% extends "base.html" %}
+{% block title %}Knowledge{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <h1>Knowledge base</h1>
+    <p class="sub">Every reply is written from your profile plus what is kept here. Nothing outside it is used as fact.</p>
+  </div>
+  <div class="head-stats">
+    <span><strong>{{ overview.documents }}</strong> document{{ '' if overview.documents == 1 else 's' }}</span>
+    <span><strong>{{ overview.rules }}</strong> rule{{ '' if overview.rules == 1 else 's' }}</span>
+  </div>
+</header>
+
+{% if not has_key %}
+<p class="banner warn">OPENAI_API_KEY is not set, so summaries and the understanding cannot be written yet. Documents can still be added.</p>
+{% endif %}
+
+<div class="grid-2 wide-left">
+  <section class="card" id="brief">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">What I understand about you</h2>
+        <p class="muted">Read before every reply. {% if brief.updated_at %}Updated {{ brief.updated_at }}.{% endif %}
+          {% if brief.stale and brief.text %}<span class="tag drafted">Out of date</span>{% endif %}</p>
+      </div>
+      <div class="button-row">
+        {% if not editing and brief.text %}<a class="button quiet small" href="{{ url_for('knowledge_page', edit='brief') }}#brief">Edit</a>{% endif %}
+        <form method="post" action="{{ url_for('knowledge_brief') }}" data-busy="Reading everything…">
+          <button class="{% if brief.text and not brief.stale %}quiet {% endif %}small" type="submit" name="rebuild" value="1" {% if not has_key %}disabled{% endif %}>{% if brief.text %}Rewrite from sources{% else %}Write it now{% endif %}</button>
+        </form>
+      </div>
+    </div>
+    {% if editing %}
+    <form method="post" action="{{ url_for('knowledge_brief') }}" class="stack">
+      <textarea name="text" rows="20" maxlength="12000">{{ brief.text }}</textarea>
+      <div class="button-row">
+        <button type="submit">Save edits</button>
+        <a class="button quiet" href="{{ url_for('knowledge_page') }}#brief">Cancel</a>
+      </div>
+    </form>
+    {% elif brief.text %}
+    <div class="prose">{{ brief.text|md }}</div>
+    {% else %}
+    <p class="empty">Nothing written yet. Add documents or rules, then choose “Write it now”. It is also written automatically before the next round of mail.</p>
+    {% endif %}
+  </section>
+
+  <section class="card" id="rules">
+    <h2 class="card-title">Your rules</h2>
+    <p class="muted">One per line. These always win over everything else.</p>
+    <form method="post" action="{{ url_for('knowledge_rules') }}" class="stack">
+      <textarea name="rules" rows="11" placeholder="Always ask me before agreeing to a meeting or a price.&#10;Never reply to recruiters.&#10;Sign off with “Kind regards” and my first name.&#10;Emails from school are important: always ask me first.">{{ rules_text }}</textarea>
+      <button type="submit">Save rules</button>
+    </form>
+    <form method="get" action="{{ url_for('knowledge_page') }}#search" class="stack search-box" id="search">
+      <label for="q">Test what a reply would find</label>
+      <div class="inline-form">
+        <input id="q" name="q" value="{{ query }}" placeholder="e.g. invoice for the October workshop">
+        <button class="quiet" type="submit">Search</button>
+      </div>
+      {% if query %}
+        {% for hit in hits %}
+        <div class="hit"><p class="hit-title">{{ hit.title }}</p><p>{{ hit.text[:320] }}{% if hit.text|length > 320 %}…{% endif %}</p></div>
+        {% else %}
+        <p class="empty">Nothing in the knowledge base matches that.</p>
+        {% endfor %}
+      {% endif %}
+    </form>
+  </section>
+</div>
+
+<section class="section">
+  <div class="section-head"><h2>Add knowledge</h2></div>
+  <div class="grid-4">
+    <form class="card source" method="post" action="{{ url_for('knowledge_upload') }}" enctype="multipart/form-data" data-busy="Reading files…">
+      <h3>Upload files</h3>
+      <p class="muted">{{ file_types }}. Up to {{ upload_limit }} at a time.</p>
+      <label class="drop" data-drop>
+        <input type="file" name="files" multiple required>
+        <span data-drop-label>Choose files or drop them here</span>
+      </label>
+      <button type="submit">Add to knowledge</button>
+    </form>
+
+    <form class="card source" method="post" action="{{ url_for('knowledge_learn') }}" data-busy="Reading your email…">
+      <h3>Learn from past email</h3>
+      <p class="muted">Reads your recent sent and received mail and keeps a summary: who you deal with, ongoing topics, facts you stated, and how you write. Letters with passwords or codes are left out.</p>
+      {% if mailboxes %}
+      <div class="stack-sm">
+        {% for item in mailboxes %}
+        <button class="{% if not loop.first %}quiet{% endif %}" type="submit" name="provider" value="{{ item.provider }}" {% if not has_key %}disabled{% endif %}>Summarise {{ item.label }} history</button>
+        {% endfor %}
+      </div>
+      {% else %}
+      <a class="button quiet" href="{{ url_for('connections_page') }}">Connect a mailbox first</a>
+      {% endif %}
+    </form>
+
+    <form class="card source" method="post" action="{{ url_for('knowledge_sharepoint') }}" id="sharepoint" data-busy="Reading SharePoint…">
+      <h3>SharePoint</h3>
+      {% if sharepoint.connected %}
+      <p class="muted">Connected{% if sharepoint.account %} as {{ sharepoint.account }}{% endif %}. Paste a link to a site, a folder or a file.</p>
+      <input name="url" type="url" placeholder="https://contoso.sharepoint.com/sites/Team/Shared Documents/…" required>
+      <button type="submit">Read documents</button>
+      {% else %}
+      <p class="muted">Connect SharePoint to read documents from a site, a library folder or a single file.</p>
+      <a class="button quiet" href="{{ url_for('connections_page') }}#sharepoint">Connect SharePoint</a>
+      {% endif %}
+    </form>
+
+    <form class="card source" method="post" action="{{ url_for('knowledge_note') }}">
+      <h3>Write a note</h3>
+      <p class="muted">Facts you want replies to use: prices, availability, policies, FAQs.</p>
+      <input name="title" maxlength="160" placeholder="Title" required>
+      <textarea name="text" rows="4" placeholder="What should be known" required></textarea>
+      <button type="submit">Save note</button>
+    </form>
+  </div>
+
+  {% if sharepoint_sources %}
+  <div class="card">
+    <h3 class="card-title">SharePoint sources</h3>
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th>Source</th><th>Documents</th><th>Last read</th><th></th></tr></thead>
+        <tbody>
+          {% for item in sharepoint_sources %}
+          <tr>
+            <td><a href="{{ item.url }}" target="_blank" rel="noopener noreferrer">{{ item.title }}</a></td>
+            <td>{{ item.files }}</td>
+            <td class="nowrap">{{ item.synced_at }}</td>
+            <td class="actions">
+              <form method="post" action="{{ url_for('knowledge_sharepoint') }}" data-busy="Reading…"><input type="hidden" name="url" value="{{ item.url }}"><button class="quiet small" type="submit">Read again</button></form>
+              <form method="post" action="{{ url_for('knowledge_sharepoint') }}" data-confirm="Remove this source and the documents read from it?"><input type="hidden" name="url" value="{{ item.url }}"><button class="quiet small danger-text" type="submit" name="remove" value="1">Remove</button></form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+</section>
+
+<section class="section" id="documents">
+  <div class="section-head">
+    <h2>Documents</h2>
+    <p class="muted">{{ overview.documents }} kept · {{ '{:,}'.format(overview.characters) }} characters</p>
+  </div>
+  {% if docs %}
+  <div class="doc-list">
+    {% for doc in docs %}
+    <article class="card doc">
+      <div class="doc-head">
+        <div>
+          <h3><a href="{{ url_for('knowledge_doc', doc_id=doc.id) }}">{{ doc.title }}</a></h3>
+          <p class="meta"><span class="chip tiny src-{{ doc.source }}">{{ sources.get(doc.source, doc.source) }}</span>
+            <span class="dot">·</span> added {{ doc.added_at }}
+            <span class="dot">·</span> {{ '{:,}'.format(doc.chars) }} characters{% if doc.clipped %} (cut to fit){% endif %}</p>
+        </div>
+        <form method="post" action="{{ url_for('knowledge_delete', doc_id=doc.id) }}" data-confirm="Remove “{{ doc.title }}” from the knowledge base?">
+          <button class="quiet small danger-text" type="submit">Remove</button>
+        </form>
+      </div>
+      {% if doc.summary %}<div class="prose small">{{ doc.summary|md }}</div>{% endif %}
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="card empty-state">
+    <h2>No documents yet</h2>
+    <p>Upload files, summarise your email history, or link SharePoint above. Replies will then use those facts instead of guessing.</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

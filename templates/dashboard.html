@@ -1,0 +1,236 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% macro delta(now, before, good_up=none) %}
+  {%- set diff = now - before -%}
+  {%- if diff == 0 -%}<span class="delta flat">same as the day before</span>
+  {%- else -%}<span class="delta {% if good_up is none %}flat{% elif (diff > 0) == good_up %}up{% else %}down{% endif %}">{{ '▲' if diff > 0 else '▼' }} {{ diff|abs }} vs the day before</span>
+  {%- endif -%}
+{% endmacro %}
+{% macro bars(items, unit='') %}
+  {% set peak = items|map(attribute='count')|max if items else 1 %}
+  <ul class="hbars">
+    {% for item in items %}
+    <li>
+      <span class="hbar-label" title="{{ item.label }}">{{ item.label }}</span>
+      <span class="hbar-track"><i style="width: {{ (100 * item.count / peak)|round(1) }}%"></i></span>
+      <span class="hbar-value">{{ item.count }}{{ unit }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+{% endmacro %}
+{% block body %}
+{% set y = data.yesterday %}
+{% set p = data.previous %}
+{% set w = data.window %}
+<header class="page-head">
+  <div>
+    <h1>Dashboard</h1>
+    <p class="sub">How your mail was handled yesterday, and over time.</p>
+  </div>
+</header>
+
+{% if not data.has_history %}
+<section class="card empty-state">
+  <h2>No history yet</h2>
+  <p>Numbers appear here after the first round of mail has been checked.</p>
+  <a class="button" href="{{ url_for('home') }}">Go to the inbox</a>
+</section>
+{% else %}
+
+<section class="section">
+  <div class="section-head">
+    <h2>Yesterday</h2>
+    <p class="muted">{{ data.yesterday_label }}</p>
+  </div>
+  <div class="tiles">
+    <div class="tile">
+      <span class="tile-label">New emails checked</span>
+      <strong class="tile-value">{{ y.received }}</strong>
+      {{ delta(y.received, p.received) }}
+    </div>
+    <div class="tile">
+      <span class="tile-label">Replies sent</span>
+      <strong class="tile-value">{{ y.sent }}</strong>
+      <span class="tile-note">{{ y.auto_sent }} automatic · {{ y.approved_sent }} after your OK</span>
+    </div>
+    <div class="tile">
+      <span class="tile-label">Typical reply time</span>
+      <strong class="tile-value">{{ y.response_text or '—' }}</strong>
+      <span class="tile-note">from arrival to reply sent</span>
+    </div>
+    <div class="tile">
+      <span class="tile-label">Writing time saved</span>
+      <strong class="tile-value">{{ y.minutes_saved }} min</strong>
+      <span class="tile-note">about 4 minutes per reply</span>
+    </div>
+    <div class="tile">
+      <span class="tile-label">Skipped</span>
+      <strong class="tile-value">{{ y.skipped }}</strong>
+      <span class="tile-note">newsletters, system mail, no reply needed</span>
+    </div>
+    <div class="tile {% if waiting %}attention{% endif %}">
+      <span class="tile-label">Waiting for you now</span>
+      <strong class="tile-value">{{ waiting|length }}</strong>
+      {% if waiting %}<a class="tile-note" href="{{ url_for('approvals_page') }}">Review them</a>{% else %}<span class="tile-note">nothing to approve</span>{% endif %}
+    </div>
+  </div>
+  {% if y.failed or y.drafted or y.rejected %}
+  <p class="foot-note">
+    {% if y.drafted %}{{ y.drafted }} saved as draft only. {% endif %}
+    {% if y.rejected %}{{ y.rejected }} you chose not to send. {% endif %}
+    {% if y.failed %}<span class="status-bad">⚠ {{ y.failed }} could not be written</span> and will be tried again.{% endif %}
+  </p>
+  {% endif %}
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>History</h2>
+    <nav class="seg" aria-label="Time range">
+      {% for days in (7, 30, 90) %}
+      <a class="{% if data.span == days %}on{% endif %}" href="{{ url_for('dashboard_page', span=days) }}">{{ days }} days</a>
+      {% endfor %}
+    </nav>
+  </div>
+
+  <div class="card viz">
+    <div class="viz-head">
+      <div>
+        <h3>What happened to each day's mail</h3>
+        <p class="muted">Emails handled per day, by outcome · last {{ data.span }} days</p>
+      </div>
+      <ul class="legend">
+        {% for item in chart.legend %}<li><i class="sw s-{{ item.key }}"></i>{{ item.label }}</li>{% endfor %}
+      </ul>
+    </div>
+    {% if chart.empty %}
+    <p class="empty">No mail was handled in this period.</p>
+    {% else %}
+    <svg class="trend" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="Stacked bars of emails handled per day by outcome. The same numbers are in the table below.">
+      {% for tick in chart.ticks %}
+      <line class="grid" x1="{{ chart.left }}" x2="{{ chart.right }}" y1="{{ tick.y }}" y2="{{ tick.y }}"/>
+      <text class="axis" x="{{ chart.left - 8 }}" y="{{ tick.y + 4 }}" text-anchor="end">{{ tick.value }}</text>
+      {% endfor %}
+      {% for bar in chart.bars %}
+      <g class="bar" data-tip="{{ bar.title }}">
+        {% if bar.parts %}
+        <clipPath id="clip{{ loop.index }}"><path d="{{ bar.clip }}"/></clipPath>
+        <g clip-path="url(#clip{{ loop.index }})">
+          {% for part in bar.parts %}
+          <rect class="s-{{ part.key }}" x="{{ part.x }}" y="{{ part.y }}" width="{{ part.w }}" height="{{ part.h }}"/>
+          {% endfor %}
+        </g>
+        {% endif %}
+        {% if bar.label %}<text class="axis" x="{{ bar.cx }}" y="{{ chart.base + 18 }}" text-anchor="middle">{{ bar.label }}</text>{% endif %}
+        <rect class="hit" x="{{ bar.hit_x }}" y="{{ chart.top }}" width="{{ bar.hit_w }}" height="{{ chart.base - chart.top }}"/>
+      </g>
+      {% endfor %}
+      <line class="baseline" x1="{{ chart.left }}" x2="{{ chart.right }}" y1="{{ chart.base }}" y2="{{ chart.base }}"/>
+    </svg>
+    <details class="table-view">
+      <summary>View as a table</summary>
+      <div class="table-wrap">
+        <table class="table compact">
+          <thead><tr><th>Day</th><th>Checked</th><th>Sent automatically</th><th>Sent after your OK</th><th>Asked</th><th>Draft only</th><th>Skipped</th><th>Failed</th></tr></thead>
+          <tbody>
+            {% for day in data.series|reverse %}
+            <tr><td class="nowrap">{{ day.weekday }} {{ day.label }}</td><td>{{ day.received }}</td><td>{{ day.auto_sent }}</td><td>{{ day.approved_sent }}</td><td>{{ day.asked }}</td><td>{{ day.drafted }}</td><td>{{ day.skipped }}</td><td>{{ day.failed }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
+    {% endif %}
+  </div>
+
+  <div class="tiles small">
+    <div class="tile">
+      <span class="tile-label">Emails checked</span>
+      <strong class="tile-value">{{ w.received }}</strong>
+      <span class="tile-note">{% if w.reply_rate is not none %}{{ w.reply_rate }}% got a reply{% endif %}</span>
+    </div>
+    <div class="tile">
+      <span class="tile-label">Replies sent</span>
+      <strong class="tile-value">{{ w.sent }}</strong>
+      <span class="tile-note">{{ w.auto_sent }} automatic · {{ w.approved_sent }} approved</span>
+    </div>
+    <div class="tile">
+      <span class="tile-label">Your approvals</span>
+      <strong class="tile-value">{% if w.approval_rate is not none %}{{ w.approval_rate }}%{% else %}—{% endif %}</strong>
+      <span class="tile-note">{{ w.approved_sent }} sent · {{ w.rejected }} declined{% if w.edited %} · {{ w.edited }} edited first{% endif %}</span>
+    </div>
+    <div class="tile">
+      <span class="tile-label">Time you take to decide</span>
+      <strong class="tile-value">{{ w.decision_text or '—' }}</strong>
+      <span class="tile-note">average, from asked to answered</span>
+    </div>
+    <div class="tile">
+      <span class="tile-label">Typical reply time</span>
+      <strong class="tile-value">{{ w.response_text or '—' }}</strong>
+      <span class="tile-note">from arrival to reply sent</span>
+    </div>
+    <div class="tile">
+      <span class="tile-label">Writing time saved</span>
+      <strong class="tile-value">{% if w.minutes_saved >= 120 %}{{ (w.minutes_saved / 60)|round(1) }} h{% else %}{{ w.minutes_saved }} min{% endif %}</strong>
+      <span class="tile-note">about 4 minutes per reply</span>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card viz">
+      <h3>Why mail was skipped</h3>
+      <p class="muted">Use this to tune your rules · last {{ data.span }} days</p>
+      {% if data.skip_reasons %}{{ bars(data.skip_reasons) }}{% else %}<p class="empty">Nothing was skipped.</p>{% endif %}
+    </div>
+    <div class="card viz">
+      <h3>Who writes to you most</h3>
+      <p class="muted">Senders of checked mail · last {{ data.span }} days</p>
+      {% if data.senders %}{{ bars(data.senders) }}{% else %}<p class="empty">No senders recorded.</p>{% endif %}
+    </div>
+    <div class="card viz">
+      <h3>When mail arrives</h3>
+      <p class="muted">Emails by hour of day{% if hours.busiest %} · busiest {{ hours.busiest }}{% endif %}</p>
+      {% if hours.empty %}<p class="empty">No mail in this period.</p>{% else %}
+      <div class="hours" role="img" aria-label="Emails by hour of day{% if hours.busiest %}, busiest {{ hours.busiest }}{% endif %}">
+        {% for item in hours.bars %}
+        <span class="hour" data-tip="{{ '%02d'|format(item.hour) }}:00 — {{ item.count }} email{{ '' if item.count == 1 else 's' }}"><i style="height: {{ item.pct }}%"></i></span>
+        {% endfor %}
+      </div>
+      <div class="hours-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
+      {% endif %}
+    </div>
+    <div class="card viz">
+      <h3>Knowledge base at work</h3>
+      <p class="muted">{{ kb.documents }} document{{ '' if kb.documents == 1 else 's' }} · {{ kb.rules }} rule{{ '' if kb.rules == 1 else 's' }}{% if w.kb_rate is not none %} · used in {{ w.kb_rate }}% of replies{% endif %}</p>
+      {% if data.kb_docs %}
+      {{ bars(data.kb_docs) }}
+      {% elif kb.documents %}
+      <p class="empty">No reply has drawn on a document yet in this period.</p>
+      {% else %}
+      <p class="empty">Nothing in the knowledge base yet. <a href="{{ url_for('knowledge_page') }}">Add documents</a> so replies can use your own facts.</p>
+      {% endif %}
+      {% if data.providers|length > 1 %}
+      <h3 class="spaced">By mailbox</h3>
+      {{ bars(data.providers) }}
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <h2>All time</h2>
+    <p class="muted">since {{ data.first_day }}</p>
+  </div>
+  {% set a = data.all_time %}
+  <div class="tiles small">
+    <div class="tile"><span class="tile-label">Emails checked</span><strong class="tile-value">{{ a.received }}</strong></div>
+    <div class="tile"><span class="tile-label">Replies sent</span><strong class="tile-value">{{ a.sent }}</strong></div>
+    <div class="tile"><span class="tile-label">Drafts saved</span><strong class="tile-value">{{ a.drafted }}</strong></div>
+    <div class="tile"><span class="tile-label">Skipped</span><strong class="tile-value">{{ a.skipped }}</strong></div>
+    <div class="tile"><span class="tile-label">Approved by you</span><strong class="tile-value">{{ a.approved_sent }}</strong></div>
+    <div class="tile"><span class="tile-label">Writing time saved</span><strong class="tile-value">{% if a.minutes_saved >= 120 %}{{ (a.minutes_saved / 60)|round(1) }} h{% else %}{{ a.minutes_saved }} min{% endif %}</strong></div>
+  </div>
+</section>
+{% endif %}
+{% endblock %}
