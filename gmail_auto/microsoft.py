@@ -225,9 +225,20 @@ def _kind(kind: str) -> str:
     return kind
 
 
+def tenant() -> str:
+    """Which Microsoft directory sign-in goes through. 'common' means any account."""
+    return os.getenv("MS_TENANT_ID", "").strip().strip("\"'").strip() or "common"
+
+
+def tenant_text() -> str:
+    value = tenant()
+    if value.lower() in ("common", "organizations", "consumers"):
+        return f"any Microsoft account (MS_TENANT_ID is {'not set' if not os.getenv('MS_TENANT_ID', '').strip() else value})"
+    return f"your organisation only (MS_TENANT_ID {value})"
+
+
 def _authority() -> str:
-    tenant = os.getenv("MS_TENANT_ID", "").strip() or "common"
-    return f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0"
+    return f"https://login.microsoftonline.com/{tenant()}/oauth2/v2.0"
 
 
 def _client_id() -> str:

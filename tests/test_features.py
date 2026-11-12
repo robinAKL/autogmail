@@ -343,3 +343,20 @@ class MicrosoftErrorTests(TempHome):
         self.assertIn("Grant admin consent", explain_error("access_denied", ""))
         message = explain_error("server_error", "AADSTS12345: Something odd.\r\nTrace ID: x")
         self.assertEqual(message, "Microsoft said: Something odd. (AADSTS12345)")
+
+    def test_the_sign_in_directory_is_named(self):
+        import os
+
+        from gmail_auto import microsoft
+
+        previous = os.environ.pop("MS_TENANT_ID", None)
+        try:
+            self.assertIn("MS_TENANT_ID is not set", microsoft.tenant_text())
+            os.environ["MS_TENANT_ID"] = ' "0f1e2d3c-aaaa-bbbb-cccc-1234567890ab" '
+            self.assertEqual(microsoft.tenant(), "0f1e2d3c-aaaa-bbbb-cccc-1234567890ab")
+            self.assertIn("your organisation only", microsoft.tenant_text())
+            self.assertIn("/0f1e2d3c-aaaa-bbbb-cccc-1234567890ab/", microsoft.authorize_url("outlook", "https://x.example/cb", "s"))
+        finally:
+            os.environ.pop("MS_TENANT_ID", None)
+            if previous is not None:
+                os.environ["MS_TENANT_ID"] = previous

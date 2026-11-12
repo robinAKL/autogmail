@@ -544,7 +544,10 @@ def configure_app(app: Flask) -> None:
             error = request.args.get("error", "")
             description = request.args.get("error_description", "")
             say(f"{label} sign-in failed: {error} {description[:400]}")
-            flash(f"{label} was not connected. {microsoft.explain_error(error, description)}", "error")
+            message = f"{label} was not connected. {microsoft.explain_error(error, description)}"
+            if "AADSTS50194" in description or "AADSTS50020" in description:
+                message += f" This site currently signs in through {microsoft.tenant_text()}."
+            flash(message, "error")
             return redirect(url_for("connections_page"))
         try:
             account = microsoft.finish_sign_in(kind, request.args["code"], _microsoft_redirect())
@@ -1131,6 +1134,7 @@ def _connections_context() -> dict:
         "sharepoint": microsoft.status("sharepoint"),
         "ms_ready": microsoft.configured(),
         "ms_redirect": _microsoft_redirect(),
+        "ms_tenant": microsoft.tenant_text(),
         "whatsapp": {
             "provider": kind,
             "provider_label": whatsapp.provider_label(),

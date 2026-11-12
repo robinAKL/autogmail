@@ -47,6 +47,7 @@
       <p class="muted">Works with Microsoft 365 and Outlook.com mailboxes. Connected {{ outlook.connected_at }}.</p>
       {% elif ms_ready %}
       <p class="muted">Sign in with Microsoft and allow reading and sending mail. Works with Microsoft 365 and Outlook.com.</p>
+      <p class="hint">Signs in through {{ ms_tenant }}.</p>
       {% else %}
       <p class="muted">Needs a Microsoft app registration first. Set <code>MS_CLIENT_ID</code> and <code>MS_CLIENT_SECRET</code>, and register this redirect address:</p>
       <p class="copy-line"><code>{{ ms_redirect }}</code></p>
