@@ -55,7 +55,7 @@ def save_profile(data: dict) -> dict:
     try:
         atomic_write(profile_path(), json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n")
     except OSError as exc:
-        raise ConfigError("The profile could not be saved here. Connect Vercel KV so hosted changes persist.") from exc
+        raise ConfigError("The profile could not be saved here. Connect a Redis database in Vercel Storage so hosted changes persist.") from exc
     return cleaned
 
 

@@ -31,7 +31,7 @@ def load_doc(name: str, default=None):
         except ConfigError:
             raise
         except Exception as exc:
-            raise ConfigError("Could not read from Vercel KV.") from exc
+            raise ConfigError("Could not read from storage.") from exc
         if not raw:
             return default
         try:

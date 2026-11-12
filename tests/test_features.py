@@ -360,3 +360,44 @@ class MicrosoftErrorTests(TempHome):
             os.environ.pop("MS_TENANT_ID", None)
             if previous is not None:
                 os.environ["MS_TENANT_ID"] = previous
+
+
+class StorageVariableTests(TempHome):
+    NAMES = (
+        "KV_REST_API_URL", "KV_REST_API_TOKEN", "UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN",
+        "AUTOMAIL_KV_REST_API_URL", "AUTOMAIL_KV_REST_API_TOKEN", "AUTOMAIL_KV_REST_API_READ_ONLY_TOKEN",
+        "AUTOMAIL_KV_URL", "AUTOMAIL_REDIS_URL", "REDIS_URL", "KV_URL",
+    )
+
+    def setUp(self):
+        super().setUp()
+        self.kept = {name: os.environ.pop(name, None) for name in self.NAMES}
+
+    def tearDown(self):
+        for name in self.NAMES:
+            os.environ.pop(name, None)
+            if self.kept[name] is not None:
+                os.environ[name] = self.kept[name]
+        super().tearDown()
+
+    def test_prefixed_vercel_variables_are_found(self):
+        from gmail_auto import token_store
+
+        self.assertFalse(token_store.storage_ready())
+        self.assertIn("No storage variables", token_store.storage_hint())
+        os.environ["AUTOMAIL_KV_REST_API_READ_ONLY_TOKEN"] = "read-only"
+        os.environ["AUTOMAIL_KV_REST_API_URL"] = "https://example-12345.upstash.io"
+        self.assertFalse(token_store.storage_ready())
+        self.assertIn("AUTOMAIL_KV_REST_API_URL", token_store.storage_hint())
+        os.environ["AUTOMAIL_KV_REST_API_TOKEN"] = "write-token"
+        self.assertEqual(token_store._redis(), ("https://example-12345.upstash.io", "write-token"))
+        self.assertTrue(token_store.storage_ready())
+
+    def test_a_plain_redis_address_is_accepted(self):
+        from gmail_auto import token_store
+
+        os.environ["AUTOMAIL_REDIS_URL"] = "rediss://default:secret@example.upstash.io:6379"
+        self.assertTrue(token_store.storage_ready())
+        self.assertEqual(token_store.storage_kind(), "Redis")
+        os.environ["AUTOMAIL_REDIS_URL"] = "not-an-address"
+        self.assertFalse(token_store.storage_ready())

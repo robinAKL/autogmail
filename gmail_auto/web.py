@@ -23,7 +23,7 @@ from gmail_auto.profile_store import load_profile, profile_from_form, profile_is
 from gmail_auto.runner import check_interval_seconds, format_report, run_once, switch_live
 from gmail_auto.settings import APPROVALS, LANGUAGES, load_settings, save_settings
 from gmail_auto.storage import persistent
-from gmail_auto.token_store import storage_ready
+from gmail_auto.token_store import storage_hint, storage_kind, storage_ready
 from gmail_auto.store import is_live, list_processed, live_from_env, load_last_run, load_processed
 
 HOST = "127.0.0.1"
@@ -1145,7 +1145,7 @@ def _connections_context() -> dict:
             "verify_set": bool(os.getenv("WHATSAPP_VERIFY_TOKEN", "").strip()),
             "secret_set": bool(os.getenv("WHATSAPP_APP_SECRET", "").strip()),
         },
-        "storage": {"persistent": persistent(), "kind": "Vercel KV" if storage_ready() else "This computer (data folder)"},
+        "storage": {"persistent": persistent(), "kind": storage_kind() or "This computer (data folder)", "hint": "" if storage_ready() else storage_hint()},
         "ai": {"ready": has_openai_key(), "model": openai_model()},
         "local": local,
     }

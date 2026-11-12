@@ -43,7 +43,9 @@ def finish_sign_in(kind: str, code: str, redirect_uri: str) -> str:
     """Trade the code from Microsoft for tokens, keep them, and return the signed-in address."""
     _kind(kind)
     if not persistent():
-        raise ConfigError("This hosted site has nowhere to keep the Microsoft sign-in. Connect Vercel KV first.")
+        from gmail_auto.token_store import storage_hint
+
+        raise ConfigError("This hosted site has nowhere to keep the Microsoft sign-in. " + storage_hint())
     tokens = _token_request(
         {
             "grant_type": "authorization_code",

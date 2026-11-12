@@ -168,7 +168,7 @@
       {% if storage.persistent %}
       <p class="muted">Knowledge, approvals and history are kept in: {{ storage.kind }}.</p>
       {% else %}
-      <p class="banner warn">This hosted site has no storage connected, so the knowledge base, approvals, WhatsApp and the dashboard cannot keep anything between requests. Connect Vercel KV (Upstash) to the project.</p>
+      <p class="banner warn">This hosted site has no storage connected, so sign-ins, the knowledge base, approvals, WhatsApp and the dashboard cannot keep anything between requests. {{ storage.hint }}</p>
       {% endif %}
     </article>
   </div>
