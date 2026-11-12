@@ -332,3 +332,14 @@ class OutlookAndViewTests(TempHome):
     def test_sharepoint_link_is_encoded_the_way_graph_expects(self):
         self.assertEqual(share_token("https://contoso.sharepoint.com/sites/Team/Shared Documents/Plan.docx"),
                          "u!aHR0cHM6Ly9jb250b3NvLnNoYXJlcG9pbnQuY29tL3NpdGVzL1RlYW0vU2hhcmVkIERvY3VtZW50cy9QbGFuLmRvY3g")
+
+
+class MicrosoftErrorTests(TempHome):
+    def test_microsoft_errors_are_explained(self):
+        from gmail_auto.microsoft import explain_error
+
+        self.assertIn("Value column, not its Secret ID", explain_error("invalid_client", "AADSTS7000215: Invalid client secret provided."))
+        self.assertIn("MS_TENANT_ID", explain_error("invalid_request", "AADSTS50194: Application is not configured as a multi-tenant application."))
+        self.assertIn("Grant admin consent", explain_error("access_denied", ""))
+        message = explain_error("server_error", "AADSTS12345: Something odd.\r\nTrace ID: x")
+        self.assertEqual(message, "Microsoft said: Something odd. (AADSTS12345)")

@@ -5,6 +5,7 @@ account (which has no SharePoint) can still be used for mail.
 """
 
 import os
+import re
 import time
 import urllib.parse
 from datetime import datetime
@@ -156,8 +157,49 @@ def _token_request(fields: dict) -> dict:
     except ValueError:
         payload = {}
     if response.status_code >= 400 or not isinstance(payload, dict) or not payload.get("access_token"):
-        raise ConfigError("Microsoft did not accept the sign-in. Check MS_CLIENT_ID, MS_CLIENT_SECRET and the redirect address.")
+        payload = payload if isinstance(payload, dict) else {}
+        reason = explain_error(str(payload.get("error") or ""), str(payload.get("error_description") or ""))
+        raise ConfigError(f"Microsoft did not accept the sign-in. {reason}")
     return payload
+
+
+# Microsoft's error codes that people actually run into, in plain words.
+_KNOWN = {
+    "AADSTS7000215": "MS_CLIENT_SECRET is not right. In the app's Certificates & secrets, copy the secret's Value column, not its Secret ID, then redeploy.",
+    "AADSTS7000222": "The client secret has expired. Create a new one under Certificates & secrets and update MS_CLIENT_SECRET.",
+    "AADSTS700016": "MS_CLIENT_ID does not match an app Microsoft can find. Copy the Application (client) ID from the app's Overview page.",
+    "AADSTS50011": "The redirect address does not match. Add the address shown on the Connections page to the app's Authentication page, type Web.",
+    "AADSTS50194": "The app only accepts accounts from its own organisation. Set MS_TENANT_ID to your Directory (tenant) ID, or change Supported account types to include other organisations.",
+    "AADSTS50020": "This account is not allowed by the app's Supported account types. Change them in the app's Authentication page.",
+    "AADSTS65001": "Your organisation needs an administrator to approve this app. In Microsoft Entra open the app, go to API permissions, add the permissions and choose Grant admin consent.",
+    "AADSTS65004": "The permission screen was declined. If it asked for an administrator, open the app in Microsoft Entra, go to API permissions and choose Grant admin consent.",
+    "AADSTS90094": "Your organisation needs an administrator to approve this app. In Microsoft Entra open the app, go to API permissions, add the permissions and choose Grant admin consent.",
+    "AADSTS900971": "Microsoft did not get a redirect address. Try again from the Connections page.",
+    "AADSTS9002313": "The request to Microsoft was malformed. Try again from the Connections page.",
+    "AADSTS54005": "That sign-in code was already used. Try connecting again.",
+    "AADSTS70008": "That sign-in code expired. Try connecting again.",
+}
+_BY_ERROR = {
+    "access_denied": _KNOWN["AADSTS65004"],
+    "consent_required": _KNOWN["AADSTS65001"],
+    "invalid_client": "MS_CLIENT_ID or MS_CLIENT_SECRET is not right. Copy the secret's Value, not its Secret ID, then redeploy.",
+    "unauthorized_client": "The app is not set up for this kind of sign-in. Check that the redirect address was added with platform Web.",
+}
+
+
+def explain_error(error: str, description: str) -> str:
+    """Microsoft's reply in a sentence someone can act on, keeping its code for searching."""
+    match = re.search(r"AADSTS\d+", description or "")
+    code = match.group(0) if match else ""
+    if code in _KNOWN:
+        return f"{_KNOWN[code]} ({code})"
+    if error in _BY_ERROR:
+        return _BY_ERROR[error] + (f" ({code})" if code else "")
+    first = re.split(r"[\r\n]|Trace ID", description or "")[0].strip()
+    first = re.sub(r"^AADSTS\d+:\s*", "", first)[:240]
+    if first:
+        return f"Microsoft said: {first}" + (f" ({code})" if code else "")
+    return f"Microsoft returned '{error}'." if error else "Try again."
 
 
 def _record(tokens: dict, previous: dict) -> dict:

@@ -282,6 +282,18 @@ class KnowledgePageTests(WebCase):
         self.assertIn("redirect_uri=http%3A%2F%2Flocalhost%3A8765%2Foauth%2Fmicrosoft%2Fcallback", go.headers["Location"])
         self.assertIn("login.microsoftonline.com", go.headers["Location"])
         self.assertIn("Sites.Read.All", go.headers["Location"])
+        with self.client.session_transaction() as current:
+            current["ms_state"] = {"state": "s0", "kind": "outlook"}
+        refused = self.client.get(
+            "/oauth/microsoft/callback?state=s0&error=access_denied&error_description="
+            "AADSTS65004%3A+User+declined+to+consent+to+access+the+app.%0D%0ATrace+ID%3A+abc",
+            follow_redirects=True,
+        )
+        refused_text = refused.get_data(as_text=True)
+        self.assertIn("Outlook was not connected", refused_text)
+        self.assertIn("Grant admin consent", refused_text)
+        self.assertIn("AADSTS65004", refused_text)
+        self.assertNotIn("Trace ID", refused_text)
         wrong = self.client.get("/oauth/microsoft/callback?state=forged&code=abc", follow_redirects=True)
         self.assertIn("could not be matched", wrong.get_data(as_text=True))
         with patch("gmail_auto.microsoft.finish_sign_in", return_value="me@contoso.com") as finish:

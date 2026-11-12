@@ -8,6 +8,7 @@ from flask import Flask, Response, abort, flash, redirect, request, session, url
 from markupsafe import Markup
 
 from gmail_auto import approvals, knowledge, microsoft, sharepoint, stats, whatsapp
+from gmail_auto.console import say
 from gmail_auto.accounts import finish_verification, gmail_status, mark_gmail_authorized, start_verification
 from gmail_auto.envfile import has_openai_key, openai_model
 from gmail_auto.errors import ConfigError, NotConnected
@@ -540,7 +541,10 @@ def configure_app(app: Flask) -> None:
             flash("The sign-in could not be matched to this browser. Try connecting again.", "error")
             return redirect(url_for("connections_page"))
         if request.args.get("error") or not request.args.get("code"):
-            flash(f"{label} was not connected. Try again.", "error")
+            error = request.args.get("error", "")
+            description = request.args.get("error_description", "")
+            say(f"{label} sign-in failed: {error} {description[:400]}")
+            flash(f"{label} was not connected. {microsoft.explain_error(error, description)}", "error")
             return redirect(url_for("connections_page"))
         try:
             account = microsoft.finish_sign_in(kind, request.args["code"], _microsoft_redirect())
