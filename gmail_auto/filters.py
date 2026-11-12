@@ -149,7 +149,11 @@ def is_system_address(address: str) -> bool:
     local = key[0]
     if local in _EXACT:
         return True
-    return any(local.startswith(prefix) for prefix in _PREFIXES)
+    if any(local.startswith(prefix) for prefix in _PREFIXES):
+        return True
+    # Senders such as jobalerts-noreply@ or alerts.donotreply@ put the marker at the end.
+    squashed = re.sub(r"[^a-z]", "", local)
+    return "noreply" in squashed or "donotreply" in squashed
 
 
 def is_sensitive(text: str) -> bool:
