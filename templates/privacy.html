@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Privacy policy{% endblock %}
+{% block layout %}
+<main class="legal">
+  <p class="brand"><span class="brand-mark" aria-hidden="true">
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l9 6 9-6"/><rect x="3" y="5" width="18" height="14" rx="2.5"/></svg>
+  </span><span>{{ app_name }}</span></p>
+  <h1>Privacy policy</h1>
+  <p class="muted">Last updated {{ updated }}</p>
+
+  <p>{{ app_name }} is a private assistant that its owner{% if owner %}, {{ owner }},{% endif %} runs to read and answer their own email. It is not offered to the public. This page explains what it handles and why.</p>
+
+  <h2>What it handles</h2>
+  <ul>
+    <li><strong>The owner's email</strong> from the Gmail and Outlook mailboxes the owner connects: senders, subjects and message text, so replies can be drafted.</li>
+    <li><strong>The owner's knowledge base</strong>: files, notes, SharePoint documents and summaries of past email that the owner chooses to add.</li>
+    <li><strong>WhatsApp messages</strong> exchanged between the owner's own phone number and the assistant, used to ask the owner to approve, change or decline a reply.</li>
+    <li><strong>Sign-in details</strong>: the owner's email address and the access grants issued by Google, Microsoft and Meta.</li>
+  </ul>
+
+  <h2>How it is used</h2>
+  <ul>
+    <li>Letter text and relevant knowledge-base passages are sent to the configured AI provider (OpenAI) only to draft a reply or a summary.</li>
+    <li>Letters that mention passwords, verification codes, ID or bank details are never sent to the AI provider.</li>
+    <li>WhatsApp messages are sent only to the owner's own number. Messages from any other number are ignored.</li>
+    <li>Nothing is sold, shared for advertising, or used to build profiles of the people who write to the owner.</li>
+  </ul>
+
+  <h2>Where it is kept</h2>
+  <p>Records, the knowledge base and access grants are kept in the owner's own storage (a private Redis database or the owner's computer). Access grants can be withdrawn at any time from the Connections page, or from the Google, Microsoft or Meta account settings.</p>
+
+  <h2>Deleting data</h2>
+  <p>The owner can remove documents from the knowledge base and disconnect any mailbox or service at any time. To ask for anything about you to be removed, contact the owner{% if contact %} at <a href="mailto:{{ contact }}">{{ contact }}</a>{% endif %}, and it will be deleted.</p>
+
+  <h2>Contact</h2>
+  <p>{% if contact %}Questions about this policy: <a href="mailto:{{ contact }}">{{ contact }}</a>.{% else %}Questions about this policy can be sent to the owner of this site.{% endif %}</p>
+</main>
+{% endblock %}

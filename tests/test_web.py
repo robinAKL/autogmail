@@ -147,6 +147,18 @@ class PageTests(WebCase):
             self.assertIn("Spring sale", needs)
             self.assertNotIn("Lunch?", needs)
 
+    def test_privacy_policy_is_public_on_the_hosted_site(self):
+        os.environ["VERCEL"] = "1"
+        os.environ["PRIVACY_CONTACT"] = "owner@example.com"
+        try:
+            response, text = self.page("/privacy", base_url="https://autogmail.vercel.app")
+        finally:
+            os.environ.pop("PRIVACY_CONTACT", None)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Privacy policy", text)
+        self.assertIn("mailto:owner@example.com", text)
+        self.assertNotIn("Sign out", text)
+
     def test_run_button_calls_one_round(self):
         with patch("gmail_auto.web.run_once") as run:
             response = self.client.post("/run")

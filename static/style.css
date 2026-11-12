@@ -348,6 +348,13 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .tabs a { text-align: center; text-decoration: none; color: var(--ink-2); border-radius: 8px; padding: 7px 12px; font-weight: 600; }
 .tabs a.on { background: var(--ink); color: #fff; }
 
+/* ---- privacy policy ---- */
+.legal { width: min(760px, calc(100% - 32px)); margin: 0 auto; padding: 48px 0 72px; display: grid; gap: 14px; }
+.legal .brand { padding: 0; }
+.legal h1 { font-size: 32px; margin-top: 8px; }
+.legal h2 { font-size: 18px; margin-top: 14px; }
+.legal ul { margin: 0; padding-left: 22px; display: grid; gap: 6px; }
+
 /* ---- small screens ---- */
 @media (max-width: 1180px) {
   .tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }

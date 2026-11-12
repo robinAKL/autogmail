@@ -143,6 +143,17 @@ def configure_app(app: Flask) -> None:
         flash("You are signed in.")
         return redirect(url_for("home"))
 
+    @app.get("/privacy")
+    def privacy_page():
+        """Public on purpose: Meta and Microsoft ask for a privacy policy address."""
+        return _render(
+            "privacy.html",
+            app_name="Mail Autopilot",
+            owner=os.getenv("PRIVACY_OWNER", "").strip(),
+            contact=os.getenv("PRIVACY_CONTACT", "").strip(),
+            updated="12 November 2026",
+        )
+
     @app.get("/logout")
     def logout():
         session.pop("user", None)
