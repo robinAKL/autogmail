@@ -45,13 +45,13 @@ class GmailClient:
         return self._email
 
     def list_unread(self, limit: int = 20) -> list[Mail]:
-        return self._list(UNREAD_QUERY, limit)
+        return self._list(UNREAD_QUERY, limit, full=True)
 
     def list_recent(self, limit: int = 25, full: bool = False) -> list[Mail]:
-        return self._list(RECENT_QUERY, limit)
+        return self._list(RECENT_QUERY, limit, full=full)
 
     def list_sent(self, limit: int = 25, full: bool = False) -> list[Mail]:
-        return self._list(SENT_QUERY, limit)
+        return self._list(SENT_QUERY, limit, full=full)
 
     def get_message(self, message_id: str) -> Mail:
         try:
@@ -147,7 +147,7 @@ class GmailClient:
         self._label_ids[name] = created["id"]
         return created["id"]
 
-    def _list(self, query: str, limit: int) -> list[Mail]:
+    def _list(self, query: str, limit: int, full: bool = True) -> list[Mail]:
         size = max(1, min(int(limit), 25))
         try:
             listed = (
@@ -170,23 +170,26 @@ class GmailClient:
 
             batch = self.service.new_batch_http_request(callback=keep)
             for message_id in ids:
-                batch.add(
-                    self.service.users().messages().get(userId="me", id=message_id, format="full"),
-                    request_id=message_id,
-                )
+                batch.add(self._message_get(message_id, full), request_id=message_id)
             batch.execute()
         except Exception:
             found = {}
         mails = []
         for message_id in ids:
-            full = found.get(message_id)
-            if full is None:
+            raw = found.get(message_id)
+            if raw is None:
                 try:
-                    full = self.service.users().messages().get(userId="me", id=message_id, format="full").execute()
+                    raw = self._message_get(message_id, full).execute()
                 except Exception as exc:
                     raise _translate(exc) from exc
-            mails.append(self._stamp(parse_message(full)))
+            mails.append(self._stamp(parse_message(raw)))
         return mails
+
+    def _message_get(self, message_id: str, full: bool):
+        kwargs = {"userId": "me", "id": message_id, "format": "full" if full else "metadata"}
+        if not full:
+            kwargs["metadataHeaders"] = ["From", "To", "Subject", "Date", "Message-ID", "Reply-To"]
+        return self.service.users().messages().get(**kwargs)
 
     def _stamp(self, mail: Mail) -> Mail:
         mail.account = self._email

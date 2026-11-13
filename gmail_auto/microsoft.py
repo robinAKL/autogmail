@@ -100,7 +100,7 @@ def access_token(kind: str) -> str:
     return record["access_token"]
 
 
-def graph(kind: str, method: str, path: str, params: dict | None = None, body: dict | None = None, headers: dict | None = None, raw: bool = False):
+def graph(kind: str, method: str, path: str, params: dict | None = None, body: dict | None = None, headers: dict | None = None, raw: bool = False, timeout: int = 40, attempts: int | None = None):
     """Call Microsoft Graph. Returns parsed JSON, or the bytes of a file when raw is set."""
     import requests
 
@@ -109,17 +109,18 @@ def graph(kind: str, method: str, path: str, params: dict | None = None, body: d
     sent.update(headers or {})
     retry = method.upper() in ("GET", "HEAD") or path.rstrip("/").endswith("$batch")
     last_error = None
-    for attempt in range(3 if retry else 1):
+    tries = attempts if attempts is not None else (3 if retry else 1)
+    for attempt in range(tries):
         try:
-            response = requests.request(method, url, params=params, json=body, headers=sent, timeout=40)
+            response = requests.request(method, url, params=params, json=body, headers=sent, timeout=timeout)
         except requests.RequestException as exc:
             last_error = ConfigError(f"Could not reach {LABELS[kind]}.")
             last_error.__cause__ = exc
-            if attempt == 2 or not retry:
+            if attempt == tries - 1 or not retry:
                 raise last_error from exc
             time.sleep(1.5 * (attempt + 1))
             continue
-        if retry and response.status_code in (502, 503, 504) and attempt < 2:
+        if retry and response.status_code in (502, 503, 504) and attempt < tries - 1:
             time.sleep(1.5 * (attempt + 1))
             continue
         break

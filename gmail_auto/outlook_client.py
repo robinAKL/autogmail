@@ -29,6 +29,8 @@ class OutlookClient:
 
     def get_user_email(self) -> str:
         if not self._email:
+            self._email = (microsoft.status("outlook").get("account") or "").strip()
+        if not self._email:
             me = microsoft.graph("outlook", "GET", "/me", params={"$select": "mail,userPrincipalName"})
             self._email = (me.get("mail") or me.get("userPrincipalName") or "").strip()
         if not self._email:
@@ -36,12 +38,11 @@ class OutlookClient:
         return self._email
 
     def list_unread(self, limit: int = 20) -> list[Mail]:
-        since = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
         mails = self._list(
             "inbox",
             limit + 10,
             {
-                "$filter": f"receivedDateTime ge {since} and isRead eq false",
+                "$filter": f"receivedDateTime ge {_since()} and isRead eq false",
                 "$orderby": "receivedDateTime desc",
             },
         )
@@ -49,11 +50,19 @@ class OutlookClient:
         return [mail for mail in self._hydrate(wanted) if "DONE" not in mail.label_ids]
 
     def list_recent(self, limit: int = 25, full: bool = False) -> list[Mail]:
-        mails = self._list("inbox", limit, {"$orderby": "receivedDateTime desc"})
+        mails = self._list(
+            "inbox",
+            limit,
+            {"$filter": f"receivedDateTime ge {_since()}", "$orderby": "receivedDateTime desc"},
+        )
         return self._hydrate(mails) if full else mails
 
     def list_sent(self, limit: int = 25, full: bool = False) -> list[Mail]:
-        mails = self._list("sentitems", limit, {"$orderby": "sentDateTime desc"})
+        mails = self._list(
+            "sentitems",
+            limit,
+            {"$filter": f"sentDateTime ge {_since()}", "$orderby": "sentDateTime desc"},
+        )
         return self._hydrate(mails) if full else mails
 
     def get_message(self, message_id: str) -> Mail:
@@ -98,7 +107,14 @@ class OutlookClient:
 
     def _list(self, folder: str, limit: int, extra: dict) -> list[Mail]:
         params = {"$top": max(1, min(int(limit), 50)), "$select": _SELECT_LIST, **extra}
-        data = microsoft.graph("outlook", "GET", f"/me/mailFolders/{folder}/messages", params=params)
+        data = microsoft.graph(
+            "outlook",
+            "GET",
+            f"/me/mailFolders/{folder}/messages",
+            params=params,
+            timeout=20,
+            attempts=2,
+        )
         return [self._stamp(parse_message(item)) for item in data.get("value") or []]
 
     def _hydrate(self, mails: list[Mail]) -> list[Mail]:
@@ -184,6 +200,10 @@ def parse_message(raw: dict) -> Mail:
         provider="outlook",
         received_ts=received,
     )
+
+
+def _since() -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _timestamp(value: str) -> float:

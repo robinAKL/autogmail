@@ -3,6 +3,7 @@ import os
 import re
 import secrets
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from flask import Flask, Response, abort, flash, redirect, request, session, url_for
 from markupsafe import Markup
@@ -30,7 +31,8 @@ HOST = "127.0.0.1"
 PORT = 8765
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
 _OPEN_PATHS = {"/whatsapp/webhook"}
-_INBOX_TTL = 45
+_INBOX_TTL = 60
+_INBOX_PAGE = 20
 _inbox_cache: dict = {"at": 0.0, "who": None, "data": None}
 _FILTERS = {
     "all": "All",
@@ -888,19 +890,18 @@ def _inbox() -> dict:
         clients, problems = [], [_safe_error(exc)]
     data["errors"].extend(problems)
     pairs = []
-    for client in clients:
-        label = PROVIDERS.get(getattr(client, "provider", "gmail"), "Mailbox")
-        try:
-            account = client.get_user_email()
-            data["accounts"].append({"provider": client.provider, "label": label, "email": account})
-            for mail in client.list_recent(25):
-                if not mail.account:
-                    mail.account = account
-                pairs.append((mail, account))
-        except ConfigError as exc:
-            data["errors"].append(named_error(label, exc))
-        except Exception as exc:
-            data["errors"].append(named_error(label, _safe_error(exc)))
+    fetched = _list_mailboxes(clients)
+    for account, mails, error in fetched:
+        if error:
+            data["errors"].append(error)
+            continue
+        provider = account["provider"]
+        label = PROVIDERS.get(provider, "Mailbox")
+        data["accounts"].append({"provider": provider, "label": label, "email": account["email"]})
+        for mail in mails:
+            if not mail.account:
+                mail.account = account["email"]
+            pairs.append((mail, account["email"]))
     try:
         processed = load_processed()
     except ConfigError as exc:
@@ -931,6 +932,35 @@ def _refresh_status(data: dict) -> None:
             continue
         rows.append(_row_from_mail(mail, processed.get(mail.key), accounts.get(mail.provider, "")))
     data["rows"] = rows
+
+
+def _list_mailboxes(clients) -> list[tuple]:
+    """Read each mailbox on its own thread so Gmail and Outlook do not wait for each other."""
+    if not clients:
+        return []
+    if len(clients) == 1:
+        return [_list_one_mailbox(clients[0])]
+    from flask import copy_current_request_context
+
+    wrapped = [copy_current_request_context(lambda client=client: _list_one_mailbox(client)) for client in clients]
+    out = []
+    with ThreadPoolExecutor(max_workers=len(wrapped)) as pool:
+        futures = [pool.submit(item) for item in wrapped]
+        for future in as_completed(futures):
+            out.append(future.result())
+    return out
+
+
+def _list_one_mailbox(client) -> tuple:
+    label = PROVIDERS.get(getattr(client, "provider", "gmail"), "Mailbox")
+    try:
+        account = client.get_user_email()
+        mails = client.list_recent(_INBOX_PAGE, full=False)
+        return ({"provider": client.provider, "email": account}, mails, "")
+    except ConfigError as exc:
+        return ({}, [], named_error(label, exc))
+    except Exception as extra:
+        return ({}, [], named_error(label, _safe_error(extra)))
 
 
 def _forget_inbox() -> None:

@@ -358,8 +358,8 @@ class OutlookAndViewTests(TempHome):
 
         calls = []
 
-        def fake_graph(kind, method, path, params=None, body=None, headers=None, raw=False):
-            calls.append({"method": method, "path": path, "params": params or {}, "body": body})
+        def fake_graph(kind, method, path, params=None, body=None, headers=None, raw=False, timeout=40, attempts=None):
+            calls.append({"method": method, "path": path, "params": params or {}, "body": body, "timeout": timeout, "attempts": attempts})
             if path == "/me":
                 return {"mail": "robin@example.com"}
             if method == "GET" and path.endswith("/messages"):
@@ -409,6 +409,8 @@ class OutlookAndViewTests(TempHome):
         listed = [item for item in calls if item["method"] == "GET" and item["path"].endswith("/messages")]
         self.assertTrue(listed)
         self.assertNotIn("body", listed[0]["params"]["$select"].split(","))
+        self.assertIn("receivedDateTime ge", listed[0]["params"]["$filter"])
+        self.assertEqual(listed[0]["timeout"], 20)
         self.assertEqual(recent[0].snippet, "Hello there")
         self.assertEqual(recent[0].html, "")
         self.assertIn("<p>Hello there</p>", unread[0].html)
