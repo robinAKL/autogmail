@@ -19,8 +19,10 @@ _NO = {
 _HELP = (
     "I can do these from here:\n"
     "- YES / NO — send or drop the reply that is waiting (add its number, e.g. YES 12, when several wait)\n"
+    "- 12 <what to say> — draft a reply to that letter, then YES to send\n"
+    "- Reply lee <what to say> — find the open letter from that person and draft it\n"
     "- Any other text while a reply is waiting — I rewrite the draft that way and ask again\n"
-    "- LIST — replies waiting for you\n"
+    "- LIST — letters waiting for you\n"
     "- STATUS — today's and yesterday's numbers\n"
     "- PAUSE — stop sending anything until you turn it back on in the web page\n"
     "- Anything else — ask me about your mail"
@@ -35,7 +37,7 @@ def handle(incoming: whatsapp.Incoming) -> str:
     """Act on one message from the owner and return what to answer."""
     text = incoming.text.strip()
     action, target = _button(incoming.button)
-    waiting = approvals.pending()
+    waiting = approvals.open_items()
     item = None
     if target:
         item = approvals.get(target)
@@ -60,12 +62,26 @@ def handle(incoming: whatsapp.Incoming) -> str:
         return _pause()
     if not text:
         return _HELP
+    if item is None:
+        hinted = approvals.find_by_hint(text)
+        if len(hinted) == 1:
+            item = hinted[0]
+        elif len(hinted) > 1:
+            return "Which letter?\n\n" + _list(hinted)
 
     chosen = item if item is not None and item.get("status") == "pending" else (waiting[0] if len(waiting) == 1 else None)
     if chosen is not None:
-        return _revise(chosen, _strip_number(text))
+        instruction = _instruction(text)
+        if not instruction:
+            if chosen.get("draft"):
+                return (
+                    f"Draft for #{chosen['id']} (to {chosen.get('from_name') or chosen.get('from_email')}):\n\n"
+                    f"{chosen['draft']}\n\nReply YES to send, NO to drop it, or tell me what to change."
+                )
+            return f"#{chosen['id']} has no draft yet. Send: {chosen['id']} <what you want to say>"
+        return _revise(chosen, instruction)
     if len(waiting) > 1:
-        return "Several replies are waiting. Start your message with the number, for example: 12 make it shorter\n\n" + _list(waiting)
+        return "Several letters are waiting. Start with the number, for example: 12 make it shorter\n\n" + _list(waiting)
     return _answer(text)
 
 
@@ -85,6 +101,8 @@ def seen_before(message_id: str) -> bool:
 def _approve(item, waiting) -> str:
     if item is None:
         return _which(waiting, "send")
+    if item.get("role") == "notice" and not (item.get("draft") or "").strip():
+        return f"#{item['id']} has no draft yet. Send: {item['id']} <what you want to say>"
     if item.get("status") != "pending":
         return f"#{item['id']} was already handled ({item.get('status')})."
     try:
@@ -122,10 +140,14 @@ def _revise(item, instruction: str) -> str:
 def _list(waiting) -> str:
     if not waiting:
         return "Nothing is waiting for you."
-    lines = [f"{len(waiting)} waiting for your OK:"]
+    lines = [f"{len(waiting)} waiting for you:"]
     for item in waiting[:10]:
-        lines.append(f"#{item['id']} {item.get('from_name') or item.get('from_email')} — {_short(item.get('subject'))}")
-    lines.append("Answer with YES or NO and the number.")
+        mark = f" [{item.get('kind')}]" if item.get("kind") else ""
+        if item.get("role") == "notice" and not (item.get("draft") or "").strip():
+            lines.append(f"#{item['id']}{mark} {item.get('from_name') or item.get('from_email')} — {_short(item.get('subject'))} (reply {item['id']} <what to say>)")
+        else:
+            lines.append(f"#{item['id']}{mark} {item.get('from_name') or item.get('from_email')} — {_short(item.get('subject'))}")
+    lines.append("Answer with YES or NO and the number, or 12 <what to say>.")
     return "\n".join(lines)
 
 
@@ -196,6 +218,12 @@ def _number(text: str) -> str:
 
 def _strip_number(text: str) -> str:
     return re.sub(r"^\s*#?\s*\d{1,6}\s*[:：,.-]?\s*", "", text).strip() or text
+
+
+def _instruction(text: str) -> str:
+    cleaned = _strip_number(text)
+    cleaned = re.sub(r"^(reply|re|回[复覆]?)\s+", "", cleaned, flags=re.IGNORECASE).strip()
+    return cleaned
 
 
 def _word(text: str) -> str:

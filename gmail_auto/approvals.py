@@ -4,6 +4,7 @@ A waiting reply can be approved, changed or dropped from WhatsApp or from the
 Approvals page. Nothing here is sent until one of those says yes.
 """
 
+import re
 import time
 from datetime import datetime
 
@@ -17,7 +18,7 @@ EXPIRE_AFTER = 7 * 24 * 3600
 _KEEP_DECIDED = 200
 
 
-def create(mail: Mail, draft, language: str) -> dict:
+def create(mail: Mail, draft, language: str, role: str = "ask", kind: str = "") -> dict:
     with LOCK:
         data = _load()
         data["seq"] = int(data.get("seq", 0)) + 1
@@ -43,6 +44,8 @@ def create(mail: Mail, draft, language: str) -> dict:
             "language": language,
             "sources": list(draft.sources or []),
             "status": "pending",
+            "role": role,
+            "kind": kind,
             "created_at": time.time(),
             "created_text": _now(),
             "decided_at": 0,
@@ -57,9 +60,39 @@ def create(mail: Mail, draft, language: str) -> dict:
 
 
 def pending() -> list[dict]:
+    items = [
+        item
+        for item in _load()["items"].values()
+        if item.get("status") == "pending" and item.get("role") != "notice"
+    ]
+    items.sort(key=lambda item: item.get("created_at", 0), reverse=True)
+    return items
+
+
+def open_items() -> list[dict]:
     items = [item for item in _load()["items"].values() if item.get("status") == "pending"]
     items.sort(key=lambda item: item.get("created_at", 0), reverse=True)
     return items
+
+
+def find_by_hint(text: str) -> list[dict]:
+    needle = re.sub(r"^(reply|re|回[复覆]?)\s+", "", (text or "").strip(), flags=re.IGNORECASE).lower()
+    needle = re.sub(r"#?\s*\d{1,6}\b", " ", needle).strip()
+    if len(needle) < 3:
+        return []
+    words = [
+        part
+        for part in re.split(r"\s+", needle)
+        if len(part) > 2 and part not in {"the", "and", "for", "you", "want", "what", "say", "tell", "them", "that", "this", "with", "from", "will", "we'll"}
+    ]
+    if not words:
+        return []
+    found = []
+    for item in open_items():
+        blob = f"{item.get('from_name') or ''} {item.get('from_email') or ''} {item.get('subject') or ''} {item.get('kind') or ''}".lower()
+        if needle in blob or any(word in blob for word in words):
+            found.append(item)
+    return found
 
 
 def recent(limit: int = 20) -> list[dict]:
@@ -106,6 +139,7 @@ def set_draft(item_id: str, text: str) -> dict:
         if text != item.get("draft"):
             item["draft"] = text
             item["edited"] = True
+            item["role"] = "ask"
             _save(data)
         return item
 

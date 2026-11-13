@@ -98,6 +98,7 @@ class PageTests(WebCase):
             ("/connections", "Connect Outlook" if False else "Outlook"),
             ("/profile", "Sending mode"),
             ("/profile", "Inbox cleanup"),
+            ("/profile", "important mail"),
             ("/profile", "from:linkedin.com"),
             ("/calendar", "From email"),
             ("/calendar", "Mon"),

@@ -67,6 +67,14 @@
       <span>Tell me on WhatsApp when a reply was sent automatically</span>
     </label>
     <label class="check span-2">
+      <input type="checkbox" name="notify_important" value="1" {% if settings.notify_important %}checked{% endif %}>
+      <span>WhatsApp me important mail (company, enquiry, invoice, school, people) even when no draft is ready</span>
+    </label>
+    <label class="check span-2">
+      <input type="checkbox" name="notify_calendar" value="1" {% if settings.notify_calendar %}checked{% endif %}>
+      <span>WhatsApp me about calendar events 15 minutes before they start</span>
+    </label>
+    <label class="check span-2">
       <input type="checkbox" name="daily_digest" value="1" {% if settings.daily_digest %}checked{% endif %}>
       <span>Send me yesterday's numbers on WhatsApp every morning</span>
     </label>

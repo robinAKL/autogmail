@@ -60,6 +60,27 @@ def send_text(body: str) -> str:
     return _meta_send(to, {"type": "text", "text": {"preview_url": False, "body": _clip(body, _META_LIMIT)}})
 
 
+def send_notice(item: dict) -> str:
+    """Tell the owner an important letter arrived, with the number to reply against."""
+    return send_text(notice_text(item))
+
+
+def notice_text(item: dict) -> str:
+    who = item.get("from_name") or item.get("from_email") or "Unknown sender"
+    kind = item.get("kind") or "mail"
+    return "\n".join(
+        [
+            f"Important · {kind} (#{item['id']})",
+            f"From: {who}",
+            f"Subject: {item.get('subject') or '(no subject)'}",
+            item.get("reason") or item.get("summary") or "",
+            "",
+            f"To reply, send: {item['id']} <what you want to say>",
+            "I will draft it and ask before sending.",
+        ]
+    ).strip()
+
+
 def send_approval(item: dict) -> list[str]:
     """Show the owner a waiting reply and how to answer. Returns the message ids, for matching replies."""
     kind, to = _target()
@@ -88,7 +109,7 @@ def approval_text(item: dict) -> str:
     if item.get("from_name") and item.get("from_email"):
         who = f"{item['from_name']} <{item['from_email']}>"
     lines = [
-        f"New email needs your OK (#{item['id']})",
+        f"{'Important · ' + item['kind'] + ' · ' if item.get('kind') else ''}New email needs your OK (#{item['id']})",
         f"From: {who}",
         f"Subject: {item.get('subject') or '(no subject)'}",
     ]

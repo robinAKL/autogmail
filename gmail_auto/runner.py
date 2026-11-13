@@ -193,6 +193,14 @@ def _run_locked(gmail=None, generate=None) -> RunReport:
             report.lines.append(named_error(getattr(client, "provider", "mailbox").title(), exc))
     if already and report.checked == 0:
         report.lines.append(f"{already} unread letters were already handled and were not answered again.")
+    try:
+        from gmail_auto.calendars import ping_due_whatsapp
+
+        ping_due_whatsapp()
+    except ConfigError:
+        pass
+    except Exception:
+        pass
     report.lines = report.lines[:40]
     try:
         send_daily_digest()
@@ -214,7 +222,8 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
         stats.note_received(mail)
         decision = classify(mail, user)
         if isinstance(decision, Skip):
-            _skip(client, mail, decision, report)
+            notice_id = _maybe_notice(mail, decision, settings, report)
+            _skip(client, mail, decision, report, approval_id=notice_id)
             continue
         if not isinstance(decision, Allow):
             continue
@@ -234,7 +243,8 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
         subject = short_subject(mail.subject)
         if draft.action == "skip":
             reason = draft.reason or "no reply needed"
-            mark_processed(_record(mail, "skipped", reason, "", decision.language, False, skip_code="no_reply_needed", summary=draft.summary))
+            notice_id = _maybe_notice(mail, None, settings, report)
+            mark_processed(_record(mail, "skipped", reason, "", decision.language, False, skip_code="no_reply_needed", summary=draft.summary, approval_id=notice_id))
             _remember(client, mail.id, done=True)
             stats.note_outcome("skipped", mail, skip_code="no_reply_needed")
             report.skipped += 1
@@ -249,7 +259,8 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
                 report.drafted += 1
                 report.lines.append(f"Draft saved: {subject}")
             elif settings["approval_mode"] == "always" or (settings["approval_mode"] == "smart" and draft.action == "ask"):
-                item = approvals.create(mail, draft, decision.language)
+                tag = _tag(mail)
+                item = approvals.create(mail, draft, decision.language, kind=tag.get("kind") if tag.get("important") else "")
                 mark_processed(_record(mail, "waiting", draft.reason, draft.reply, decision.language, False, "", draft, approval_id=item["id"]))
                 clear_failure(mail.key)
                 _remember(client, mail.id, done=True)
@@ -305,8 +316,36 @@ def _as_draft(result) -> Draft:
     return Draft(action="reply", reply=str(result or ""))
 
 
-def _skip(gmail, mail: Mail, decision: Skip, report: RunReport) -> None:
-    mark_processed(_record(mail, "skipped", decision.reason, "", "", decision.sensitive, skip_code=decision.code))
+def _tag(mail: Mail) -> dict:
+    from gmail_auto.importance import assess
+
+    return assess(mail)
+
+
+def _maybe_notice(mail: Mail, decision, settings: dict, report: RunReport) -> str:
+    from gmail_auto.importance import PING_SKIPS
+
+    if not settings.get("notify_important"):
+        return ""
+    if decision is not None and (getattr(decision, "sensitive", False) or getattr(decision, "code", "") not in PING_SKIPS):
+        return ""
+    tag = _tag(mail)
+    if not tag.get("important"):
+        return ""
+    from gmail_auto import whatsapp
+
+    item = approvals.create(mail, Draft(action="skip", summary=tag["why"], reason=tag["why"]), "en", role="notice", kind=tag["kind"])
+    if whatsapp.ready():
+        try:
+            approvals.remember_whatsapp(item["id"], [whatsapp.send_notice(item)])
+        except ConfigError:
+            pass
+    report.lines.append(f"WhatsApp: important {tag['label']} — {short_subject(mail.subject)}")
+    return item["id"]
+
+
+def _skip(gmail, mail: Mail, decision: Skip, report: RunReport, approval_id: str = "") -> None:
+    mark_processed(_record(mail, "skipped", decision.reason, "", "", decision.sensitive, skip_code=decision.code, approval_id=approval_id))
     _remember(gmail, mail.id, done=True)
     stats.note_outcome("skipped", mail, skip_code=decision.code)
     report.skipped += 1

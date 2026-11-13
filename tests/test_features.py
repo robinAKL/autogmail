@@ -256,6 +256,44 @@ class CalendarTests(TempHome):
         self.assertEqual(board["selected_label"], "Friday 13 November")
         self.assertEqual(len(board["selected_events"]), 1)
 
+    def test_whatsapp_pings_events_about_to_start_without_changing_calendar_reminders(self):
+        from datetime import datetime, timedelta
+        from gmail_auto.calendars import ZONE, ping_due_whatsapp
+
+        start = datetime.now(ZONE) + timedelta(minutes=12)
+        event = {
+            "id": "cal1",
+            "title": "Parent interview",
+            "start": start,
+            "when": "15:00–16:00",
+            "location": "Westlake",
+        }
+        sent = []
+        save_settings({"whatsapp_to": "64211234567", "notify_calendar": True, "daily_digest": False})
+        os.environ["WHATSAPP_TOKEN"] = "test-token"
+        os.environ["WHATSAPP_PHONE_NUMBER_ID"] = "123"
+        with patch("gmail_auto.calendars.list_upcoming", return_value={"events": [event]}), patch(
+            "gmail_auto.whatsapp.send_text", lambda body: sent.append(body) or "wamid.1"
+        ):
+            self.assertEqual(ping_due_whatsapp(), 1)
+            self.assertEqual(ping_due_whatsapp(), 0)
+        self.assertIn("Parent interview", sent[0])
+        self.assertIn("Calendar in", sent[0])
+
+
+class ImportanceTests(TempHome):
+    def test_invoices_enquiries_and_school_are_important_job_alerts_are_not(self):
+        from gmail_auto.importance import assess
+
+        invoice = sample(from_email="noreply@xero.com", subject="Invoice 1042 is due")
+        enquiry = sample(from_email="lee@client.example", subject="Quote for the workshop")
+        school = sample(from_email="office@wairau.school.nz", subject="Westlake newsletter")
+        junk = sample(from_email="jobalerts-noreply@linkedin.com", subject="You may be a fit")
+        self.assertEqual(assess(invoice)["kind"], "invoice")
+        self.assertEqual(assess(enquiry)["kind"], "enquiry")
+        self.assertEqual(assess(school)["kind"], "school")
+        self.assertFalse(assess(junk)["important"])
+
 
 class CleanupTests(TempHome):
     def test_cleanup_follows_match_and_keep_rules(self):
@@ -471,6 +509,21 @@ class WhatsAppTests(TempHome):
             assistant.handle(whatsapp.Incoming(sender="64211234567", button="reject:1", text="Don't send"))
         self.assertEqual(approvals.pending(), [])
         self.assertEqual(get_processed("w1")["action"], "rejected")
+
+    def test_important_invoice_is_pinged_and_a_numbered_whatsapp_reply_drafts_it(self):
+        fake = FakeGmail(
+            [sample(id="inv1", from_email="noreply@xero.com", subject="Invoice 1042 is due", body="Please pay invoice 1042.")]
+        )
+        run_once(gmail=fake, generate=lambda *_: Draft(action="skip", reason="Notification."))
+        item = approvals.open_items()[0]
+        self.assertEqual(item["role"], "notice")
+        self.assertEqual(item["kind"], "invoice")
+        self.assertIn("Invoice 1042", self.sent[0][1]["text"]["body"])
+        with patch("gmail_auto.generator.revise_reply", lambda item, instruction, profile: f"We will pay on Friday. ({instruction})"):
+            answer = assistant.handle(whatsapp.Incoming(sender="64211234567", text=f"{item['id']} we'll pay Friday"))
+        self.assertIn("We will pay on Friday", answer)
+        self.assertIn("YES to send", answer)
+        self.assertEqual(approvals.pending()[0]["draft"], "We will pay on Friday. (we'll pay Friday)")
 
     def test_pause_stops_sending_and_duplicates_are_ignored(self):
         self.assertIn("Paused", assistant.handle(whatsapp.Incoming(sender="64211234567", text="pause")))

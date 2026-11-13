@@ -61,6 +61,48 @@ def list_upcoming(days: int = _DAYS) -> dict:
     return {"days": days_out, "events": events, "accounts": accounts, "errors": errors, "from": start, "until": end}
 
 
+def ping_due_whatsapp() -> int:
+    """WhatsApp ping for events starting in the next 20 minutes. Does not change calendar-app reminders."""
+    settings = load_settings()
+    if not settings.get("notify_calendar"):
+        return 0
+    from gmail_auto import whatsapp
+
+    if not whatsapp.ready():
+        return 0
+    now = datetime.now(ZONE)
+    until = now + timedelta(minutes=20)
+    data = list_upcoming(1)
+    saved = load_doc("calendar_pings", {})
+    if not isinstance(saved, dict):
+        saved = {}
+    sent = 0
+    for event in data.get("events") or []:
+        start = event.get("start")
+        event_id = event.get("id") or ""
+        if not event_id or start is None or start <= now or start > until:
+            continue
+        if saved.get(event_id):
+            continue
+        minutes = max(1, int((start - now).total_seconds() // 60))
+        line = f"Calendar in {minutes} min: {event.get('title') or 'Event'}"
+        extra = event.get("location") or event.get("when") or ""
+        if extra:
+            line += f"\n{extra}"
+        try:
+            whatsapp.send_text(line)
+        except ConfigError:
+            break
+        saved[event_id] = now.strftime("%Y-%m-%d %H:%M")
+        sent += 1
+    if sent:
+        if len(saved) > 200:
+            ordered = sorted(saved.items(), key=lambda pair: str(pair[1]))
+            saved = dict(ordered[-200:])
+        save_doc("calendar_pings", saved)
+    return sent
+
+
 def month_board(year: int | None = None, month: int | None = None, day: str = "") -> dict:
     """A Monday–Sunday month grid with events placed on their dates."""
     now = datetime.now(ZONE)

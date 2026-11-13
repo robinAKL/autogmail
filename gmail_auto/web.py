@@ -833,6 +833,8 @@ def configure_app(app: Flask) -> None:
                 {
                     "reply_language": request.form.get("reply_language", ""),
                     "notify_auto_replies": request.form.get("notify_auto_replies") == "1",
+                    "notify_important": request.form.get("notify_important") == "1",
+                    "notify_calendar": request.form.get("notify_calendar") == "1",
                     "daily_digest": request.form.get("daily_digest") == "1",
                     "digest_hour": request.form.get("digest_hour", "8"),
                 }
