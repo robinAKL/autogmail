@@ -103,6 +103,48 @@ class KnowledgeTests(TempHome):
         knowledge.save_brief("## Who I am\n- Edited by hand.")
         self.assertIn("Edited by hand", knowledge.load_index()["brief"]["text"])
 
+    def test_facts_stay_locked_and_rules_can_be_changed(self):
+        knowledge.save_brief("## Key facts\n- The workshop costs 450 dollars.\n## How to handle my mail\n- Never reply to recruiters.")
+        items = {item["text"]: item for item in knowledge.list_items()}
+        fact = items["The workshop costs 450 dollars."]
+        rule = items["Never reply to recruiters."]
+        self.assertTrue(fact["locked"])
+        with self.assertRaises(ConfigError):
+            knowledge.update_item(fact["id"], "The workshop is free.")
+        with self.assertRaises(ConfigError):
+            knowledge.delete_item(fact["id"])
+        knowledge.update_item(rule["id"], "Ask me before replying to recruiters.")
+        self.assertEqual(knowledge.get_item(rule["id"])["text"], "Ask me before replying to recruiters.")
+        ended = knowledge.end_item(fact["id"])
+        self.assertEqual(ended["status"], "ended")
+        self.assertFalse(knowledge.is_active(knowledge.get_item(fact["id"])))
+        self.assertTrue(knowledge.delete_item(rule["id"]))
+        self.assertIsNone(knowledge.get_item(rule["id"]))
+        graph = knowledge.graph_view()
+        self.assertTrue(any(node["id"] == "you" for node in graph["nodes"]))
+        self.assertFalse(any(node["id"] == fact["id"] for node in graph["nodes"]))
+
+    def test_reorganise_keeps_old_facts_on_the_timeline(self):
+        profile = write_test_profile()
+        knowledge.save_brief("## Key facts\n- The workshop costs 450 dollars.")
+        old = knowledge.list_items("fact")[0]
+
+        def fake_complete(_system, _user, **_kwargs):
+            return '{"items":[{"kind":"fact","text":"The workshop costs 500 dollars.","as_of":"2026-11-13"}]}'
+
+        with patch("gmail_auto.knowledge.complete", fake_complete):
+            knowledge.rebuild_model(profile)
+        live = knowledge.list_items("fact", active_only=True)
+        past = [item for item in knowledge.list_items("fact") if not knowledge.is_active(item)]
+        self.assertEqual([item["text"] for item in live], ["The workshop costs 500 dollars."])
+        self.assertEqual(past[0]["id"], old["id"])
+        self.assertEqual(past[0]["status"], "superseded")
+        self.assertEqual(live[0]["replaces"], old["id"])
+        self.assertIn("500 dollars", knowledge.load_index()["brief"]["text"])
+        self.assertNotIn("450 dollars", knowledge.load_index()["brief"]["text"])
+        self.assertTrue(knowledge.timeline())
+        self.assertEqual(knowledge.memory_tiles()[0]["count"], 1)
+
     def test_learning_from_email_leaves_out_secrets_and_promotions(self):
         class Box(FakeGmail):
             def list_sent(self, limit=30, full=False):

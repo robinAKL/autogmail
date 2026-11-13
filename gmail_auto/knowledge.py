@@ -1,10 +1,12 @@
 """The knowledge base replies are written from.
 
 It holds documents (uploaded files, notes, summaries of past email, SharePoint
-files), the user's own reply rules, and one written "understanding" of all of
-it. Every reply is drafted from the profile plus what is found here.
+files), the user's own reply rules, and a structured reading of all of that
+(facts, people, topics, experience, preferences, rules, decisions). Every reply
+is drafted from the profile plus what is found here.
 """
 
+import json
 import math
 import re
 import secrets
@@ -14,7 +16,7 @@ from datetime import datetime
 from gmail_auto.envfile import has_openai_key
 from gmail_auto.errors import ConfigError, ReplyError
 from gmail_auto.filters import is_sensitive
-from gmail_auto.llm import complete
+from gmail_auto.llm import complete, parse_json
 from gmail_auto.profile_store import profile_as_prompt
 from gmail_auto.storage import LOCK, delete_doc, load_doc, save_doc
 
@@ -53,6 +55,72 @@ Under each heading use short bullet points starting with "- ". If the material s
 Under "How to handle my mail" restate the user's own rules first, then add cautions that follow from the material.
 Keep the whole briefing under 500 words."""
 
+KINDS = {
+    "fact": {
+        "label": "Facts",
+        "locked": True,
+        "hint": "Stated in your documents or mail. Replies treat current facts as true. They cannot be rewritten. Mark them no longer current, or reorganise so a later source replaces them on the timeline.",
+    },
+    "person": {
+        "label": "People",
+        "locked": False,
+        "hint": "Who you write with, and how they relate to you.",
+    },
+    "topic": {
+        "label": "Topics",
+        "locked": False,
+        "hint": "Ongoing work, school, projects and threads the assistant should recognise.",
+    },
+    "experience": {
+        "label": "Experience",
+        "locked": False,
+        "hint": "Patterns from how you have handled similar mail before.",
+    },
+    "preference": {
+        "label": "Preferences",
+        "locked": False,
+        "hint": "Tone, length, sign-off and language.",
+    },
+    "rule": {
+        "label": "Rules",
+        "locked": False,
+        "hint": "Always win over everything else. You can change or drop these.",
+    },
+    "decision": {
+        "label": "Decisions",
+        "locked": False,
+        "hint": "Calls you have already made that later mail should not reopen.",
+    },
+}
+_KIND_ORDER = tuple(KINDS)
+_HEADING_KIND = {
+    "who i am": "fact",
+    "key facts": "fact",
+    "people and organisations": "person",
+    "people": "person",
+    "ongoing topics and commitments": "topic",
+    "topics": "topic",
+    "how i write": "preference",
+    "how to handle my mail": "rule",
+    "facts the owner stated about themself": "fact",
+    "how the owner writes": "preference",
+}
+_MODEL_SYSTEM = """You extract a private knowledge model for an email assistant.
+Use only what the material states. Never invent names, numbers or dates.
+Reply with JSON only, no markdown, in this shape:
+{"items":[{"kind":"fact","text":"...","related":["optional other item text or name"],"source":"document title, profile or rules","as_of":"YYYY-MM-DD or empty"}]}
+kind must be one of: fact, person, topic, experience, preference, rule, decision.
+- fact: a concrete statement (price, date, role, address). These will be locked.
+- person: a person or organisation and their relationship to the owner.
+- topic: an ongoing subject, project or thread.
+- experience: a pattern of how the owner has handled similar mail.
+- preference: tone, sign-off, language, length.
+- rule: an instruction the owner wants followed.
+- decision: a call already made.
+as_of is the date the material makes the statement true, if it says one. Leave it empty if the material has no date.
+If the material says something used to be true but is no longer, still emit it with as_of and valid_until dates.
+Keep each text under 220 characters. At most 48 items. Prefer fewer, clearer items over repeats."""
+
 _SUMMARY_SYSTEM = """Summarise this document for a private knowledge base used to answer email on the owner's behalf.
 Give 3 to 7 short bullet points starting with "- " that capture the facts, names, dates, numbers and decisions someone would need when replying to related email.
 Use only what the document says. Write in English."""
@@ -80,6 +148,9 @@ def load_index() -> dict:
     docs = [item for item in data.get("docs", []) if isinstance(item, dict) and item.get("id")]
     rules = [str(item) for item in data.get("rules", []) if isinstance(item, str) and item.strip()]
     brief = data.get("brief") if isinstance(data.get("brief"), dict) else {}
+    model = data.get("model") if isinstance(data.get("model"), dict) else {}
+    items = [_clean_item(item) for item in model.get("items") or [] if isinstance(item, dict)]
+    items = [item for item in items if item]
     return {
         "docs": docs,
         "rules": rules,
@@ -87,6 +158,10 @@ def load_index() -> dict:
             "text": str(brief.get("text") or ""),
             "updated_at": str(brief.get("updated_at") or ""),
             "stale": bool(brief.get("stale")),
+        },
+        "model": {
+            "items": items,
+            "updated_at": str(model.get("updated_at") or ""),
         },
         "stamp": data.get("stamp") or 0,
     }
@@ -187,6 +262,7 @@ def save_rules(text_or_list) -> list[str]:
         if items != index["rules"]:
             index["rules"] = items
             index["brief"]["stale"] = True
+            index["model"]["items"] = _sync_rules(index["model"]["items"], items)
             _save_index(index)
     return items
 
@@ -198,30 +274,332 @@ def save_brief(text: str) -> None:
     with LOCK:
         index = load_index()
         index["brief"] = {"text": text, "updated_at": _now(), "stale": False}
+        if text and not index["model"]["items"]:
+            index["model"] = {"items": items_from_brief(text), "updated_at": _now()}
         _save_index(index)
 
 
 def rebuild_brief(profile: dict) -> str:
-    """Ask the model to re-read everything and write the understanding again."""
-    index = load_index()
-    parts = ["PROFILE\n" + profile_as_prompt(profile)]
-    if index["rules"]:
-        parts.append("THE USER'S OWN RULES\n" + "\n".join(f"- {rule}" for rule in index["rules"]))
-    budget = 24000
-    for item in sorted(index["docs"], key=lambda doc: doc.get("added_at", ""), reverse=True):
-        body = load_doc(_body_name(item["id"]), {})
-        text = body.get("text", "") if isinstance(body, dict) else ""
-        piece = text if len(text) <= 2500 else (item.get("summary") or _first_lines(text))
-        block = f"DOCUMENT: {item['title']} ({SOURCES.get(item['source'], item['source'])})\n{piece}"
-        if len(block) > budget:
-            break
-        budget -= len(block)
-        parts.append(block)
-    text = complete(_BRIEF_SYSTEM, "\n\n".join(parts), max_tokens=1100, temperature=0.2).strip()
-    if not text:
+    """Re-read profile, rules and documents, then rewrite the model and the briefing."""
+    return rebuild_model(profile)
+
+
+def rebuild_model(profile: dict) -> str:
+    """Rebuild the structured knowledge from current sources and settings."""
+    previous = load_index()["model"]["items"]
+    material = _source_material(profile)
+    raw = complete(_MODEL_SYSTEM + "\n\nIf you cannot produce JSON, write the markdown briefing instead.", material, max_tokens=1400, temperature=0.2).strip()
+    if not raw:
         raise ReplyError("The model returned nothing.")
-    save_brief(text)
+    extracted = []
+    parsed = parse_json(raw)
+    if parsed:
+        extracted = [_clean_item(item, origin="extract") for item in parsed.get("items") or [] if isinstance(item, dict)]
+        extracted = [item for item in extracted if item]
+    if not extracted and raw.lstrip().startswith("#"):
+        extracted = items_from_brief(raw)
+    if not extracted:
+        briefing = complete(_BRIEF_SYSTEM, material, max_tokens=1100, temperature=0.2).strip()
+        if not briefing:
+            raise ReplyError("The model returned nothing.")
+        extracted = items_from_brief(briefing)
+    merged = _merge_items(extracted, previous)
+    live = [item for item in merged if is_active(item)]
+    text = brief_from_items(live, load_index()["rules"])
+    with LOCK:
+        index = load_index()
+        index["model"] = {"items": merged, "updated_at": _now()}
+        rules = [item["text"] for item in live if item["kind"] == "rule"]
+        if rules:
+            index["rules"] = rules[:MAX_RULES]
+        index["brief"] = {"text": text, "updated_at": _now(), "stale": False}
+        _save_index(index)
     return text
+
+
+def list_items(kind: str = "", active_only: bool = False) -> list[dict]:
+    items = load_index()["model"]["items"]
+    if kind in KINDS:
+        items = [item for item in items if item["kind"] == kind]
+    if active_only:
+        items = [item for item in items if is_active(item)]
+    return items
+
+
+def get_item(item_id: str) -> dict | None:
+    for item in load_index()["model"]["items"]:
+        if item["id"] == item_id:
+            return item
+    return None
+
+
+def update_item(item_id: str, text: str) -> dict:
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    if not text or len(text) > 300:
+        raise ConfigError("Keep each item between 1 and 300 characters.")
+    with LOCK:
+        index = load_index()
+        found = None
+        items = []
+        for item in index["model"]["items"]:
+            if item["id"] != item_id:
+                items.append(item)
+                continue
+            if KINDS[item["kind"]]["locked"]:
+                raise ConfigError("Facts are taken from your sources and cannot be edited. Rebuild knowledge to refresh them.")
+            found = dict(item, text=text, origin="user", updated_at=_now())
+            items.append(found)
+        if found is None:
+            raise ConfigError("That knowledge item is not here any more.")
+        index["model"]["items"] = items
+        index["model"]["updated_at"] = _now()
+        if found["kind"] == "rule":
+            index["rules"] = [item["text"] for item in items if item["kind"] == "rule"][:MAX_RULES]
+        index["brief"]["stale"] = True
+        _save_index(index)
+    return found
+
+
+def delete_item(item_id: str) -> bool:
+    with LOCK:
+        index = load_index()
+        found = next((item for item in index["model"]["items"] if item["id"] == item_id), None)
+        if found is None:
+            return False
+        if KINDS[found["kind"]]["locked"]:
+            raise ConfigError("Facts cannot be deleted. Remove or change the source document, then rebuild knowledge.")
+        index["model"]["items"] = [item for item in index["model"]["items"] if item["id"] != item_id]
+        index["model"]["updated_at"] = _now()
+        if found["kind"] == "rule":
+            index["rules"] = [item["text"] for item in index["model"]["items"] if item["kind"] == "rule"]
+        index["brief"]["stale"] = True
+        _save_index(index)
+    return True
+
+
+def end_item(item_id: str) -> dict:
+    """Mark an item as no longer true without rewriting it. Facts can end; they still cannot be edited."""
+    with LOCK:
+        index = load_index()
+        found = None
+        items = []
+        for item in index["model"]["items"]:
+            if item["id"] != item_id:
+                items.append(item)
+                continue
+            found = dict(item, status="ended", valid_until=item.get("valid_until") or _now(), updated_at=_now())
+            items.append(found)
+        if found is None:
+            raise ConfigError("That knowledge item is not here any more.")
+        index["model"]["items"] = items
+        index["model"]["updated_at"] = _now()
+        if found["kind"] == "rule":
+            index["rules"] = [item["text"] for item in items if item["kind"] == "rule" and is_active(item)]
+        index["brief"]["stale"] = True
+        _save_index(index)
+    return found
+
+
+def add_item(kind: str, text: str) -> dict:
+    if kind not in KINDS or KINDS[kind]["locked"]:
+        raise ConfigError("That kind of knowledge cannot be added by hand.")
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    if not text or len(text) > 300:
+        raise ConfigError("Keep each item between 1 and 300 characters.")
+    item = _clean_item({"kind": kind, "text": text, "origin": "user"}, origin="user")
+    with LOCK:
+        index = load_index()
+        if len(index["model"]["items"]) >= 80:
+            raise ConfigError("Too many knowledge items. Delete some first, or rebuild to compress them.")
+        index["model"]["items"].append(item)
+        index["model"]["updated_at"] = _now()
+        if kind == "rule":
+            rules = index["rules"] + [text]
+            if len(rules) > MAX_RULES:
+                raise ConfigError(f"Too many rules. Keep it to {MAX_RULES} or fewer.")
+            index["rules"] = rules
+        index["brief"]["stale"] = True
+        _save_index(index)
+    return item
+
+
+def items_from_brief(text: str) -> list[dict]:
+    """Turn the older markdown briefing into cards so an existing base still has a map."""
+    items = []
+    kind = "fact"
+    for line in (text or "").splitlines():
+        heading = re.match(r"^#{1,3}\s+(.+)$", line.strip())
+        if heading:
+            kind = _HEADING_KIND.get(heading.group(1).strip().lower(), kind)
+            continue
+        bullet = re.match(r"^[-•*]\s+(.+)$", line.strip())
+        if not bullet:
+            continue
+        body = bullet.group(1).strip()
+        if not body or body.lower().startswith("nothing recorded"):
+            continue
+        items.append(_clean_item({"kind": kind, "text": body, "origin": "extract"}, origin="extract"))
+    return [item for item in items if item]
+
+
+def is_active(item: dict) -> bool:
+    status = str(item.get("status") or "active")
+    if status in ("ended", "superseded"):
+        return False
+    until = str(item.get("valid_until") or "").strip()
+    if until and until <= _now():
+        return False
+    return True
+
+
+def brief_from_items(items: list[dict], rules: list[str] | None = None) -> str:
+    groups = {kind: [] for kind in _KIND_ORDER}
+    for item in items:
+        if not is_active(item):
+            continue
+        groups.get(item["kind"], groups["fact"]).append(item["text"])
+    if rules:
+        for rule in rules:
+            if rule not in groups["rule"]:
+                groups["rule"].insert(0, rule)
+
+    def block(title: str, lines: list[str]) -> str:
+        bullets = "\n".join(f"- {line}" for line in lines[:12]) if lines else "- Nothing recorded yet."
+        return f"## {title}\n{bullets}"
+
+    return "\n\n".join(
+        [
+            block("Who I am", groups["fact"][:4]),
+            block("Key facts", groups["fact"][4:]),
+            block("People and organisations", groups["person"]),
+            block("Ongoing topics and commitments", groups["topic"] + groups["decision"]),
+            block("How I write", groups["preference"] + groups["experience"]),
+            block("How to handle my mail", groups["rule"]),
+        ]
+    )
+
+
+def graph_view(items: list[dict] | None = None) -> dict:
+    """Positions for an SVG map: you in the centre, kinds around, items on the rim."""
+    items = items if items is not None else load_index()["model"]["items"]
+    items = [item for item in items if is_active(item)]
+    width, height = 960, 400
+    cx, cy = 168.0, 200.0
+    present = [kind for kind in _KIND_ORDER if any(item["kind"] == kind for item in items)]
+    nodes = [{"id": "you", "kind": "you", "label": "You", "title": "Your profile and this knowledge base", "x": cx, "y": cy, "r": 28}]
+    edges = []
+    if not present:
+        return {"width": width, "height": height, "nodes": nodes, "edges": edges}
+    n = len(present)
+    for index, kind in enumerate(present):
+        angle = (-0.95 + (1.9 * index / max(n - 1, 1))) if n > 1 else 0
+        hx = cx + 210 * math.cos(angle)
+        hy = cy + 155 * math.sin(angle)
+        nodes.append(
+            {
+                "id": f"kind-{kind}",
+                "kind": kind,
+                "label": KINDS[kind]["label"],
+                "title": KINDS[kind]["hint"],
+                "x": hx,
+                "y": hy,
+                "r": 22,
+            }
+        )
+        edges.append({"from": "you", "to": f"kind-{kind}"})
+        group = [item for item in items if item["kind"] == kind][:5]
+        for step, item in enumerate(group):
+            spread = (step - (len(group) - 1) / 2) * 0.22
+            ix = hx + 118 * math.cos(angle + spread)
+            iy = hy + 78 * math.sin(angle + spread)
+            nodes.append(
+                {
+                    "id": item["id"],
+                    "kind": kind,
+                    "label": _short_label(item["text"]),
+                    "title": item["text"],
+                    "x": min(width - 70, max(70, ix)),
+                    "y": min(height - 28, max(28, iy)),
+                    "r": 10,
+                }
+            )
+            edges.append({"from": f"kind-{kind}", "to": item["id"]})
+            for other in item.get("related") or []:
+                match = next((node for node in nodes if node["title"] == other or node["label"] == other), None)
+                if match and match["id"] != item["id"]:
+                    edges.append({"from": item["id"], "to": match["id"]})
+    by_id = {node["id"]: node for node in nodes}
+    drawn = []
+    for edge in edges:
+        start, end = by_id.get(edge["from"]), by_id.get(edge["to"])
+        if start and end:
+            drawn.append({"x1": start["x"], "y1": start["y"], "x2": end["x"], "y2": end["y"]})
+    return {"width": width, "height": height, "nodes": nodes, "edges": drawn}
+
+
+def memory_tiles(items: list[dict] | None = None, preview: int = 4) -> list[dict]:
+    """Compact Memory view: one tile per kind, with the live bullets on top."""
+    items = items if items is not None else load_index()["model"]["items"]
+    live = [item for item in items if is_active(item)]
+    tiles = []
+    for kind in _KIND_ORDER:
+        cards = [item for item in live if item["kind"] == kind]
+        tiles.append(
+            {
+                "kind": kind,
+                "label": KINDS[kind]["label"],
+                "locked": KINDS[kind]["locked"],
+                "hint": KINDS[kind]["hint"],
+                "count": len(cards),
+                "preview": cards[:preview],
+                "more": max(0, len(cards) - preview),
+            }
+        )
+    return tiles
+
+
+def timeline(items: list[dict] | None = None) -> list[dict]:
+    """Newest-first days. Each event is when something became true, was replaced, or ended."""
+    items = items if items is not None else load_index()["model"]["items"]
+    events = []
+    by_id = {item["id"]: item for item in items}
+    for item in items:
+        events.append(
+            {
+                "when": item.get("at") or item.get("valid_from") or "",
+                "action": "added",
+                "label": "Became current",
+                "item": item,
+            }
+        )
+        if item.get("replaces") and item["replaces"] in by_id:
+            events.append(
+                {
+                    "when": item.get("valid_from") or item.get("at") or "",
+                    "action": "superseded",
+                    "label": "Replaced an earlier version",
+                    "item": item,
+                    "previous": by_id[item["replaces"]],
+                }
+            )
+        if item.get("valid_until"):
+            events.append(
+                {
+                    "when": item["valid_until"],
+                    "action": item.get("status") or "ended",
+                    "label": "No longer current",
+                    "item": item,
+                }
+            )
+    events = [event for event in events if event["when"]]
+    events.sort(key=lambda event: event["when"], reverse=True)
+    days = []
+    for event in events:
+        day = event["when"][:10]
+        if not days or days[-1]["day"] != day:
+            days.append({"day": day, "events": []})
+        days[-1]["events"].append(event)
+    return days
 
 
 def refresh_brief_if_stale(profile: dict) -> None:
@@ -349,13 +727,22 @@ def overview() -> dict:
     counts: dict[str, int] = {}
     for item in index["docs"]:
         counts[item["source"]] = counts.get(item["source"], 0) + 1
+    live = [item for item in index["model"]["items"] if is_active(item)]
+    past = [item for item in index["model"]["items"] if not is_active(item)]
+    by_kind = {kind: 0 for kind in _KIND_ORDER}
+    for item in live:
+        by_kind[item["kind"]] = by_kind.get(item["kind"], 0) + 1
     return {
         "documents": len(index["docs"]),
         "by_source": counts,
         "rules": len(index["rules"]),
-        "brief_ready": bool(index["brief"]["text"]),
+        "item_count": len(live),
+        "past_count": len(past),
+        "by_kind": by_kind,
+        "brief_ready": bool(index["brief"]["text"] or live),
         "brief_stale": index["brief"]["stale"],
         "characters": sum(int(item.get("chars", 0) or 0) for item in index["docs"]),
+        "model_updated": index["model"]["updated_at"],
     }
 
 
@@ -429,7 +816,7 @@ def _tokens(text: str) -> list[str]:
 
 def _save_index(index: dict) -> None:
     index["stamp"] = time.time()
-    save_doc("kb_index", {key: index[key] for key in ("docs", "rules", "brief", "stamp")})
+    save_doc("kb_index", {key: index[key] for key in ("docs", "rules", "brief", "model", "stamp")})
 
 
 def _body_name(doc_id: str) -> str:
@@ -458,3 +845,128 @@ def _unique(items: list[str]) -> list[str]:
 
 def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def _source_material(profile: dict) -> str:
+    index = load_index()
+    parts = ["PROFILE\n" + profile_as_prompt(profile)]
+    if index["rules"]:
+        parts.append("THE USER'S OWN RULES\n" + "\n".join(f"- {rule}" for rule in index["rules"]))
+    budget = 24000
+    for item in sorted(index["docs"], key=lambda doc: doc.get("added_at", ""), reverse=True):
+        body = load_doc(_body_name(item["id"]), {})
+        text = body.get("text", "") if isinstance(body, dict) else ""
+        piece = text if len(text) <= 2500 else (item.get("summary") or _first_lines(text))
+        block = f"DOCUMENT: {item['title']} ({SOURCES.get(item['source'], item['source'])})\n{piece}"
+        if len(block) > budget:
+            break
+        budget -= len(block)
+        parts.append(block)
+    return "\n\n".join(parts)
+
+
+def _clean_item(raw: dict, origin: str = "") -> dict | None:
+    kind = str(raw.get("kind") or "fact").strip().lower()
+    if kind not in KINDS:
+        kind = "fact"
+    text = re.sub(r"\s+", " ", str(raw.get("text") or "").strip())
+    if not text or text.lower().startswith("nothing recorded"):
+        return None
+    related = []
+    for item in raw.get("related") or []:
+        label = re.sub(r"\s+", " ", str(item).strip())
+        if label and label not in related:
+            related.append(label[:80])
+    item_id = re.sub(r"[^a-zA-Z0-9]", "", str(raw.get("id") or ""))[:16]
+    now = _now()
+    at = _as_of(raw.get("at") or raw.get("as_of") or raw.get("valid_from")) or now
+    valid_from = _as_of(raw.get("valid_from") or raw.get("as_of")) or at
+    valid_until = _as_of(raw.get("valid_until"))
+    status = str(raw.get("status") or "active").strip().lower()
+    if status not in ("active", "superseded", "ended"):
+        status = "ended" if valid_until else "active"
+    return {
+        "id": item_id or secrets.token_hex(5),
+        "kind": kind,
+        "text": text[:300],
+        "related": related[:6],
+        "source": str(raw.get("source") or "").strip()[:160],
+        "origin": origin or str(raw.get("origin") or "extract"),
+        "locked": bool(KINDS[kind]["locked"]),
+        "at": at,
+        "updated_at": _as_of(raw.get("updated_at")) or at,
+        "valid_from": valid_from,
+        "valid_until": valid_until,
+        "status": status,
+        "replaces": str(raw.get("replaces") or "")[:16],
+        "key": _item_key({"kind": kind, "text": text}),
+    }
+
+
+def _sync_rules(items: list[dict], rules: list[str]) -> list[dict]:
+    kept = [item for item in items if item["kind"] != "rule" or item.get("origin") == "extract"]
+    have = {item["text"] for item in kept if item["kind"] == "rule"}
+    for rule in rules:
+        if rule in have:
+            continue
+        kept.append(_clean_item({"kind": "rule", "text": rule, "origin": "user"}, origin="user"))
+    return [item for item in kept if item]
+
+
+def _merge_items(extracted: list[dict], previous: list[dict]) -> list[dict]:
+    """Keep history. Same-topic facts with new wording supersede the old ones instead of deleting them."""
+    now = _now()
+    live = [item for item in previous if is_active(item)]
+    history = [item for item in previous if not is_active(item)]
+    taken: set[str] = set()
+    out: list[dict] = []
+    for new in extracted:
+        if not new:
+            continue
+        old = next((item for item in live if item["id"] not in taken and _item_key(item) == _item_key(new)), None)
+        if old is None:
+            out.append(new)
+            continue
+        taken.add(old["id"])
+        if old["text"].strip().lower() == new["text"].strip().lower():
+            out.append(old)
+            continue
+        out.append(dict(old, status="superseded", valid_until=now, updated_at=now))
+        new["replaces"] = old["id"]
+        new["at"] = now
+        new["valid_from"] = now
+        new["updated_at"] = now
+        out.append(new)
+    for item in live:
+        if item["id"] in taken:
+            continue
+        if item.get("origin") == "user" or item["kind"] != "fact":
+            out.append(item)
+            continue
+        out.append(dict(item, status="ended", valid_until=now, updated_at=now))
+    seen = {(item["id"]) for item in out}
+    for item in history:
+        if item["id"] not in seen:
+            out.append(item)
+            seen.add(item["id"])
+    return out[:120]
+
+
+def _item_key(item: dict) -> str:
+    words = [word for word in _tokens(item.get("text") or "") if not word.isdigit()]
+    return f"{item.get('kind', 'fact')}:{' '.join(words[:6])}"
+
+
+def _as_of(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = re.match(r"^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?", text)
+    if not match:
+        return ""
+    return f"{match.group(1)} {match.group(2) or '00:00'}"
+
+
+def _short_label(text: str) -> str:
+    text = re.sub(r"\s+", " ", text or "").strip()
+    return text if len(text) <= 22 else text[:21].rstrip() + "…"

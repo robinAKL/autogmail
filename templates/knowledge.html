@@ -3,75 +3,258 @@
 {% block body %}
 <header class="page-head">
   <div>
-    <h1>Knowledge base</h1>
-    <p class="sub">Every reply is written from your profile plus what is kept here. Nothing outside it is used as fact.</p>
+    <h1>Knowledge</h1>
+    <p class="sub">Sources become a map of current knowledge. The timeline keeps what used to be true. Replies use only what is still current.</p>
   </div>
-  <div class="head-stats">
-    <span><strong>{{ overview.documents }}</strong> document{{ '' if overview.documents == 1 else 's' }}</span>
-    <span><strong>{{ overview.rules }}</strong> rule{{ '' if overview.rules == 1 else 's' }}</span>
-  </div>
+  <form method="post" action="{{ url_for('knowledge_brief') }}" data-busy="Reorganising knowledge…">
+    <button type="submit" name="rebuild" value="1" {% if not has_key %}disabled{% endif %}>Reorganise knowledge</button>
+  </form>
 </header>
 
 {% if not has_key %}
-<p class="banner warn">OPENAI_API_KEY is not set, so summaries and the understanding cannot be written yet. Documents can still be added.</p>
+<p class="banner warn">OPENAI_API_KEY is not set, so the map cannot be written yet. You can still add documents and rules.</p>
+{% endif %}
+{% if overview.brief_stale and overview.brief_ready %}
+<p class="banner warn">Sources have changed since the last organisation. Choose <b>Reorganise knowledge</b> before the next round of mail, or it will be done automatically.</p>
 {% endif %}
 
-<div class="grid-2 wide-left">
-  <section class="card" id="brief">
+<ol class="kb-steps">
+  <li class="{% if overview.documents or overview.rules %}done{% endif %}">
+    <b>1. Add sources</b>
+    <span>Upload files, notes, SharePoint or a summary of past email. Write the rules that always win.</span>
+    <a href="#sources">Go to sources</a>
+  </li>
+  <li class="{% if overview.item_count %}done{% endif %}">
+    <b>2. Reorganise</b>
+    <span>The assistant reads those sources and your settings, then draws facts, people, topics, rules and the rest.</span>
+    <a href="#map">See the map</a>
+  </li>
+  <li class="{% if overview.brief_ready and not overview.brief_stale %}done{% endif %}">
+    <b>3. Check Memory and Timeline</b>
+    <span>Memory is current. Timeline is history. Facts cannot be rewritten — mark them no longer current, or reorganise so a new fact replaces the old one.</span>
+    <a href="#cards">Review Memory</a>
+  </li>
+</ol>
+
+<nav class="tabs-row kb-views" aria-label="Knowledge view">
+  <a class="tab {% if view != 'timeline' %}on{% endif %}" href="{{ url_for('knowledge_page', kind=kind) }}#map">Memory</a>
+  <a class="tab {% if view == 'timeline' %}on{% endif %}" href="{{ url_for('knowledge_page', view='timeline', kind=kind) }}#timeline">Timeline</a>
+</nav>
+
+{% if view != 'timeline' %}
+<section class="card kb-map" id="map">
+  <div class="card-head">
+    <div>
+      <h2 class="card-title">How it is connected</h2>
+      <p class="muted">Current knowledge only — ended and replaced facts stay on the Timeline. Replies use what is still current.</p>
+    </div>
+    <div class="head-stats">
+      <span><strong>{{ overview.documents }}</strong> sources</span>
+      <span><strong>{{ overview.item_count }}</strong> current</span>
+      <span><strong>{{ overview.past_count }}</strong> past</span>
+    </div>
+  </div>
+  {% if graph.nodes|length > 1 %}
+  <svg class="kb-graph" viewBox="0 0 {{ graph.width }} {{ graph.height }}" role="img" aria-label="Knowledge map">
+    {% for edge in graph.edges %}
+      <line class="kb-edge" x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}"></line>
+    {% endfor %}
+    {% for node in graph.nodes %}
+      {% if node.kind == 'you' %}
+      <a href="#cards">
+        <circle class="kb-you" cx="{{ node.x }}" cy="{{ node.y }}" r="{{ node.r }}"></circle>
+        <text class="kb-you-label" x="{{ node.x }}" y="{{ node.y + 4 }}" text-anchor="middle">{{ node.label }}</text>
+      </a>
+      {% elif node.id.startswith('kind-') %}
+      <a href="{{ url_for('knowledge_page', kind=node.kind) }}#cards">
+        <circle class="kb-hub kind-{{ node.kind }}" cx="{{ node.x }}" cy="{{ node.y }}" r="{{ node.r }}">
+          <title>{{ node.title }}</title>
+        </circle>
+        <text class="kb-hub-label" x="{{ node.x }}" y="{{ node.y + 4 }}" text-anchor="middle">{{ node.label }}</text>
+      </a>
+      {% else %}
+      <a href="#item-{{ node.id }}">
+        <circle class="kb-leaf kind-{{ node.kind }}" cx="{{ node.x }}" cy="{{ node.y }}" r="{{ node.r }}">
+          <title>{{ node.title }}</title>
+        </circle>
+        <text class="kb-leaf-label" x="{{ node.x }}" y="{{ node.y + node.r + 12 }}" text-anchor="middle">{{ node.label }}</text>
+      </a>
+      {% endif %}
+    {% endfor %}
+  </svg>
+  <ul class="legend kb-legend">
+    {% for name, meta in kinds.items() %}
+    <li><i class="sw kind-{{ name }}"></i>{{ meta.label }}{% if overview.by_kind[name] %} · {{ overview.by_kind[name] }}{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="empty-state">
+    <h2>No map yet</h2>
+    <p>Add a source or a rule, then choose <b>Reorganise knowledge</b>. The graph will show how facts, people, topics and rules hang together.</p>
+  </div>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if view == 'timeline' %}
+<section class="section" id="timeline">
+  <div class="section-head">
+    <h2>Timeline</h2>
+    <p class="muted">When something became current, was replaced, or stopped being true. Replies ignore anything after its end date.</p>
+  </div>
+  {% if days %}
+  {% for day in days %}
+  <section class="card kb-day">
+    <h3 class="card-title">{{ day.day }}</h3>
+    <ol class="kb-events">
+      {% for event in day.events %}
+      <li class="kb-event {{ event.action }}">
+        <i class="sw kind-{{ event.item.kind }}"></i>
+        <div>
+          <p><b>{{ kinds[event.item.kind].label }}</b> · {{ event.label }} · {{ event.when }}</p>
+          <p>{{ event.item.text }}</p>
+          {% if event.previous %}<p class="meta">Was: {{ event.previous.text }}</p>{% endif %}
+        </div>
+      </li>
+      {% endfor %}
+    </ol>
+  </section>
+  {% endfor %}
+  {% else %}
+  <div class="card empty-state">
+    <h2>No history yet</h2>
+    <p>After you reorganise, every fact, rule and decision gets a start time. When a later source replaces it, the old one stays here as past.</p>
+  </div>
+  {% endif %}
+</section>
+{% else %}
+<section class="section" id="cards">
+  <div class="section-head">
+    <h2>Memory</h2>
+    <p class="muted">{% if overview.model_updated %}Current as of {{ overview.model_updated }}.{% else %}Not organised yet.{% endif %} Only current items are used in replies.</p>
+  </div>
+  <nav class="tabs-row" aria-label="Knowledge kind">
+    <a class="tab {% if not kind %}on{% endif %}" href="{{ url_for('knowledge_page') }}#cards">All<span>{{ overview.item_count }}</span></a>
+    {% for name, meta in kinds.items() %}
+    <a class="tab {% if kind == name %}on{% endif %}" href="{{ url_for('knowledge_page', kind=name) }}#cards">{{ meta.label }}<span>{{ overview.by_kind[name] }}</span></a>
+    {% endfor %}
+  </nav>
+
+  {% if not kind %}
+  <div class="kb-tiles">
+    {% for tile in tiles %}
+    <a class="card kb-tile" href="{{ url_for('knowledge_page', kind=tile.kind) }}#kind-{{ tile.kind }}">
+      <h3><i class="sw kind-{{ tile.kind }}"></i> {{ tile.label }} <span>{{ tile.count }}</span></h3>
+      {% if tile.preview %}
+      <ul>
+        {% for item in tile.preview %}
+        <li>{{ item.text }}</li>
+        {% endfor %}
+      </ul>
+      {% if tile.more %}<p class="meta">+{{ tile.more }} more…</p>{% endif %}
+      {% else %}
+      <p class="empty">Nothing current</p>
+      {% endif %}
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% for group in groups if kind and group.kind == kind %}
+  <section class="card kb-kind" id="kind-{{ group.kind }}">
     <div class="card-head">
       <div>
-        <h2 class="card-title">What I understand about you</h2>
-        <p class="muted">Read before every reply. {% if brief.updated_at %}Updated {{ brief.updated_at }}.{% endif %}
-          {% if brief.stale and brief.text %}<span class="tag drafted">Out of date</span>{% endif %}</p>
+        <h3 class="card-title"><i class="sw kind-{{ group.kind }}"></i> {{ group.label }}</h3>
+        <p class="muted">{{ group.hint }}</p>
       </div>
-      <div class="button-row">
-        {% if not editing and brief.text %}<a class="button quiet small" href="{{ url_for('knowledge_page', edit='brief') }}#brief">Edit</a>{% endif %}
-        <form method="post" action="{{ url_for('knowledge_brief') }}" data-busy="Reading everything…">
-          <button class="{% if brief.text and not brief.stale %}quiet {% endif %}small" type="submit" name="rebuild" value="1" {% if not has_key %}disabled{% endif %}>{% if brief.text %}Rewrite from sources{% else %}Write it now{% endif %}</button>
-        </form>
-      </div>
+      {% if not group.locked %}
+      <form method="post" action="{{ url_for('knowledge_item_add') }}" class="inline-form kb-add">
+        <input type="hidden" name="kind" value="{{ group.kind }}">
+        <input name="text" maxlength="300" placeholder="Add one…" required>
+        <button class="quiet small" type="submit">Add</button>
+      </form>
+      {% endif %}
     </div>
-    {% if editing %}
-    <form method="post" action="{{ url_for('knowledge_brief') }}" class="stack">
-      <textarea name="text" rows="20" maxlength="12000">{{ brief.text }}</textarea>
-      <div class="button-row">
-        <button type="submit">Save edits</button>
-        <a class="button quiet" href="{{ url_for('knowledge_page') }}#brief">Cancel</a>
-      </div>
-    </form>
-    {% elif brief.text %}
-    <div class="prose">{{ brief.text|md }}</div>
+    {% if group.cards %}
+    <ul class="kb-cards">
+      {% for item in group.cards %}
+      <li class="kb-card {% if item.locked %}locked{% endif %}" id="item-{{ item.id }}">
+        {% if edit_item == item.id and not item.locked %}
+        <form method="post" action="{{ url_for('knowledge_item_save', item_id=item.id) }}" class="stack">
+          <input type="hidden" name="kind" value="{{ group.kind }}">
+          <textarea name="text" rows="3" maxlength="300" required>{{ item.text }}</textarea>
+          <div class="button-row">
+            <button class="small" type="submit">Save</button>
+            <a class="button quiet small" href="{{ url_for('knowledge_page', kind=kind) }}#item-{{ item.id }}">Cancel</a>
+          </div>
+        </form>
+        {% else %}
+        <p>{{ item.text }}</p>
+        <p class="meta">Current since {{ item.valid_from or item.at }}
+          {% if item.source %} · {{ item.source }}{% elif item.origin == 'user' %} · added by you{% endif %}
+          {% if item.locked %}<span class="tag read">Locked fact</span>{% endif %}</p>
+        <div class="button-row">
+          <form method="post" action="{{ url_for('knowledge_item_save', item_id=item.id) }}" data-confirm="Keep the wording, but stop using this in replies?">
+            <input type="hidden" name="kind" value="{{ group.kind }}">
+            <button class="quiet small" type="submit" name="end" value="1">No longer current</button>
+          </form>
+          {% if not item.locked %}
+          <a class="button quiet small" href="{{ url_for('knowledge_page', kind=kind, item=item.id) }}#item-{{ item.id }}">Edit</a>
+          <form method="post" action="{{ url_for('knowledge_item_save', item_id=item.id) }}" data-confirm="Remove this {{ group.label|lower }} from the map?">
+            <input type="hidden" name="kind" value="{{ group.kind }}">
+            <button class="quiet small danger-text" type="submit" name="delete" value="1">Delete</button>
+          </form>
+          {% endif %}
+        </div>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
     {% else %}
-    <p class="empty">Nothing written yet. Add documents or rules, then choose “Write it now”. It is also written automatically before the next round of mail.</p>
+    <p class="empty">{% if group.locked %}No current facts. Add sources and reorganise.{% else %}None current.{% endif %}</p>
+    {% endif %}
+    {% if group.past %}
+    <h4 class="kb-past-head">Past</h4>
+    <ul class="kb-cards past">
+      {% for item in group.past %}
+      <li class="kb-card past" id="item-{{ item.id }}">
+        <p>{{ item.text }}</p>
+        <p class="meta">{{ item.valid_from or item.at }} → {{ item.valid_until }} · {{ item.status }}</p>
+      </li>
+      {% endfor %}
+    </ul>
     {% endif %}
   </section>
+  {% endfor %}
+</section>
+{% endif %}
 
-  <section class="card" id="rules">
-    <h2 class="card-title">Your rules</h2>
-    <p class="muted">One per line. These always win over everything else.</p>
-    <form method="post" action="{{ url_for('knowledge_rules') }}" class="stack">
-      <textarea name="rules" rows="11" placeholder="Always ask me before agreeing to a meeting or a price.&#10;Never reply to recruiters.&#10;Sign off with “Kind regards” and my first name.&#10;Emails from school are important: always ask me first.">{{ rules_text }}</textarea>
-      <button type="submit">Save rules</button>
-    </form>
-    <form method="get" action="{{ url_for('knowledge_page') }}#search" class="stack search-box" id="search">
-      <label for="q">Test what a reply would find</label>
-      <div class="inline-form">
-        <input id="q" name="q" value="{{ query }}" placeholder="e.g. invoice for the October workshop">
-        <button class="quiet" type="submit">Search</button>
-      </div>
-      {% if query %}
-        {% for hit in hits %}
-        <div class="hit"><p class="hit-title">{{ hit.title }}</p><p>{{ hit.text[:320] }}{% if hit.text|length > 320 %}…{% endif %}</p></div>
-        {% else %}
-        <p class="empty">Nothing in the knowledge base matches that.</p>
-        {% endfor %}
-      {% endif %}
-    </form>
-  </section>
-</div>
+{% if brief.text %}
+<details class="card" id="brief" {% if editing %}open{% endif %}>
+  <summary>
+    <h2 class="card-title">Briefing the model reads</h2>
+    <p class="muted">Compiled from the map. Used as the prompt for every reply.{% if brief.updated_at %} Updated {{ brief.updated_at }}.{% endif %}</p>
+  </summary>
+  {% if editing %}
+  <form method="post" action="{{ url_for('knowledge_brief') }}" class="stack">
+    <textarea name="text" rows="16" maxlength="12000">{{ brief.text }}</textarea>
+    <div class="button-row">
+      <button type="submit">Save edits</button>
+      <a class="button quiet" href="{{ url_for('knowledge_page') }}#brief">Cancel</a>
+    </div>
+  </form>
+  {% else %}
+  <div class="prose">{{ brief.text|md }}</div>
+  <a class="button quiet small" href="{{ url_for('knowledge_page', edit='brief') }}#brief">Edit briefing</a>
+  {% endif %}
+</details>
+{% endif %}
 
-<section class="section">
-  <div class="section-head"><h2>Add knowledge</h2></div>
+<section class="section" id="sources">
+  <div class="section-head">
+    <h2>Sources</h2>
+    <p class="muted">Step 1 — what the map is built from</p>
+  </div>
   <div class="grid-4">
     <form class="card source" method="post" action="{{ url_for('knowledge_upload') }}" enctype="multipart/form-data" data-busy="Reading files…">
       <h3>Upload files</h3>
@@ -85,7 +268,7 @@
 
     <form class="card source" method="post" action="{{ url_for('knowledge_learn') }}" data-busy="Reading your email…">
       <h3>Learn from past email</h3>
-      <p class="muted">Reads your recent sent and received mail and keeps a summary: who you deal with, ongoing topics, facts you stated, and how you write. Letters with passwords or codes are left out.</p>
+      <p class="muted">Reads recent sent and received mail. Passwords and codes are left out.</p>
       {% if mailboxes %}
       <div class="stack-sm">
         {% for item in mailboxes %}
@@ -100,23 +283,45 @@
     <form class="card source" method="post" action="{{ url_for('knowledge_sharepoint') }}" id="sharepoint" data-busy="Reading SharePoint…">
       <h3>SharePoint</h3>
       {% if sharepoint.connected %}
-      <p class="muted">Connected{% if sharepoint.account %} as {{ sharepoint.account }}{% endif %}. Paste a link to a site, a folder or a file.</p>
+      <p class="muted">Connected{% if sharepoint.account %} as {{ sharepoint.account }}{% endif %}. Paste a site, folder or file link.</p>
       <input name="url" type="url" placeholder="https://contoso.sharepoint.com/sites/Team/Shared Documents/…" required>
       <button type="submit">Read documents</button>
       {% else %}
-      <p class="muted">Connect SharePoint to read documents from a site, a library folder or a single file.</p>
+      <p class="muted">Connect SharePoint to read a site, a library folder or a single file.</p>
       <a class="button quiet" href="{{ url_for('connections_page') }}#sharepoint">Connect SharePoint</a>
       {% endif %}
     </form>
 
     <form class="card source" method="post" action="{{ url_for('knowledge_note') }}">
       <h3>Write a note</h3>
-      <p class="muted">Facts you want replies to use: prices, availability, policies, FAQs.</p>
+      <p class="muted">A fact you want replies to use: prices, hours, policies.</p>
       <input name="title" maxlength="160" placeholder="Title" required>
       <textarea name="text" rows="4" placeholder="What should be known" required></textarea>
       <button type="submit">Save note</button>
     </form>
   </div>
+
+  <form class="card" method="post" action="{{ url_for('knowledge_rules') }}" id="rules">
+    <h3 class="card-title">Rules that always win</h3>
+    <p class="muted">One per line. These are also cards under Rules, and they override everything else.</p>
+    <textarea name="rules" rows="6" placeholder="Always ask me before agreeing to a meeting or a price.&#10;Never reply to recruiters.&#10;Emails from school are important: always ask me first.">{{ rules_text }}</textarea>
+    <button type="submit">Save rules</button>
+  </form>
+
+  <form method="get" action="{{ url_for('knowledge_page') }}#search" class="card" id="search">
+    <h3 class="card-title">Test what a reply would find</h3>
+    <div class="inline-form">
+      <input id="q" name="q" value="{{ query }}" placeholder="e.g. invoice for the October workshop">
+      <button class="quiet" type="submit">Search</button>
+    </div>
+    {% if query %}
+      {% for hit in hits %}
+      <div class="hit"><p class="hit-title">{{ hit.title }}</p><p>{{ hit.text[:320] }}{% if hit.text|length > 320 %}…{% endif %}</p></div>
+      {% else %}
+      <p class="empty">Nothing in the documents matches that.</p>
+      {% endfor %}
+    {% endif %}
+  </form>
 
   {% if sharepoint_sources %}
   <div class="card">
@@ -170,7 +375,7 @@
   {% else %}
   <div class="card empty-state">
     <h2>No documents yet</h2>
-    <p>Upload files, summarise your email history, or link SharePoint above. Replies will then use those facts instead of guessing.</p>
+    <p>Upload files, summarise email history, or link SharePoint. Then reorganise so replies use those facts instead of guessing.</p>
   </div>
   {% endif %}
 </section>

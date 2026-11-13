@@ -296,14 +296,32 @@ def configure_app(app: Flask) -> None:
             return blocked
         index = knowledge.load_index()
         query = request.args.get("q", "").strip()
+        kind = request.args.get("kind", "")
+        view = request.args.get("view", "memory")
+        if kind not in knowledge.KINDS:
+            kind = ""
+        if view not in ("memory", "timeline"):
+            view = "memory"
         mailboxes = []
         for provider, label in PROVIDERS.items():
             if _provider_connected(provider):
                 mailboxes.append({"provider": provider, "label": label})
+        all_items = index["model"]["items"]
+        groups = []
+        for name, meta in knowledge.KINDS.items():
+            chunk = [item for item in all_items if item["kind"] == name]
+            live = [item for item in chunk if knowledge.is_active(item)]
+            past = [item for item in chunk if not knowledge.is_active(item)]
+            groups.append({"kind": name, "cards": live, "past": past, "count": len(live), **meta})
         return _render(
             "knowledge.html",
             docs=knowledge.list_documents(),
             sources=knowledge.SOURCES,
+            kinds=knowledge.KINDS,
+            groups=groups,
+            tiles=knowledge.memory_tiles(all_items),
+            days=knowledge.timeline(all_items),
+            graph=knowledge.graph_view(all_items),
             brief=index["brief"],
             rules_text="\n".join(index["rules"]),
             overview=knowledge.overview(),
@@ -311,9 +329,12 @@ def configure_app(app: Flask) -> None:
             sharepoint_sources=sharepoint.list_sources(),
             mailboxes=mailboxes,
             query=query,
+            kind=kind,
+            view=view,
             hits=knowledge.search(query, 5) if query else [],
             has_key=has_openai_key(),
             editing=request.args.get("edit") == "brief",
+            edit_item=request.args.get("item", ""),
             file_types=", ".join(sorted(item.lstrip(".") for item in SUPPORTED)),
             upload_limit="4 MB" if os.environ.get("VERCEL") else "30 MB",
         )
@@ -426,13 +447,44 @@ def configure_app(app: Flask) -> None:
         try:
             if request.form.get("rebuild"):
                 knowledge.rebuild_brief(load_profile())
-                flash("The understanding was rewritten from your profile, rules and documents.")
+                flash("Knowledge was reorganised from your profile, rules and documents.")
             else:
                 knowledge.save_brief(request.form.get("text", ""))
                 flash("Your edits to the understanding were saved.")
         except ConfigError as exc:
             flash(str(exc), "error")
-        return redirect(url_for("knowledge_page"))
+        return redirect(url_for("knowledge_page") + "#map")
+
+    @app.post("/knowledge/item")
+    def knowledge_item_add():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        try:
+            knowledge.add_item(request.form.get("kind", "rule"), request.form.get("text", ""))
+            flash("Added to the knowledge map.")
+        except ConfigError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("knowledge_page", kind=request.form.get("kind", "")) + "#cards")
+
+    @app.post("/knowledge/item/<item_id>")
+    def knowledge_item_save(item_id):
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        try:
+            if request.form.get("delete"):
+                knowledge.delete_item(item_id)
+                flash("Removed from the knowledge map.")
+            elif request.form.get("end"):
+                knowledge.end_item(item_id)
+                flash("Marked as no longer current. It stays on the timeline.")
+            else:
+                knowledge.update_item(item_id, request.form.get("text", ""))
+                flash("That item was updated.")
+        except ConfigError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("knowledge_page", kind=request.form.get("kind", ""), view=request.form.get("view", "memory")) + "#cards")
 
     # ---- connections ---------------------------------------------------------
 
