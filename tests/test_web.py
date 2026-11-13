@@ -272,7 +272,7 @@ class PageTests(WebCase):
         )
         with patch("gmail_auto.web.connected_clients", return_value=([box], [])):
             cleaned = self.client.post("/settings/cleanup", follow_redirects=True)
-        self.assertIn("Archived 1 letters", cleaned.get_data(as_text=True))
+        self.assertIn("Deleted 1 letters to Trash", cleaned.get_data(as_text=True))
         self.assertEqual(box.archived, ["j1"])
 
 

@@ -113,13 +113,9 @@ class GmailClient:
             raise _translate(exc) from exc
 
     def archive(self, message_id: str) -> None:
-        """Take the letter out of the inbox after cleanup. It stays in All Mail."""
-        done = self._label_id(DONE_LABEL, create=True)
-        body: dict = {"removeLabelIds": ["INBOX", "UNREAD"]}
-        if done:
-            body["addLabelIds"] = [done]
+        """Delete the letter from the inbox into Trash."""
         try:
-            self.service.users().messages().modify(userId="me", id=message_id, body=body).execute()
+            self.service.users().messages().trash(userId="me", id=message_id).execute()
         except Exception as exc:
             raise _translate(exc) from exc
 
@@ -186,7 +182,7 @@ class GmailClient:
             return
         for start in range(0, len(ids), 50):
             chunk = ids[start : start + 50]
-            body = {"ids": chunk, "removeLabelIds": ["INBOX"]}
+            body = {"ids": chunk, "addLabelIds": ["TRASH"], "removeLabelIds": ["INBOX"]}
             try:
                 self.service.users().messages().batchModify(userId="me", body=body).execute()
             except Exception:

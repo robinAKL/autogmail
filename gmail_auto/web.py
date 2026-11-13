@@ -882,7 +882,7 @@ def configure_app(app: Flask) -> None:
         _forget_inbox()
         for message in problems + (result.get("errors") or []):
             flash(message, "error")
-        flash(f"Archived {result['archived']} letters from the inbox. {result['scanned']} matched. They leave Inbox and stay in All Mail.")
+        flash(f"Deleted {result['archived']} letters to Trash. {result['scanned']} matched. School and keep-list mail were left.")
         return redirect(url_for("profile_page") + "#cleanup")
 
     @app.errorhandler(400)

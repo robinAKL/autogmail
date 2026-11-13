@@ -1,4 +1,4 @@
-"""Archive inbox clutter that matches the owner's cleanup rules."""
+"""Delete inbox clutter that matches the owner's cleanup rules."""
 
 from gmail_auto.errors import ConfigError
 from gmail_auto.filters import Skip, classify
@@ -68,7 +68,7 @@ def should_clean(mail: Mail, user_email: str, settings: dict | None = None) -> b
 
 
 def gmail_queries(settings: dict) -> list[str]:
-    """Gmail search strings that find matching inbox clutter without opening each letter."""
+    """Gmail search strings that find matching inbox mail to delete."""
     keep = [_gmail_negative(rule) for rule in settings.get("cleanup_keep") or []]
     keep = [item for item in keep if item]
     clauses = [_gmail_clause(rule) for rule in settings.get("cleanup_match") or []]
@@ -86,7 +86,7 @@ def gmail_queries(settings: dict) -> list[str]:
 
 
 def run(client, settings: dict | None = None, limit: int = LIMIT) -> dict:
-    """Archive matching letters from one mailbox. School and keep-list mail are left."""
+    """Delete matching letters into Trash. School and keep-list mail are left."""
     settings = settings or load_settings()
     user = client.get_user_email()
     if getattr(client, "provider", "") == "gmail" and hasattr(client, "list_ids"):

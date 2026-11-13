@@ -82,12 +82,11 @@ class OutlookClient:
         microsoft.graph("outlook", "PATCH", f"/me/messages/{message_id}", body={"isRead": True})
 
     def archive(self, message_id: str) -> None:
-        """Move the letter to Archive so cleanup clears the inbox without deleting it."""
+        """Delete the letter into Deleted Items."""
         try:
-            microsoft.graph("outlook", "POST", f"/me/messages/{message_id}/move", body={"destinationId": "archive"})
+            microsoft.graph("outlook", "POST", f"/me/messages/{message_id}/move", body={"destinationId": "deleteditems"})
         except ConfigError:
-            self.mark_read(message_id)
-            self.note_done(message_id)
+            microsoft.graph("outlook", "POST", f"/me/messages/{message_id}/move", body={"destinationId": "archive"})
 
     def archive_many(self, message_ids: list[str]) -> None:
         for message_id in message_ids:

@@ -76,7 +76,7 @@
 
 <section class="card" id="cleanup">
   <h2 class="card-title">Inbox cleanup</h2>
-  <p class="muted">One-click archive follows the rules you save here. Matching letters leave the inbox; they are not deleted. Keep-list mail is never touched, even if a clean rule would match.</p>
+  <p class="muted">One-click cleanup follows the rules you save here. Matching letters are deleted to Trash. Keep-list mail is never touched, even if a clean rule would match.</p>
   <form method="post" action="{{ url_for('cleanup_rules_save') }}" class="form-grid">
     <label>
       Clean if the letter matches
@@ -90,11 +90,11 @@
     </label>
     <label class="check span-2">
       <input type="checkbox" name="cleanup_skipped" value="1" {% if settings.cleanup_skipped %}checked{% endif %}>
-      <span>Also archive no-reply, promotion, social and mailing-list mail the assistant would skip anyway</span>
+      <span>Also delete no-reply, promotion, social and mailing-list mail the assistant would skip anyway</span>
     </label>
     <div class="span-2"><button type="submit">Save cleanup rules</button></div>
   </form>
-  <form method="post" action="{{ url_for('mailbox_cleanup') }}" class="button-row" data-busy="Cleaning inbox…" data-confirm="Archive letters that match your cleanup rules? They leave the inbox but are not deleted. School and keep-list mail stay.">
+  <form method="post" action="{{ url_for('mailbox_cleanup') }}" class="button-row" data-busy="Cleaning inbox…" data-confirm="Delete letters that match your cleanup rules? They go to Trash. School and keep-list mail stay.">
     <button type="submit">Clean inbox now</button>
     <span class="hint">Gmail is searched by these rules across Inbox (not only the newest page). Outlook looks at the latest {{ cleanup_limit }} letters. Run it again if more matching mail remains.</span>
   </form>
