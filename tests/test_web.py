@@ -92,6 +92,7 @@ class PageTests(WebCase):
             ("/approvals", "Nothing is waiting for you"),
             ("/dashboard", "No history yet"),
             ("/knowledge", "Reorganise knowledge"),
+            ("/knowledge", "Each file under"),
             ("/knowledge", "Memory"),
             ("/knowledge?view=timeline", "Timeline"),
             ("/connections", "Connect Outlook" if False else "Outlook"),

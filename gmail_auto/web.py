@@ -355,6 +355,7 @@ def configure_app(app: Flask) -> None:
             edit_item=request.args.get("item", ""),
             file_types=", ".join(sorted(item.lstrip(".") for item in SUPPORTED)),
             upload_limit="4 MB" if os.environ.get("VERCEL") else "30 MB",
+            upload_max_bytes=3_800_000 if os.environ.get("VERCEL") else 28_000_000,
         )
 
     @app.get("/knowledge/doc/<doc_id>")
@@ -786,7 +787,8 @@ def configure_app(app: Flask) -> None:
 
     @app.errorhandler(413)
     def too_large(_exc):
-        return "That upload is too large.", 413
+        flash("That file is too large for this hosted site. Keep each file under 4 MB, or split it and upload the parts.", "error")
+        return redirect(url_for("knowledge_page") + "#sources")
 
 
 def run_server() -> None:
@@ -927,12 +929,13 @@ def _inbox(live: bool = True) -> dict:
     pairs = []
     fetched = _list_mailboxes(clients)
     for account, mails, error in fetched:
+        if account.get("provider"):
+            provider = account["provider"]
+            label = PROVIDERS.get(provider, "Mailbox")
+            data["accounts"].append({"provider": provider, "label": label, "email": account.get("email") or label})
         if error:
             data["errors"].append(error)
             continue
-        provider = account["provider"]
-        label = PROVIDERS.get(provider, "Mailbox")
-        data["accounts"].append({"provider": provider, "label": label, "email": account["email"]})
         for mail in mails:
             if not mail.account:
                 mail.account = account["email"]
@@ -991,14 +994,23 @@ def _list_mailboxes(clients) -> list[tuple]:
 
 def _list_one_mailbox(client) -> tuple:
     label = PROVIDERS.get(getattr(client, "provider", "gmail"), "Mailbox")
+    email = ""
     try:
-        account = client.get_user_email()
+        email = client.get_user_email()
         mails = client.list_recent(_INBOX_PAGE, full=False)
-        return ({"provider": client.provider, "email": account}, mails, "")
+        return ({"provider": client.provider, "email": email}, mails, "")
     except ConfigError as exc:
-        return ({}, [], named_error(label, exc))
+        return (_known_account(client, email), [], named_error(label, exc))
     except Exception as extra:
-        return ({}, [], named_error(label, _safe_error(extra)))
+        return (_known_account(client, email), [], named_error(label, _safe_error(extra)))
+
+
+def _known_account(client, email: str) -> dict:
+    if not email and getattr(client, "provider", "") == "outlook":
+        email = (microsoft.status("outlook").get("account") or "").strip()
+    if not email:
+        return {}
+    return {"provider": client.provider, "email": email}
 
 
 def _forget_inbox() -> None:

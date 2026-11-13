@@ -256,9 +256,9 @@
     <p class="muted">Step 1 — what the map is built from</p>
   </div>
   <div class="grid-4">
-    <form class="card source" method="post" action="{{ url_for('knowledge_upload') }}" enctype="multipart/form-data" data-busy="Reading files…">
+    <form class="card source" method="post" action="{{ url_for('knowledge_upload') }}" enctype="multipart/form-data" data-busy="Reading files…" data-upload-max="{{ upload_max_bytes }}" data-upload-label="{{ upload_limit }}" data-next="{{ url_for('knowledge_page') }}#documents">
       <h3>Upload files</h3>
-      <p class="muted">{{ file_types }}. Up to {{ upload_limit }} at a time.</p>
+      <p class="muted">{{ file_types }}. Each file under {{ upload_limit }} — the hosted site rejects anything larger. Several smaller files are sent one by one.</p>
       <label class="drop" data-drop>
         <input type="file" name="files" multiple required>
         <span data-drop-label>Choose files or drop them here</span>

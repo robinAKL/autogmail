@@ -74,12 +74,60 @@
   document.querySelectorAll("[data-drop]").forEach(function (zone) {
     var input = zone.querySelector("input[type=file]");
     var label = zone.querySelector("[data-drop-label]");
+    var form = zone.closest("form");
+    var max = form ? parseInt(form.getAttribute("data-upload-max") || "0", 10) : 0;
+    var limitLabel = form ? (form.getAttribute("data-upload-label") || "4 MB") : "4 MB";
     var show = function () {
-      var count = input.files ? input.files.length : 0;
-      if (count === 1) { label.textContent = input.files[0].name; }
-      else if (count > 1) { label.textContent = count + " files chosen"; }
+      var files = input.files ? Array.prototype.slice.call(input.files) : [];
+      if (!files.length) { return; }
+      var oversized = files.filter(function (file) { return max && file.size > max; });
+      if (oversized.length) {
+        label.textContent = oversized[0].name + " is larger than " + limitLabel;
+        input.setCustomValidity("Each file must be under " + limitLabel + " on this hosted site.");
+      } else {
+        input.setCustomValidity("");
+        label.textContent = files.length === 1 ? files[0].name : files.length + " files chosen";
+      }
     };
     input.addEventListener("change", show);
+    if (form && max) {
+      form.addEventListener("submit", function (event) {
+        var files = input.files ? Array.prototype.slice.call(input.files) : [];
+        var oversized = files.filter(function (file) { return file.size > max; });
+        if (oversized.length) {
+          event.preventDefault();
+          window.alert(oversized[0].name + " is larger than " + limitLabel + ". Split the file or upload a smaller one. Vercel cannot accept a request over 4.5 MB.");
+          return;
+        }
+        var total = files.reduce(function (sum, file) { return sum + file.size; }, 0);
+        if (files.length < 2 || total <= max) { return; }
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        var button = form.querySelector("button[type=submit]");
+        var send = function (index) {
+          if (index >= files.length) {
+            window.location.href = form.getAttribute("data-next") || "/knowledge#documents";
+            return;
+          }
+          if (button) {
+            button.classList.add("busy");
+            button.textContent = "Reading " + (index + 1) + " of " + files.length + "…";
+          }
+          var body = new FormData();
+          body.append("files", files[index], files[index].name);
+          fetch(form.action, { method: "POST", body: body, redirect: "follow" }).then(function (response) {
+            if (!response.ok) {
+              window.alert("Could not add " + files[index].name + ". Keep each file under " + limitLabel + ".");
+              return;
+            }
+            send(index + 1);
+          }).catch(function () {
+            window.alert("Could not add " + files[index].name + ".");
+          });
+        };
+        send(0);
+      }, true);
+    }
     ["dragenter", "dragover"].forEach(function (name) {
       zone.addEventListener(name, function () { zone.classList.add("over"); });
     });

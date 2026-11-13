@@ -113,8 +113,17 @@ def graph(kind: str, method: str, path: str, params: dict | None = None, body: d
     for attempt in range(tries):
         try:
             response = requests.request(method, url, params=params, json=body, headers=sent, timeout=timeout)
+        except requests.Timeout as exc:
+            last_error = ConfigError(
+                f"{LABELS[kind]} timed out after {timeout}s. The mailbox list was too slow; Gmail can still be used."
+            )
+            last_error.__cause__ = exc
+            if attempt == tries - 1 or not retry:
+                raise last_error from exc
+            time.sleep(1.5 * (attempt + 1))
+            continue
         except requests.RequestException as exc:
-            last_error = ConfigError(f"Could not reach {LABELS[kind]}.")
+            last_error = ConfigError(f"Could not reach {LABELS[kind]}. Check the network or reconnect it on Connections.")
             last_error.__cause__ = exc
             if attempt == tries - 1 or not retry:
                 raise last_error from exc

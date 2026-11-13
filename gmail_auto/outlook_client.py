@@ -24,7 +24,6 @@ class OutlookClient:
     provider = "outlook"
 
     def __init__(self):
-        microsoft.access_token("outlook")
         self._email = ""
 
     def get_user_email(self) -> str:
@@ -50,19 +49,12 @@ class OutlookClient:
         return [mail for mail in self._hydrate(wanted) if "DONE" not in mail.label_ids]
 
     def list_recent(self, limit: int = 25, full: bool = False) -> list[Mail]:
-        mails = self._list(
-            "inbox",
-            limit,
-            {"$filter": f"receivedDateTime ge {_since()}", "$orderby": "receivedDateTime desc"},
-        )
+        # Newest page only. A date filter on a large folder makes Graph scan and time out.
+        mails = self._list("inbox", limit, {"$orderby": "receivedDateTime desc"})
         return self._hydrate(mails) if full else mails
 
     def list_sent(self, limit: int = 25, full: bool = False) -> list[Mail]:
-        mails = self._list(
-            "sentitems",
-            limit,
-            {"$filter": f"sentDateTime ge {_since()}", "$orderby": "sentDateTime desc"},
-        )
+        mails = self._list("sentitems", limit, {"$orderby": "sentDateTime desc"})
         return self._hydrate(mails) if full else mails
 
     def get_message(self, message_id: str) -> Mail:
@@ -112,8 +104,8 @@ class OutlookClient:
             "GET",
             f"/me/mailFolders/{folder}/messages",
             params=params,
-            timeout=20,
-            attempts=2,
+            timeout=8,
+            attempts=1,
         )
         return [self._stamp(parse_message(item)) for item in data.get("value") or []]
 

@@ -409,8 +409,10 @@ class OutlookAndViewTests(TempHome):
         listed = [item for item in calls if item["method"] == "GET" and item["path"].endswith("/messages")]
         self.assertTrue(listed)
         self.assertNotIn("body", listed[0]["params"]["$select"].split(","))
-        self.assertIn("receivedDateTime ge", listed[0]["params"]["$filter"])
-        self.assertEqual(listed[0]["timeout"], 20)
+        self.assertNotIn("$filter", listed[0]["params"])
+        self.assertEqual(listed[0]["timeout"], 8)
+        unread_list = next(item for item in listed if "isRead" in item["params"].get("$filter", ""))
+        self.assertIn("receivedDateTime ge", unread_list["params"]["$filter"])
         self.assertEqual(recent[0].snippet, "Hello there")
         self.assertEqual(recent[0].html, "")
         self.assertIn("<p>Hello there</p>", unread[0].html)
