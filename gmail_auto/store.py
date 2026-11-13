@@ -14,19 +14,7 @@ def now_text() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def live_from_env() -> bool | None:
-    flag = os.getenv("LIVE_SEND", "").strip().lower()
-    if flag in {"1", "true", "yes", "on"}:
-        return True
-    if flag in {"0", "false", "no", "off"}:
-        return False
-    return None
-
-
 def is_live() -> bool:
-    forced = live_from_env()
-    if forced is not None:
-        return forced
     data = load_doc("state", {"live_send": False})
     return bool(isinstance(data, dict) and data.get("live_send"))
 

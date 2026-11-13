@@ -6,7 +6,7 @@ from gmail_auto import approvals, stats, whatsapp
 from gmail_auto.errors import ConfigError
 from gmail_auto.llm import complete
 from gmail_auto.profile_store import load_profile
-from gmail_auto.store import get_state, is_live, list_processed, live_from_env, set_live, set_state
+from gmail_auto.store import get_state, is_live, list_processed, set_live, set_state
 
 _YES = {
     "yes", "y", "yep", "yeah", "ok", "okay", "approve", "approved", "send", "send it", "go", "go ahead", "sure", "confirm",
@@ -142,8 +142,6 @@ def _status(waiting) -> str:
 
 
 def _pause() -> str:
-    if live_from_env() is not None:
-        return "Sending is fixed by the LIVE_SEND setting on the server, so I cannot pause it from here."
     set_live(False)
     return "Paused. I will only save drafts until you turn sending back on in the web page."
 

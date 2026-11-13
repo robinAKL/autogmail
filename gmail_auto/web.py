@@ -25,7 +25,7 @@ from gmail_auto.runner import check_interval_seconds, format_report, run_once, s
 from gmail_auto.settings import APPROVALS, LANGUAGES, load_settings, save_settings
 from gmail_auto.storage import persistent
 from gmail_auto.token_store import storage_hint, storage_kind, storage_ready
-from gmail_auto.store import is_live, list_processed, live_from_env, load_last_run, load_processed
+from gmail_auto.store import is_live, list_processed, load_last_run, load_processed
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -1589,7 +1589,6 @@ def _profile_context(form=None) -> dict:
         "approval_labels": APPROVALS,
         "modes": _MODES,
         "mode": _current_mode(),
-        "mode_locked": live_from_env() is not None,
         "whatsapp_ready": whatsapp.ready(),
     }
     if form is not None:

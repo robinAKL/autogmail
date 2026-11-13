@@ -17,10 +17,7 @@
 
 <section class="card" id="mode">
   <h2 class="card-title">Sending mode</h2>
-  <p class="muted">Choose how much happens without you.</p>
-  {% if mode_locked %}
-  <p class="banner warn">Sending on or off is fixed by the <code>LIVE_SEND</code> environment variable on the server, so only the asking behaviour can change here.</p>
-  {% endif %}
+  <p class="muted">Choose how much happens without you. Tick the confirmation box and save to allow real sending from your mailbox.</p>
   <form method="post" action="{{ url_for('set_mode') }}" class="stack" data-mode-form>
     <div class="options">
       {% for key, pair in modes.items() %}

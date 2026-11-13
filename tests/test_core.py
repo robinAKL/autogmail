@@ -463,12 +463,19 @@ class RunnerTests(TempHome):
         self.assertEqual(fake_off.sent, [])
         self.assertEqual(dry.drafted, 1)
 
-    def test_live_send_env_overrides_the_local_switch(self):
+    def test_live_send_environment_variable_is_ignored(self):
+        from gmail_auto.runner import switch_live
+
         previous = os.environ.get("LIVE_SEND")
         os.environ["LIVE_SEND"] = "true"
         try:
+            self.assertFalse(is_live())
+            write_test_profile()
+            switch_live(True, True)
             self.assertTrue(is_live())
             os.environ["LIVE_SEND"] = "false"
+            self.assertTrue(is_live())
+            switch_live(False)
             self.assertFalse(is_live())
         finally:
             if previous is None:

@@ -18,7 +18,6 @@ from gmail_auto.store import (
     get_processed,
     get_state,
     is_live,
-    live_from_env,
     mark_processed,
     now_text,
     save_last_run,
@@ -64,8 +63,6 @@ def toggle_and_run(confirmed: bool, gmail=None, generate=None) -> RunReport:
 
 def switch_live(live: bool, confirmed: bool = False) -> None:
     """Turn real sending on or off. Turning it on needs a real profile, a key and an explicit yes."""
-    if live_from_env() is not None:
-        raise ConfigError("Sending is controlled by the LIVE_SEND environment variable. Change it and redeploy.")
     if not live:
         set_live(False)
         return
