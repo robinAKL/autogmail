@@ -43,7 +43,7 @@ _ENV = (
 class Inbox(FakeGmail):
     """A mailbox the pages can read, with one HTML letter in it."""
 
-    def list_recent(self, limit=25):
+    def list_recent(self, limit=25, full=False):
         return self.mails
 
     def get_message(self, message_id):

@@ -1,6 +1,6 @@
 """The mailboxes that are connected right now: Gmail, Outlook, or both."""
 
-from gmail_auto.errors import ConfigError, NotConnected
+from gmail_auto.errors import ConfigError, NotConnected, named_error
 
 PROVIDERS = {"gmail": "Gmail", "outlook": "Outlook"}
 
@@ -25,7 +25,7 @@ def connected_clients() -> tuple[list, list[str]]:
         except NotConnected:
             continue
         except ConfigError as exc:
-            problems.append(f"{label}: {exc}")
+            problems.append(named_error(label, exc))
         except Exception:
             problems.append(f"{label}: could not be opened.")
     return clients, problems

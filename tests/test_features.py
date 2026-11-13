@@ -105,10 +105,10 @@ class KnowledgeTests(TempHome):
 
     def test_learning_from_email_leaves_out_secrets_and_promotions(self):
         class Box(FakeGmail):
-            def list_sent(self, limit=30):
+            def list_sent(self, limit=30, full=False):
                 return [sample(id="s1", subject="Re: Friday", body="Friday at 2pm suits me. Kind regards, Test", headers={"to": "lee@example.com"})]
 
-            def list_recent(self, limit=30):
+            def list_recent(self, limit=30, full=False):
                 return [
                     sample(id="r1", body="Can we move the workshop to Friday?"),
                     sample(id="r2", body="Your password is hunter2"),
@@ -311,6 +311,68 @@ class OutlookAndViewTests(TempHome):
         self.assertEqual(mail.label_ids, ["INBOX", "UNREAD", "DONE"])
         self.assertEqual(mail.received_ts, 1794387660.0)
 
+    def test_outlook_lists_headers_only_then_loads_bodies_in_a_batch(self):
+        from gmail_auto.outlook_client import OutlookClient
+
+        calls = []
+
+        def fake_graph(kind, method, path, params=None, body=None, headers=None, raw=False):
+            calls.append({"method": method, "path": path, "params": params or {}, "body": body})
+            if path == "/me":
+                return {"mail": "robin@example.com"}
+            if method == "GET" and path.endswith("/messages"):
+                return {
+                    "value": [
+                        {
+                            "id": "AAMk",
+                            "conversationId": "conv1",
+                            "subject": "Hello",
+                            "from": {"emailAddress": {"name": "Mina", "address": "mina@example.com"}},
+                            "receivedDateTime": "2026-11-11T09:01:00Z",
+                            "bodyPreview": "Hello there",
+                            "isRead": False,
+                            "categories": [],
+                        }
+                    ]
+                }
+            if method == "POST" and path.endswith("$batch"):
+                return {
+                    "responses": [
+                        {
+                            "id": "0",
+                            "status": 200,
+                            "body": {
+                                "id": "AAMk",
+                                "conversationId": "conv1",
+                                "subject": "Hello",
+                                "from": {"emailAddress": {"name": "Mina", "address": "mina@example.com"}},
+                                "receivedDateTime": "2026-11-11T09:01:00Z",
+                                "body": {"contentType": "html", "content": "<p>Hello there</p>"},
+                                "bodyPreview": "Hello there",
+                                "isRead": False,
+                                "internetMessageHeaders": [{"name": "List-Id", "value": "<news.example.com>"}],
+                                "categories": [],
+                            },
+                        }
+                    ]
+                }
+            return {}
+
+        with patch("gmail_auto.outlook_client.microsoft.access_token", return_value="tok"):
+            with patch("gmail_auto.outlook_client.microsoft.graph", side_effect=fake_graph):
+                client = OutlookClient()
+                recent = client.list_recent(10)
+                unread = client.list_unread(10)
+
+        listed = [item for item in calls if item["method"] == "GET" and item["path"].endswith("/messages")]
+        self.assertTrue(listed)
+        self.assertNotIn("body", listed[0]["params"]["$select"].split(","))
+        self.assertEqual(recent[0].snippet, "Hello there")
+        self.assertEqual(recent[0].html, "")
+        self.assertIn("<p>Hello there</p>", unread[0].html)
+        self.assertEqual(unread[0].headers["list-id"], "<news.example.com>")
+        self.assertTrue(any(item["path"].endswith("$batch") for item in calls))
+
     def test_letter_html_is_shown_with_formatting_but_cannot_run_anything(self):
         dirty = (
             '<html><head><style>.a{color:red}</style><script>steal()</script></head>'
@@ -343,6 +405,42 @@ class MicrosoftErrorTests(TempHome):
         self.assertIn("Grant admin consent", explain_error("access_denied", ""))
         message = explain_error("server_error", "AADSTS12345: Something odd.\r\nTrace ID: x")
         self.assertEqual(message, "Microsoft said: Something odd. (AADSTS12345)")
+
+    def test_graph_gateway_errors_are_timeouts(self):
+        from gmail_auto import microsoft
+
+        class Reply:
+            status_code = 503
+
+        error = microsoft._translate("outlook", Reply())
+        self.assertIn("timed out", str(error))
+        self.assertEqual(error.status, 503)
+
+    def test_graph_retries_a_503_then_reads_the_mailbox(self):
+        from gmail_auto import microsoft
+
+        class Reply:
+            def __init__(self, status, payload=None):
+                self.status_code = status
+                self.content = b'{"value":[]}' if payload is None else payload
+
+            def json(self):
+                return {"value": []}
+
+        n = {"calls": 0}
+
+        def fake_request(*args, **kwargs):
+            n["calls"] += 1
+            if n["calls"] < 3:
+                return Reply(503)
+            return Reply(200)
+
+        with patch("gmail_auto.microsoft.access_token", return_value="tok"):
+            with patch("requests.request", fake_request):
+                with patch("gmail_auto.microsoft.time.sleep"):
+                    data = microsoft.graph("outlook", "GET", "/me/messages")
+        self.assertEqual(n["calls"], 3)
+        self.assertEqual(data, {"value": []})
 
     def test_the_sign_in_directory_is_named(self):
         import os

@@ -244,7 +244,7 @@ def learn_from_mailbox(client, limit: int = 30) -> dict:
     """Read recent sent and received mail and keep a summary of what it shows."""
     account = client.get_user_email()
     letters = []
-    for direction, mails in (("SENT", client.list_sent(limit)), ("RECEIVED", client.list_recent(limit))):
+    for direction, mails in (("SENT", client.list_sent(limit, full=True)), ("RECEIVED", client.list_recent(limit, full=True))):
         for mail in mails:
             if is_sensitive(mail.subject) or is_sensitive(mail.body) or not (mail.body or "").strip():
                 continue

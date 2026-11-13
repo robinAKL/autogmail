@@ -1,7 +1,8 @@
 """An Outlook mailbox through Microsoft Graph, with the same shape as the Gmail client."""
 
 import html
-from datetime import datetime, timezone
+import urllib.parse
+from datetime import datetime, timedelta, timezone
 
 from gmail_auto import microsoft
 from gmail_auto.errors import ConfigError
@@ -10,10 +11,12 @@ from gmail_auto.models import Mail
 
 DONE = "autogmail-done"
 RETRY = "autogmail-retry"
-_SELECT = (
-    "id,conversationId,subject,from,replyTo,toRecipients,receivedDateTime,sentDateTime,body,bodyPreview,"
-    "isRead,internetMessageId,internetMessageHeaders,categories,inferenceClassification"
+# Listing with HTML bodies and headers is what makes Graph return 502/503 on large mailboxes.
+_SELECT_LIST = (
+    "id,conversationId,subject,from,replyTo,toRecipients,receivedDateTime,sentDateTime,bodyPreview,"
+    "isRead,internetMessageId,categories,inferenceClassification"
 )
+_SELECT = _SELECT_LIST + ",body,internetMessageHeaders"
 _HTML = {"Prefer": 'outlook.body-content-type="html"'}
 
 
@@ -33,21 +36,25 @@ class OutlookClient:
         return self._email
 
     def list_unread(self, limit: int = 20) -> list[Mail]:
+        since = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
         mails = self._list(
             "inbox",
             limit + 10,
             {
-                "$filter": "receivedDateTime ge 2000-01-01T00:00:00Z and isRead eq false",
+                "$filter": f"receivedDateTime ge {since} and isRead eq false",
                 "$orderby": "receivedDateTime desc",
             },
         )
-        return [mail for mail in mails if "DONE" not in mail.label_ids][:limit]
+        wanted = [mail for mail in mails if "DONE" not in mail.label_ids][:limit]
+        return [mail for mail in self._hydrate(wanted) if "DONE" not in mail.label_ids]
 
-    def list_recent(self, limit: int = 25) -> list[Mail]:
-        return self._list("inbox", limit, {"$orderby": "receivedDateTime desc"})
+    def list_recent(self, limit: int = 25, full: bool = False) -> list[Mail]:
+        mails = self._list("inbox", limit, {"$orderby": "receivedDateTime desc"})
+        return self._hydrate(mails) if full else mails
 
-    def list_sent(self, limit: int = 25) -> list[Mail]:
-        return self._list("sentitems", limit, {"$orderby": "sentDateTime desc"})
+    def list_sent(self, limit: int = 25, full: bool = False) -> list[Mail]:
+        mails = self._list("sentitems", limit, {"$orderby": "sentDateTime desc"})
+        return self._hydrate(mails) if full else mails
 
     def get_message(self, message_id: str) -> Mail:
         raw = microsoft.graph("outlook", "GET", f"/me/messages/{message_id}", params={"$select": _SELECT}, headers=_HTML)
@@ -90,9 +97,39 @@ class OutlookClient:
         microsoft.graph("outlook", "PATCH", f"/me/messages/{message_id}", body={"categories": categories})
 
     def _list(self, folder: str, limit: int, extra: dict) -> list[Mail]:
-        params = {"$top": max(1, min(int(limit), 50)), "$select": _SELECT, **extra}
-        data = microsoft.graph("outlook", "GET", f"/me/mailFolders/{folder}/messages", params=params, headers=_HTML)
+        params = {"$top": max(1, min(int(limit), 50)), "$select": _SELECT_LIST, **extra}
+        data = microsoft.graph("outlook", "GET", f"/me/mailFolders/{folder}/messages", params=params)
         return [self._stamp(parse_message(item)) for item in data.get("value") or []]
+
+    def _hydrate(self, mails: list[Mail]) -> list[Mail]:
+        """Load HTML bodies in batches of 20 so Graph is not asked for 25 full letters at once."""
+        if not mails:
+            return []
+        filled: dict[int, Mail] = {}
+        for start in range(0, len(mails), 20):
+            chunk = mails[start : start + 20]
+            requests = []
+            for index, mail in enumerate(chunk):
+                encoded = urllib.parse.quote(mail.id, safe="")
+                requests.append(
+                    {
+                        "id": str(index),
+                        "method": "GET",
+                        "url": f"/me/messages/{encoded}?$select={_SELECT}",
+                        "headers": _HTML,
+                    }
+                )
+            data = microsoft.graph("outlook", "POST", "/$batch", body={"requests": requests})
+            by_id = {str(item.get("id")): item for item in data.get("responses") or []}
+            for index, mail in enumerate(chunk):
+                item = by_id.get(str(index)) or {}
+                payload = item.get("body")
+                status = int(item.get("status") or 0)
+                if 200 <= status < 300 and isinstance(payload, dict):
+                    filled[start + index] = self._stamp(parse_message(payload))
+                else:
+                    filled[start + index] = mail
+        return [filled[index] for index in range(len(mails))]
 
     def _stamp(self, mail: Mail) -> Mail:
         mail.account = self._email

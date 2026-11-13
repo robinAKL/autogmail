@@ -11,7 +11,7 @@ from gmail_auto import approvals, knowledge, microsoft, sharepoint, stats, whats
 from gmail_auto.console import say
 from gmail_auto.accounts import finish_verification, gmail_status, mark_gmail_authorized, start_verification
 from gmail_auto.envfile import has_openai_key, openai_model
-from gmail_auto.errors import ConfigError, NotConnected
+from gmail_auto.errors import ConfigError, NotConnected, named_error
 from gmail_auto.extractors import SUPPORTED, extract_text
 from gmail_auto.filters import Skip, classify
 from gmail_auto.gmail_client import SCOPES, web_client_config
@@ -846,9 +846,9 @@ def _inbox() -> dict:
                     mail.account = account
                 pairs.append((mail, account))
         except ConfigError as exc:
-            data["errors"].append(f"{label}: {exc}")
+            data["errors"].append(named_error(label, exc))
         except Exception as exc:
-            data["errors"].append(f"{label}: {_safe_error(exc)}")
+            data["errors"].append(named_error(label, _safe_error(exc)))
     try:
         processed = load_processed()
     except ConfigError as exc:
@@ -889,19 +889,23 @@ def _find_mail(key: str):
     if not key:
         return None
     cached = _inbox_cache["data"]
+    listed = None
     if cached is not None and _inbox_cache["who"] == session.get("user", ""):
-        mail = cached["mails"].get(key)
-        if mail is not None:
-            return mail
+        listed = cached["mails"].get(key)
+        if listed is not None and (listed.html or listed.body):
+            return listed
     provider, _, message_id = key.partition(":")
     if not message_id:
         provider, message_id = "gmail", key
     if provider not in PROVIDERS or not re.fullmatch(r"[A-Za-z0-9_=+\-/.!]{1,400}", message_id):
-        return None
+        return listed
     try:
-        return client_for(provider).get_message(message_id)
+        mail = client_for(provider).get_message(message_id)
     except Exception:
-        return None
+        return listed
+    if cached is not None and mail is not None:
+        cached["mails"][mail.key] = mail
+    return mail
 
 
 def _row_from_mail(mail, record, user_email: str) -> dict:

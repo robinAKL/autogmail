@@ -7,7 +7,7 @@ from datetime import date, datetime
 from gmail_auto import approvals, stats
 from gmail_auto.console import say
 from gmail_auto.envfile import require_openai_key
-from gmail_auto.errors import ConfigError, NotConnected, ReplyError
+from gmail_auto.errors import ConfigError, NotConnected, ReplyError, named_error
 from gmail_auto.filters import Allow, Skip, classify, short_subject
 from gmail_auto.models import Draft, Mail
 from gmail_auto.profile_store import load_profile, profile_is_placeholder
@@ -193,7 +193,7 @@ def _run_locked(gmail=None, generate=None) -> RunReport:
         except ConfigError as exc:
             if len(clients) == 1:
                 raise
-            report.lines.append(f"{getattr(client, 'provider', 'mailbox').title()}: {exc}")
+            report.lines.append(named_error(getattr(client, "provider", "mailbox").title(), exc))
     if already and report.checked == 0:
         report.lines.append(f"{already} unread letters were already handled and were not answered again.")
     report.lines = report.lines[:40]

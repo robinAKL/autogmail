@@ -107,10 +107,26 @@ def graph(kind: str, method: str, path: str, params: dict | None = None, body: d
     url = path if path.startswith("https://") else GRAPH + path
     sent = {"Authorization": f"Bearer {access_token(kind)}"}
     sent.update(headers or {})
-    try:
-        response = requests.request(method, url, params=params, json=body, headers=sent, timeout=40)
-    except requests.RequestException as exc:
-        raise ConfigError(f"Could not reach {LABELS[kind]}.") from exc
+    retry = method.upper() in ("GET", "HEAD") or path.rstrip("/").endswith("$batch")
+    last_error = None
+    for attempt in range(3 if retry else 1):
+        try:
+            response = requests.request(method, url, params=params, json=body, headers=sent, timeout=40)
+        except requests.RequestException as exc:
+            last_error = ConfigError(f"Could not reach {LABELS[kind]}.")
+            last_error.__cause__ = exc
+            if attempt == 2 or not retry:
+                raise last_error from exc
+            time.sleep(1.5 * (attempt + 1))
+            continue
+        if retry and response.status_code in (502, 503, 504) and attempt < 2:
+            time.sleep(1.5 * (attempt + 1))
+            continue
+        break
+    else:
+        if last_error:
+            raise last_error
+        raise ConfigError(f"Could not reach {LABELS[kind]}.")
     if response.status_code >= 400:
         raise _translate(kind, response)
     if raw:
@@ -141,6 +157,11 @@ def _translate(kind: str, response) -> GraphError:
         return GraphError(f"{label} could not find that item.", status)
     if status == 429:
         return GraphError(f"{label} is rate limiting requests. Try again in a little while.", status)
+    if status in (502, 503, 504):
+        return GraphError(
+            f"{label} timed out while reading the mailbox ({status}). The request was too heavy or Microsoft was slow; try again in a moment.",
+            status,
+        )
     return GraphError(f"{label} returned an error ({status}).", status)
 
 

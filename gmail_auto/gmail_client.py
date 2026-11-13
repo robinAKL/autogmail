@@ -47,10 +47,10 @@ class GmailClient:
     def list_unread(self, limit: int = 20) -> list[Mail]:
         return self._list(UNREAD_QUERY, limit)
 
-    def list_recent(self, limit: int = 25) -> list[Mail]:
+    def list_recent(self, limit: int = 25, full: bool = False) -> list[Mail]:
         return self._list(RECENT_QUERY, limit)
 
-    def list_sent(self, limit: int = 25) -> list[Mail]:
+    def list_sent(self, limit: int = 25, full: bool = False) -> list[Mail]:
         return self._list(SENT_QUERY, limit)
 
     def get_message(self, message_id: str) -> Mail:
