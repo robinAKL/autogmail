@@ -67,10 +67,30 @@ def should_clean(mail: Mail, user_email: str, settings: dict | None = None) -> b
     return isinstance(decision, Skip) and decision.code in _SKIP_CODES
 
 
+def gmail_queries(settings: dict) -> list[str]:
+    """Gmail search strings that find matching inbox clutter without opening each letter."""
+    keep = [_gmail_negative(rule) for rule in settings.get("cleanup_keep") or []]
+    keep = [item for item in keep if item]
+    clauses = [_gmail_clause(rule) for rule in settings.get("cleanup_match") or []]
+    clauses = [item for item in clauses if item]
+    if settings.get("cleanup_skipped"):
+        clauses.extend(["category:promotions", "category:social", "category:forums"])
+    queries = []
+    for start in range(0, len(clauses), 8):
+        group = " OR ".join(clauses[start : start + 8])
+        query = f"in:inbox -in:spam -in:trash ({group})"
+        if keep:
+            query += " " + " ".join(keep)
+        queries.append(query)
+    return queries
+
+
 def run(client, settings: dict | None = None, limit: int = LIMIT) -> dict:
     """Archive matching letters from one mailbox. School and keep-list mail are left."""
     settings = settings or load_settings()
     user = client.get_user_email()
+    if getattr(client, "provider", "") == "gmail" and hasattr(client, "list_ids"):
+        return _run_gmail_search(client, settings, user, limit)
     scanned = 0
     archived = 0
     kept = 0
@@ -113,6 +133,39 @@ def run_all(clients, settings: dict | None = None) -> dict:
             totals["accounts"].append(result["account"])
     totals["errors"] = errors
     return totals
+
+
+def _run_gmail_search(client, settings: dict, user: str, limit: int) -> dict:
+    seen: set[str] = set()
+    pending = []
+    for query in gmail_queries(settings):
+        for message_id in client.list_ids(query, limit):
+            if message_id in seen:
+                continue
+            seen.add(message_id)
+            pending.append(message_id)
+    if pending:
+        client.archive_many(pending)
+    return {"scanned": len(seen), "archived": len(pending), "kept": 0, "account": user, "provider": "gmail"}
+
+
+def _gmail_clause(rule: str) -> str:
+    text = (rule or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered.startswith("from:"):
+        needle = text[5:].strip()
+        return f"from:{needle}" if needle else ""
+    if lowered.startswith("subject:"):
+        needle = text[8:].strip()
+        return f'subject:"{needle}"' if needle else ""
+    return f'"{text}"'
+
+
+def _gmail_negative(rule: str) -> str:
+    clause = _gmail_clause(rule)
+    return f"-{clause}" if clause else ""
 
 
 def _matches(mail: Mail, rules: list[str]) -> bool:

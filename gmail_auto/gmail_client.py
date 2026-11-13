@@ -53,6 +53,25 @@ class GmailClient:
     def list_recent(self, limit: int = 25, full: bool = False) -> list[Mail]:
         return self._list(RECENT_QUERY, limit, full=full)
 
+    def list_ids(self, query: str, limit: int = 500) -> list[str]:
+        """Message ids only, so cleanup can search the inbox without loading each letter."""
+        want = max(1, min(int(limit), 1000))
+        ids: list[str] = []
+        token = None
+        try:
+            while len(ids) < want:
+                kwargs = {"userId": "me", "q": query, "maxResults": min(500, want - len(ids))}
+                if token:
+                    kwargs["pageToken"] = token
+                listed = self.service.users().messages().list(**kwargs).execute()
+                ids.extend(item["id"] for item in listed.get("messages") or [] if item.get("id"))
+                token = listed.get("nextPageToken")
+                if not token or not listed.get("messages"):
+                    break
+        except Exception as exc:
+            raise _translate(exc) from exc
+        return ids[:want]
+
     def list_sent(self, limit: int = 25, full: bool = False) -> list[Mail]:
         return self._list(SENT_QUERY, limit, full=full)
 
@@ -165,16 +184,14 @@ class GmailClient:
         ids = [item for item in message_ids if item]
         if not ids:
             return
-        done = self._label_id(DONE_LABEL, create=True)
         for start in range(0, len(ids), 50):
             chunk = ids[start : start + 50]
-            body: dict = {"ids": chunk, "removeLabelIds": ["INBOX", "UNREAD"]}
-            if done:
-                body["addLabelIds"] = [done]
+            body = {"ids": chunk, "removeLabelIds": ["INBOX"]}
             try:
                 self.service.users().messages().batchModify(userId="me", body=body).execute()
-            except Exception as exc:
-                raise _translate(exc) from exc
+            except Exception:
+                for message_id in chunk:
+                    self.archive(message_id)
 
     def _list(self, query: str, limit: int, full: bool = True) -> list[Mail]:
         want = max(1, min(int(limit), 500))

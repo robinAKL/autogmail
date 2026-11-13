@@ -322,6 +322,27 @@ class CleanupTests(TempHome):
             )
         )
 
+    def test_gmail_search_targets_inbox_ads_and_excludes_school(self):
+        settings = load_settings()
+        queries = " ".join(cleanup.gmail_queries(settings))
+        self.assertIn("in:inbox", queries)
+        self.assertIn("from:linkedin.com", queries)
+        self.assertIn("from:doordash.com", queries)
+        self.assertIn("-from:etap.co.nz", queries)
+        self.assertIn('-"westlake"', queries)
+
+        class SearchBox(FakeGmail):
+            def list_ids(self, query, limit=500):
+                self.queries.append(query)
+                return ["g1", "g2"]
+
+        box = SearchBox([])
+        box.queries = []
+        result = cleanup.run(box, settings)
+        self.assertEqual(result["archived"], 2)
+        self.assertEqual(box.archived, ["g1", "g2"])
+        self.assertTrue(any("from:linkedin.com" in item for item in box.queries))
+
 
 class StatsTests(TempHome):
     def test_dashboard_counts_what_a_round_did(self):

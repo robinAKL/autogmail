@@ -876,11 +876,13 @@ def configure_app(app: Flask) -> None:
         if not clients:
             flash("Connect a mailbox first.", "error")
             return redirect(url_for("profile_page") + "#cleanup")
+        if not any(getattr(client, "provider", "") == "gmail" for client in clients):
+            flash("Gmail is not connected, so Gmail was not cleaned. Open Connections and connect Gmail again.", "error")
         result = run_all(clients)
         _forget_inbox()
         for message in problems + (result.get("errors") or []):
             flash(message, "error")
-        flash(f"Archived {result['archived']} letters. {result['scanned']} scanned; keep-list matches were left.")
+        flash(f"Archived {result['archived']} letters from the inbox. {result['scanned']} matched. They leave Inbox and stay in All Mail.")
         return redirect(url_for("profile_page") + "#cleanup")
 
     @app.errorhandler(400)

@@ -96,7 +96,7 @@
   </form>
   <form method="post" action="{{ url_for('mailbox_cleanup') }}" class="button-row" data-busy="Cleaning inbox…" data-confirm="Archive letters that match your cleanup rules? They leave the inbox but are not deleted. School and keep-list mail stay.">
     <button type="submit">Clean inbox now</button>
-    <span class="hint">Looks at the latest {{ cleanup_limit }} letters in each connected mailbox. Run it again to continue through older mail.</span>
+    <span class="hint">Gmail is searched by these rules across Inbox (not only the newest page). Outlook looks at the latest {{ cleanup_limit }} letters. Run it again if more matching mail remains.</span>
   </form>
 </section>
 
