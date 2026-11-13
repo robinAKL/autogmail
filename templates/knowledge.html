@@ -55,33 +55,9 @@
     </div>
   </div>
   {% if graph.nodes|length > 1 %}
-  <svg class="kb-graph" viewBox="0 0 {{ graph.width }} {{ graph.height }}" role="img" aria-label="Knowledge map">
-    {% for edge in graph.edges %}
-      <line class="kb-edge" x1="{{ edge.x1 }}" y1="{{ edge.y1 }}" x2="{{ edge.x2 }}" y2="{{ edge.y2 }}"></line>
-    {% endfor %}
-    {% for node in graph.nodes %}
-      {% if node.kind == 'you' %}
-      <a href="#cards">
-        <circle class="kb-you" cx="{{ node.x }}" cy="{{ node.y }}" r="{{ node.r }}"></circle>
-        <text class="kb-you-label" x="{{ node.x }}" y="{{ node.y + 4 }}" text-anchor="middle">{{ node.label }}</text>
-      </a>
-      {% elif node.id.startswith('kind-') %}
-      <a href="{{ url_for('knowledge_page', kind=node.kind) }}#cards">
-        <circle class="kb-hub kind-{{ node.kind }}" cx="{{ node.x }}" cy="{{ node.y }}" r="{{ node.r }}">
-          <title>{{ node.title }}</title>
-        </circle>
-        <text class="kb-hub-label" x="{{ node.x }}" y="{{ node.y + 4 }}" text-anchor="middle">{{ node.label }}</text>
-      </a>
-      {% else %}
-      <a href="#item-{{ node.id }}">
-        <circle class="kb-leaf kind-{{ node.kind }}" cx="{{ node.x }}" cy="{{ node.y }}" r="{{ node.r }}">
-          <title>{{ node.title }}</title>
-        </circle>
-        <text class="kb-leaf-label" x="{{ node.x }}" y="{{ node.y + node.r + 12 }}" text-anchor="middle">{{ node.label }}</text>
-      </a>
-      {% endif %}
-    {% endfor %}
-  </svg>
+  <script type="application/json" id="kb-graph-data">{{ graph|tojson }}</script>
+  <div class="kb-graph" id="kb-map" role="img" aria-label="Knowledge map"></div>
+  <p class="meta kb-graph-hint">Drag a node to tuck it aside. Scroll to zoom. Hover to read the full line.</p>
   <ul class="legend kb-legend">
     {% for name, meta in kinds.items() %}
     <li><i class="sw kind-{{ name }}"></i>{{ meta.label }}{% if overview.by_kind[name] %} · {{ overview.by_kind[name] }}{% endif %}</li>
@@ -379,4 +355,8 @@
   </div>
   {% endif %}
 </section>
+{% endblock %}
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+<script src="{{ url_for('static', filename='kb-graph.js') }}"></script>
 {% endblock %}

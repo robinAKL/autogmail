@@ -123,6 +123,7 @@ class KnowledgeTests(TempHome):
         graph = knowledge.graph_view()
         self.assertTrue(any(node["id"] == "you" for node in graph["nodes"]))
         self.assertFalse(any(node["id"] == fact["id"] for node in graph["nodes"]))
+        self.assertTrue(all("from" in edge and "to" in edge for edge in graph["edges"]))
 
     def test_reorganise_keeps_old_facts_on_the_timeline(self):
         profile = write_test_profile()

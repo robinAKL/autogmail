@@ -480,61 +480,51 @@ def brief_from_items(items: list[dict], rules: list[str] | None = None) -> str:
 
 
 def graph_view(items: list[dict] | None = None) -> dict:
-    """Positions for an SVG map: you in the centre, kinds around, items on the rim."""
+    """Topology for the D3 map: you, kind hubs, and current items. Layout is done in the browser."""
     items = items if items is not None else load_index()["model"]["items"]
     items = [item for item in items if is_active(item)]
-    width, height = 960, 400
-    cx, cy = 168.0, 200.0
     present = [kind for kind in _KIND_ORDER if any(item["kind"] == kind for item in items)]
-    nodes = [{"id": "you", "kind": "you", "label": "You", "title": "Your profile and this knowledge base", "x": cx, "y": cy, "r": 28}]
+    nodes = [
+        {
+            "id": "you",
+            "role": "you",
+            "kind": "you",
+            "label": "You",
+            "title": "Your profile and this knowledge base",
+            "href": "#cards",
+        }
+    ]
     edges = []
-    if not present:
-        return {"width": width, "height": height, "nodes": nodes, "edges": edges}
-    n = len(present)
-    for index, kind in enumerate(present):
-        angle = (-0.95 + (1.9 * index / max(n - 1, 1))) if n > 1 else 0
-        hx = cx + 210 * math.cos(angle)
-        hy = cy + 155 * math.sin(angle)
+    for kind in present:
+        hub = f"kind-{kind}"
         nodes.append(
             {
-                "id": f"kind-{kind}",
+                "id": hub,
+                "role": "hub",
                 "kind": kind,
                 "label": KINDS[kind]["label"],
                 "title": KINDS[kind]["hint"],
-                "x": hx,
-                "y": hy,
-                "r": 22,
+                "href": f"/knowledge?kind={kind}#cards",
             }
         )
-        edges.append({"from": "you", "to": f"kind-{kind}"})
-        group = [item for item in items if item["kind"] == kind][:5]
-        for step, item in enumerate(group):
-            spread = (step - (len(group) - 1) / 2) * 0.22
-            ix = hx + 118 * math.cos(angle + spread)
-            iy = hy + 78 * math.sin(angle + spread)
+        edges.append({"from": "you", "to": hub, "related": False})
+        for item in [row for row in items if row["kind"] == kind][:8]:
             nodes.append(
                 {
                     "id": item["id"],
+                    "role": "leaf",
                     "kind": kind,
                     "label": _short_label(item["text"]),
                     "title": item["text"],
-                    "x": min(width - 70, max(70, ix)),
-                    "y": min(height - 28, max(28, iy)),
-                    "r": 10,
+                    "href": f"/knowledge?kind={kind}#item-{item['id']}",
                 }
             )
-            edges.append({"from": f"kind-{kind}", "to": item["id"]})
+            edges.append({"from": hub, "to": item["id"], "related": False})
             for other in item.get("related") or []:
                 match = next((node for node in nodes if node["title"] == other or node["label"] == other), None)
                 if match and match["id"] != item["id"]:
-                    edges.append({"from": item["id"], "to": match["id"]})
-    by_id = {node["id"]: node for node in nodes}
-    drawn = []
-    for edge in edges:
-        start, end = by_id.get(edge["from"]), by_id.get(edge["to"])
-        if start and end:
-            drawn.append({"x1": start["x"], "y1": start["y"], "x2": end["x"], "y2": end["y"]})
-    return {"width": width, "height": height, "nodes": nodes, "edges": drawn}
+                    edges.append({"from": item["id"], "to": match["id"], "related": True})
+    return {"nodes": nodes, "edges": edges}
 
 
 def memory_tiles(items: list[dict] | None = None, preview: int = 4) -> list[dict]:

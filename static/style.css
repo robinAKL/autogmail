@@ -318,22 +318,30 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .kb-steps b { font-size: 15px; }
 .kb-steps span { color: var(--muted); font-size: 13.5px; }
 .kb-steps a { font-size: 13.5px; font-weight: 600; width: fit-content; }
-.kb-graph { width: 100%; height: auto; display: block; background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; }
-.kb-edge { stroke: #d4cbb8; stroke-width: 1.4; }
-.kb-you { fill: var(--ink); }
-.kb-you-label { fill: #fff; font-size: 12px; font-weight: 700; font-family: inherit; }
-.kb-hub { fill: #fff; stroke-width: 2.5; }
-.kb-hub-label { fill: var(--ink); font-size: 10.5px; font-weight: 700; font-family: inherit; }
-.kb-leaf { stroke: #fff; stroke-width: 2; }
-.kb-leaf-label { fill: var(--muted); font-size: 10px; font-family: inherit; }
-.kb-hub.kind-fact, .kb-leaf.kind-fact, .sw.kind-fact { stroke: #1d4e89; fill: #1d4e89; background: #1d4e89; }
-.kb-hub.kind-person, .kb-leaf.kind-person, .sw.kind-person { stroke: #0b7c83; fill: #0b7c83; background: #0b7c83; }
-.kb-hub.kind-topic, .kb-leaf.kind-topic, .sw.kind-topic { stroke: #2a78d6; fill: #2a78d6; background: #2a78d6; }
-.kb-hub.kind-experience, .kb-leaf.kind-experience, .sw.kind-experience { stroke: #8a5a10; fill: #8a5a10; background: #8a5a10; }
-.kb-hub.kind-preference, .kb-leaf.kind-preference, .sw.kind-preference { stroke: #6b4a9a; fill: #6b4a9a; background: #6b4a9a; }
-.kb-hub.kind-rule, .kb-leaf.kind-rule, .sw.kind-rule { stroke: #8f3d1f; fill: #8f3d1f; background: #8f3d1f; }
-.kb-hub.kind-decision, .kb-leaf.kind-decision, .sw.kind-decision { stroke: #1f6b45; fill: #1f6b45; background: #1f6b45; }
-.kb-hub.kind-fact, .kb-hub.kind-person, .kb-hub.kind-topic, .kb-hub.kind-experience, .kb-hub.kind-preference, .kb-hub.kind-rule, .kb-hub.kind-decision { fill: #fff; }
+.kb-graph { width: 100%; height: 520px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.kb-graph svg { width: 100%; height: 100%; display: block; cursor: grab; }
+.kb-graph svg:active { cursor: grabbing; }
+.kb-graph-hint { margin: 8px 2px 0; }
+.kb-edge { fill: none; stroke: #d4cbb8; stroke-width: 1.5; stroke-linecap: round; opacity: 0.9; }
+.kb-edge.related { stroke-dasharray: 5 5; stroke-width: 1.1; opacity: 0.55; }
+.kb-edge.dim { opacity: 0.12; }
+.kb-node { cursor: pointer; }
+.kb-node.dim { opacity: 0.18; }
+.kb-node circle { stroke-width: 2; }
+.kb-you circle { fill: var(--ink); stroke: var(--ink); }
+.kb-hub circle { fill: #fff; stroke-width: 2.5; }
+.kb-leaf circle { stroke: #fff; }
+.kb-label { font-family: inherit; font-size: 11px; fill: var(--ink-2); paint-order: stroke; stroke: var(--surface-2); stroke-width: 4px; stroke-linejoin: round; pointer-events: none; }
+.kb-you .kb-label { fill: #fff; font-size: 12px; font-weight: 700; stroke: var(--ink); stroke-width: 3px; }
+.kb-hub .kb-label { fill: var(--ink); font-size: 11px; font-weight: 700; }
+.kb-hub.kind-fact, .kb-leaf.kind-fact, .kb-node.kind-fact circle, .sw.kind-fact { stroke: #1d4e89; fill: #1d4e89; background: #1d4e89; }
+.kb-hub.kind-person, .kb-leaf.kind-person, .kb-node.kind-person circle, .sw.kind-person { stroke: #0b7c83; fill: #0b7c83; background: #0b7c83; }
+.kb-hub.kind-topic, .kb-leaf.kind-topic, .kb-node.kind-topic circle, .sw.kind-topic { stroke: #2a78d6; fill: #2a78d6; background: #2a78d6; }
+.kb-hub.kind-experience, .kb-leaf.kind-experience, .kb-node.kind-experience circle, .sw.kind-experience { stroke: #8a5a10; fill: #8a5a10; background: #8a5a10; }
+.kb-hub.kind-preference, .kb-leaf.kind-preference, .kb-node.kind-preference circle, .sw.kind-preference { stroke: #6b4a9a; fill: #6b4a9a; background: #6b4a9a; }
+.kb-hub.kind-rule, .kb-leaf.kind-rule, .kb-node.kind-rule circle, .sw.kind-rule { stroke: #8f3d1f; fill: #8f3d1f; background: #8f3d1f; }
+.kb-hub.kind-decision, .kb-leaf.kind-decision, .kb-node.kind-decision circle, .sw.kind-decision { stroke: #1f6b45; fill: #1f6b45; background: #1f6b45; }
+.kb-hub.kind-fact circle, .kb-hub.kind-person circle, .kb-hub.kind-topic circle, .kb-hub.kind-experience circle, .kb-hub.kind-preference circle, .kb-hub.kind-rule circle, .kb-hub.kind-decision circle, .kb-node.kb-hub circle { fill: #fff; }
 .kb-legend { margin-top: 10px; }
 .kb-kind .card-title { display: flex; align-items: center; gap: 8px; }
 .kb-add { max-width: 420px; }
