@@ -172,6 +172,45 @@ class KnowledgeTests(TempHome):
         self.assertIn("[SENT]", seen[0])
         self.assertEqual(knowledge.list_documents()[0]["source"], "email")
 
+    def test_outlook_history_uses_previews_when_bodies_are_missing(self):
+        class OutlookBox:
+            provider = "outlook"
+
+            def get_user_email(self):
+                return "robin@kiwiknowledge.co.nz"
+
+            def list_sent(self, limit=12, full=False):
+                raise ConfigError("Outlook timed out after 8s. The mailbox list was too slow; Gmail can still be used.")
+
+            def list_recent(self, limit=12, full=False):
+                self.assertFalse(full)
+                return [
+                    sample(
+                        id="o1",
+                        provider="outlook",
+                        subject="School values",
+                        body="",
+                        snippet="Dear Parents, please remember hats and healthy eating.",
+                    )
+                ]
+
+            def assertFalse(self, value):
+                if value:
+                    raise AssertionError("Outlook history should not request full HTML bodies")
+
+        seen = []
+
+        def fake_complete(system, user, **_kwargs):
+            seen.append(user)
+            return "## People and organisations\n- Wairau Intermediate School: sends parent mail."
+
+        with patch("gmail_auto.knowledge.complete", fake_complete):
+            entry = knowledge.learn_from_mailbox(OutlookBox())
+        self.assertEqual(entry["meta"]["letters"], 1)
+        self.assertEqual(entry["meta"]["provider"], "outlook")
+        self.assertIn("healthy eating", seen[0])
+        self.assertEqual(entry["title"], "What your email shows (robin@kiwiknowledge.co.nz)")
+
 
 class StatsTests(TempHome):
     def test_dashboard_counts_what_a_round_did(self):

@@ -14,7 +14,7 @@ from gmail_auto.paths import CODE_ROOT
 from gmail_auto.profile_store import load_profile, save_profile
 from gmail_auto.runner import run_once
 from gmail_auto.settings import load_settings, save_settings
-from gmail_auto.store import is_live, set_live
+from gmail_auto.store import is_live, mark_processed, set_live
 from gmail_auto.web import HOST, _forget_inbox, create_app
 from tests.test_core import PLACEHOLDER, FakeGmail, sample
 
@@ -129,6 +129,8 @@ class PageTests(WebCase):
             self.assertIn("Lunch?", text)
             self.assertIn("Not handled yet", text)
             self.assertIn("Read, no reply", text)
+            self.assertIn('chip tiny gmail', text)
+            self.assertNotIn("Older", text)
             self.assertIn('src="/mail/body?key=h1"', text)
             self.assertIn("sandbox=", text)
             self.assertNotIn("<script>steal()", text)
@@ -149,6 +151,36 @@ class PageTests(WebCase):
             _, needs = self.page("/?show=needs")
             self.assertIn("Spring sale", needs)
             self.assertNotIn("Lunch?", needs)
+
+    def test_inbox_pages_older_history_and_keeps_mailbox_marks(self):
+        live = sample(id="now", subject="Today's letter", received_ts=1794387660.0, date="2026-11-13 18:00")
+        for index in range(25):
+            mark_processed(
+                {
+                    "id": f"old{index}",
+                    "provider": "outlook",
+                    "from_name": "School",
+                    "from_email": "school@example.com",
+                    "subject": f"History {index}",
+                    "date": f"2026-01-01 10:{index:02d}",
+                    "processed_at": f"2026-01-01 10:{index:02d}",
+                    "action": "skipped",
+                    "skip_code": "no_reply_needed",
+                }
+            )
+        box = Inbox([live])
+        with patch("gmail_auto.web.connected_clients", return_value=([box], [])), patch("gmail_auto.web.client_for", return_value=box):
+            _, text = self.page("/")
+            self.assertIn("Today&#39;s letter", text)
+            self.assertIn("chip tiny gmail", text)
+            self.assertIn("Older", text)
+            self.assertIn("1 / 2", text)
+            self.assertNotIn("History 0", text)
+            _, older = self.page("/?page=2")
+            self.assertIn("History 0", older)
+            self.assertIn("chip tiny outlook", older)
+            self.assertIn("Newer", older)
+            self.assertNotIn("Today&#39;s letter", older)
 
     def test_privacy_policy_is_public_on_the_hosted_site(self):
         os.environ["VERCEL"] = "1"

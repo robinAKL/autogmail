@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 
 from gmail_auto.envfile import has_openai_key
-from gmail_auto.errors import ConfigError, ReplyError
+from gmail_auto.errors import ConfigError, ReplyError, named_error
 from gmail_auto.filters import is_sensitive
 from gmail_auto.llm import complete, parse_json
 from gmail_auto.profile_store import profile_as_prompt
@@ -611,10 +611,35 @@ def refresh_brief_if_stale(profile: dict) -> None:
 def learn_from_mailbox(client, limit: int = 30) -> dict:
     """Read recent sent and received mail and keep a summary of what it shows."""
     account = client.get_user_email()
+    provider = getattr(client, "provider", "gmail")
+    # Outlook Graph 502s or times out when HTML bodies are pulled in bulk.
+    take = max(1, min(int(limit), 12 if provider == "outlook" else 25))
+    want_full = provider != "outlook"
+    sent, received, problems = [], [], []
+
+    def collect(fetch):
+        try:
+            return list(fetch()), ""
+        except ConfigError as exc:
+            return [], str(exc)
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future_sent = pool.submit(collect, lambda: client.list_sent(take, full=want_full))
+        future_received = pool.submit(collect, lambda: client.list_recent(take, full=want_full))
+        sent, sent_error = future_sent.result()
+        received, received_error = future_received.result()
+    if sent_error:
+        problems.append(named_error("Outlook sent mail" if provider == "outlook" else "Sent mail", ConfigError(sent_error)))
+    if received_error:
+        problems.append(named_error("Outlook inbox" if provider == "outlook" else "Inbox", ConfigError(received_error)))
+
     letters = []
-    for direction, mails in (("SENT", client.list_sent(limit, full=True)), ("RECEIVED", client.list_recent(limit, full=True))):
+    for direction, mails in (("SENT", sent), ("RECEIVED", received)):
         for mail in mails:
-            if is_sensitive(mail.subject) or is_sensitive(mail.body) or not (mail.body or "").strip():
+            text = (mail.body or mail.snippet or "").strip()
+            if is_sensitive(mail.subject) or is_sensitive(text) or not text:
                 continue
             labels = set(mail.label_ids or [])
             if direction == "RECEIVED" and labels & {"CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FORUMS", "SPAM"}:
@@ -622,10 +647,11 @@ def learn_from_mailbox(client, limit: int = 30) -> dict:
             other = mail.headers.get("to", "") if direction == "SENT" else (mail.from_name or mail.from_email)
             letters.append(
                 f"[{direction}] {mail.date} | {'To' if direction == 'SENT' else 'From'}: {other}\n"
-                f"Subject: {mail.subject or '(no subject)'}\n{_head(mail.body, 1200)}"
+                f"Subject: {mail.subject or '(no subject)'}\n{_head(text, 1200)}"
             )
     if not letters:
-        raise ConfigError("No readable mail was found to learn from.")
+        extra = f" {problems[0]}" if problems else ""
+        raise ConfigError("No readable mail was found to learn from." + extra)
     notes = []
     for start in range(0, len(letters), 10):
         batch = "\n\n-----\n\n".join(letters[start : start + 10])
@@ -640,7 +666,6 @@ def learn_from_mailbox(client, limit: int = 30) -> dict:
         ).strip()
     if not combined:
         raise ReplyError("The model returned nothing.")
-    provider = getattr(client, "provider", "gmail")
     return add_document(
         f"What your email shows ({account})",
         combined,

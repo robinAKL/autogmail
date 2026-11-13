@@ -86,12 +86,27 @@
       <span class="row-snippet">{{ row.snippet }}</span>
       <span class="row-foot">
         <span class="tag {{ row.kind }}">{{ row.status }}</span>
-        {% if accounts|length > 1 %}<span class="chip tiny {{ row.provider }}">{{ row.provider_label }}</span>{% endif %}
+        <span class="chip tiny {{ row.provider }}">{{ row.provider_label }}</span>
       </span>
     </a>
     {% else %}
     <p class="empty">Nothing here.</p>
     {% endfor %}
+    {% if pager and pager.pages > 1 %}
+    <nav class="pager" aria-label="Inbox pages">
+      {% if pager.prev %}
+      <a class="button quiet small" href="{{ url_for('home', show=show, page=pager.prev) }}">Newer</a>
+      {% else %}
+      <span class="button quiet small" aria-disabled="true">Newer</span>
+      {% endif %}
+      <span class="pager-status">{{ pager.page }} / {{ pager.pages }}</span>
+      {% if pager.next %}
+      <a class="button quiet small" href="{{ url_for('home', show=show, page=pager.next) }}">Older</a>
+      {% else %}
+      <span class="button quiet small" aria-disabled="true">Older</span>
+      {% endif %}
+    </nav>
+    {% endif %}
   </section>
 
   <section class="reader" aria-label="Selected email">

@@ -183,7 +183,7 @@ def configure_app(app: Flask) -> None:
                 "count": len(inbox.get("rows") or []),
                 "errors": inbox.get("errors") or [],
             }
-        return redirect(url_for("home", show=request.args.get("show", ""), open=request.args.get("open", "")))
+        return redirect(url_for("home", **_inbox_query()))
 
     @app.get("/mail/body")
     def mail_body():
@@ -422,10 +422,12 @@ def configure_app(app: Flask) -> None:
         if provider not in PROVIDERS:
             abort(400)
         try:
-            entry = knowledge.learn_from_mailbox(client_for(provider), limit=30)
+            entry = knowledge.learn_from_mailbox(client_for(provider), limit=12 if provider == "outlook" else 30)
             flash(f"Read {entry['meta']['letters']} letters from {entry['meta']['account']} and saved what they show.")
         except ConfigError as exc:
             flash(str(exc), "error")
+        except Exception:
+            flash("Could not summarise that mailbox right now. Outlook was too slow or returned nothing readable.", "error")
         return redirect(url_for("knowledge_page") + "#documents")
 
     @app.post("/knowledge/sharepoint")
@@ -858,7 +860,8 @@ def _home_context() -> dict:
     hosted = bool(os.environ.get("VERCEL"))
     inbox = _inbox(live=not hosted or request.args.get("live") == "1")
     errors.extend(inbox["errors"])
-    rows = inbox["rows"]
+    rows = _merge_history(inbox["rows"])
+    accounts = _account_chips() or inbox["accounts"]
     counts = {name: 0 for name in _FILTERS}
     for row in rows:
         counts["all"] += 1
@@ -867,14 +870,12 @@ def _home_context() -> dict:
     if show not in _FILTERS:
         show = "all"
     visible = [row for row in rows if show == "all" or row["group"] == show]
-    opened = None
     wanted = request.args.get("open", "")
-    for row in visible:
-        if row["key"] == wanted:
-            opened = row
-            break
-    if opened is None and visible and not hosted:
-        opened = visible[0]
+    page, pages = _inbox_page(visible, wanted)
+    listed = visible[(page - 1) * _INBOX_PAGE : page * _INBOX_PAGE]
+    opened = next((row for row in listed if row["key"] == wanted), None)
+    if opened is None and listed and not hosted and not wanted:
+        opened = listed[0]
 
     waiting_item = None
     if opened and opened.get("approval_id") and opened["kind"] == "waiting":
@@ -891,11 +892,17 @@ def _home_context() -> dict:
     return {
         "live": is_live(),
         "placeholder": placeholder,
-        "accounts": inbox["accounts"],
-        "connected": bool(inbox["accounts"]),
+        "accounts": accounts,
+        "connected": bool(accounts),
         "offline": inbox["offline"],
         "errors": errors,
-        "rows": visible,
+        "rows": listed,
+        "pager": {
+            "page": page,
+            "pages": pages,
+            "prev": page - 1 if page > 1 else 0,
+            "next": page + 1 if page < pages else 0,
+        },
         "opened": opened,
         "waiting_item": waiting_item,
         "filters": _FILTERS,
@@ -903,7 +910,7 @@ def _home_context() -> dict:
         "show": show,
         "last_run": last_run,
         "interval": _interval_text(),
-        "auth_error": "" if inbox["accounts"] else session.get("auth_error", ""),
+        "auth_error": "" if accounts else session.get("auth_error", ""),
     }
 
 
@@ -1110,6 +1117,54 @@ def _find_mail(key: str):
     return mail
 
 
+def _inbox_query() -> dict:
+    query = {}
+    show = request.args.get("show", "")
+    if show in _FILTERS and show != "all":
+        query["show"] = show
+    opened = request.args.get("open", "")
+    if opened:
+        query["open"] = opened
+    page = request.args.get("page", "")
+    if page.isdigit() and int(page) > 1:
+        query["page"] = int(page)
+    return query
+
+
+def _inbox_page(rows: list[dict], wanted: str) -> tuple[int, int]:
+    total = len(rows)
+    pages = max(1, (total + _INBOX_PAGE - 1) // _INBOX_PAGE) if total else 1
+    page = 1
+    raw = request.args.get("page", "")
+    if raw.isdigit():
+        page = int(raw)
+    if wanted:
+        for index, row in enumerate(rows):
+            if row["key"] == wanted:
+                page = index // _INBOX_PAGE + 1
+                break
+    return min(max(page, 1), pages), pages
+
+
+def _merge_history(rows: list[dict]) -> list[dict]:
+    """Mailbox page plus older handled mail, newest first."""
+    seen = {row.get("key") for row in rows}
+    extra = []
+    try:
+        records = list_processed(400)
+    except ConfigError:
+        records = []
+    for record in records:
+        key = record.get("id") or ""
+        if not key or key in seen:
+            continue
+        extra.append(_row_from_record(record))
+        seen.add(key)
+    combined = list(rows) + extra
+    combined.sort(key=lambda row: row.get("date") or "", reverse=True)
+    return combined
+
+
 def _row_from_mail(mail, record, user_email: str) -> dict:
     label, kind, group = _describe(mail, record, user_email)
     record = record if isinstance(record, dict) else {}
@@ -1140,39 +1195,35 @@ def _row_from_mail(mail, record, user_email: str) -> dict:
 
 
 def _rows_from_store() -> list[dict]:
-    try:
-        records = list_processed(25)
-    except ConfigError:
-        return []
-    rows = []
-    for record in records:
-        label, kind, group = _describe_record(record)
-        rows.append(
-            {
-                "key": record.get("id", ""),
-                "provider": record.get("provider") or "gmail",
-                "provider_label": PROVIDERS.get(record.get("provider") or "gmail", "Mail"),
-                "who": record.get("from_name") or record.get("from_email") or "Unknown sender",
-                "email": record.get("from_email") or "",
-                "subject": record.get("subject") or "(no subject)",
-                "date": record.get("processed_at") or record.get("date") or "",
-                "short_date": _short_date(record.get("processed_at") or record.get("date") or ""),
-                "snippet": "",
-                "unread": False,
-                "status": label,
-                "kind": kind,
-                "group": group,
-                "has_body": False,
-                "reply": record.get("reply") or "",
-                "summary": record.get("summary") or "",
-                "reason": "",
-                "sources": record.get("sources") or [],
-                "outbox": record.get("outbox") or "",
-                "approval_id": record.get("approval_id") or "",
-                "needs_review": bool(record.get("needs_review")),
-            }
-        )
-    return rows
+    return _merge_history([])
+
+
+def _row_from_record(record: dict) -> dict:
+    label, kind, group = _describe_record(record)
+    when = record.get("processed_at") or record.get("date") or ""
+    return {
+        "key": record.get("id", ""),
+        "provider": record.get("provider") or "gmail",
+        "provider_label": PROVIDERS.get(record.get("provider") or "gmail", "Mail"),
+        "who": record.get("from_name") or record.get("from_email") or "Unknown sender",
+        "email": record.get("from_email") or "",
+        "subject": record.get("subject") or "(no subject)",
+        "date": when,
+        "short_date": _short_date(when),
+        "snippet": (record.get("summary") or "")[:160],
+        "unread": False,
+        "status": label,
+        "kind": kind,
+        "group": group,
+        "has_body": False,
+        "reply": record.get("reply") or "",
+        "summary": record.get("summary") or "",
+        "reason": "",
+        "sources": record.get("sources") or [],
+        "outbox": record.get("outbox") or "",
+        "approval_id": record.get("approval_id") or "",
+        "needs_review": bool(record.get("needs_review")),
+    }
 
 
 def _describe(mail, record, user_email: str) -> tuple[str, str, str]:

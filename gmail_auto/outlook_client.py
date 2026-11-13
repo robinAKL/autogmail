@@ -50,11 +50,11 @@ class OutlookClient:
 
     def list_recent(self, limit: int = 25, full: bool = False) -> list[Mail]:
         # Newest page only. A date filter on a large folder makes Graph scan and time out.
-        mails = self._list("inbox", limit, {"$orderby": "receivedDateTime desc"})
+        mails = self._list_newest("inbox", limit, "receivedDateTime")
         return self._hydrate(mails) if full else mails
 
     def list_sent(self, limit: int = 25, full: bool = False) -> list[Mail]:
-        mails = self._list("sentitems", limit, {"$orderby": "sentDateTime desc"})
+        mails = self._list_newest("sentitems", limit, "sentDateTime")
         return self._hydrate(mails) if full else mails
 
     def get_message(self, message_id: str) -> Mail:
@@ -97,6 +97,13 @@ class OutlookClient:
             categories.append(add)
         microsoft.graph("outlook", "PATCH", f"/me/messages/{message_id}", body={"categories": categories})
 
+    def _list_newest(self, folder: str, limit: int, time_field: str) -> list[Mail]:
+        extra = {"$orderby": f"{time_field} desc"}
+        try:
+            return self._list(folder, limit, extra)
+        except ConfigError:
+            return self._list(folder, min(int(limit), 12), {})
+
     def _list(self, folder: str, limit: int, extra: dict) -> list[Mail]:
         params = {"$top": max(1, min(int(limit), 50)), "$select": _SELECT_LIST, **extra}
         data = microsoft.graph(
@@ -110,12 +117,12 @@ class OutlookClient:
         return [self._stamp(parse_message(item)) for item in data.get("value") or []]
 
     def _hydrate(self, mails: list[Mail]) -> list[Mail]:
-        """Load HTML bodies in batches of 20 so Graph is not asked for 25 full letters at once."""
+        """Load text bodies in small batches. Keep the list preview if Graph refuses a batch."""
         if not mails:
             return []
         filled: dict[int, Mail] = {}
-        for start in range(0, len(mails), 20):
-            chunk = mails[start : start + 20]
+        for start in range(0, len(mails), 5):
+            chunk = mails[start : start + 5]
             requests = []
             for index, mail in enumerate(chunk):
                 encoded = urllib.parse.quote(mail.id, safe="")
@@ -123,11 +130,16 @@ class OutlookClient:
                     {
                         "id": str(index),
                         "method": "GET",
-                        "url": f"/me/messages/{encoded}?$select={_SELECT}",
-                        "headers": _HTML,
+                        "url": f"/me/messages/{encoded}?$select={_SELECT_LIST},body",
+                        "headers": {"Prefer": 'outlook.body-content-type="text"'},
                     }
                 )
-            data = microsoft.graph("outlook", "POST", "/$batch", body={"requests": requests})
+            try:
+                data = microsoft.graph("outlook", "POST", "/$batch", body={"requests": requests}, timeout=12, attempts=1)
+            except ConfigError:
+                for index, mail in enumerate(chunk):
+                    filled[start + index] = mail
+                continue
             by_id = {str(item.get("id")): item for item in data.get("responses") or []}
             for index, mail in enumerate(chunk):
                 item = by_id.get(str(index)) or {}
