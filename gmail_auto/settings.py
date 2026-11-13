@@ -28,6 +28,7 @@ DEFAULTS = {
     "cleanup_match": None,
     "cleanup_keep": None,
     "cleanup_skipped": True,
+    "auto_calendar": True,
 }
 
 
@@ -82,6 +83,7 @@ def _clean(data: dict, strict: bool = False) -> dict:
         "cleanup_match": _lines(data.get("cleanup_match"), DEFAULT_MATCH, strict),
         "cleanup_keep": _lines(data.get("cleanup_keep"), DEFAULT_KEEP, strict),
         "cleanup_skipped": bool(data.get("cleanup_skipped")),
+        "auto_calendar": bool(data.get("auto_calendar")),
     }
 
 

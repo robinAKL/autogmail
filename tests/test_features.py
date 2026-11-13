@@ -212,6 +212,28 @@ class KnowledgeTests(TempHome):
         self.assertEqual(entry["title"], "What your email shows (robin@kiwiknowledge.co.nz)")
 
 
+class CalendarTests(TempHome):
+    def test_meeting_mail_becomes_a_calendar_draft_and_job_alerts_do_not(self):
+        from gmail_auto.calendars import suggest_event
+
+        meeting = sample(
+            subject="Meeting 14 November 2026 15:00",
+            body="Please join the meeting on 14 November 2026 15:00. Invite jane@client.example.",
+            from_email="lee@example.com",
+        )
+        draft = suggest_event(meeting, "me@example.com")
+        self.assertIsNotNone(draft)
+        self.assertEqual(draft["start"].day, 14)
+        self.assertEqual(draft["start"].hour, 15)
+        self.assertIn("jane@client.example", draft["attendees"])
+        alert = sample(
+            from_email="jobalerts-noreply@linkedin.com",
+            subject="You may be a fit for a meeting role",
+            body="Job alert for meetings.",
+        )
+        self.assertIsNone(suggest_event(alert, "me@example.com"))
+
+
 class CleanupTests(TempHome):
     def test_cleanup_follows_match_and_keep_rules(self):
         save_settings(

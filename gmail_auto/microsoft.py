@@ -15,7 +15,7 @@ from gmail_auto.storage import delete_doc, load_doc, persistent, save_doc
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 SCOPES = {
-    "outlook": ["offline_access", "User.Read", "Mail.ReadWrite", "Mail.Send"],
+    "outlook": ["offline_access", "User.Read", "Mail.ReadWrite", "Mail.Send", "Calendars.ReadWrite"],
     "sharepoint": ["offline_access", "User.Read", "Sites.Read.All", "Files.Read.All"],
 }
 LABELS = {"outlook": "Outlook", "sharepoint": "SharePoint"}

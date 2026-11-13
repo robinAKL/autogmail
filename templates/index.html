@@ -124,6 +124,11 @@
       {% if opened.summary %}
       <p class="ai-note"><b>What they want</b> {{ opened.summary }}</p>
       {% endif %}
+      <form method="post" action="{{ url_for('calendar_from_mail') }}" class="button-row" data-busy="Adding to calendar…">
+        <input type="hidden" name="key" value="{{ opened.key }}">
+        <input type="hidden" name="next" value="{{ url_for('home', show=show, open=opened.key) }}">
+        <button class="quiet small" type="submit">Add to calendar</button>
+      </form>
     </header>
 
     {% if opened.has_body %}

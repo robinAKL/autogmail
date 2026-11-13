@@ -304,6 +304,61 @@ def configure_app(app: Flask) -> None:
             kb=knowledge.overview(),
         )
 
+    @app.get("/calendar")
+    def calendar_page():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import calendars
+
+        data = {"days": [], "accounts": [], "errors": []}
+        try:
+            data = calendars.list_upcoming()
+        except ConfigError as exc:
+            data["errors"] = [str(exc)]
+        errors = list(data.get("errors") or [])
+        need_reconnect = any("connect" in (item or "").lower() or "permission" in (item or "").lower() or "grant" in (item or "").lower() for item in errors)
+        return _render(
+            "calendar.html",
+            days=data.get("days") or [],
+            accounts=data.get("accounts") or [],
+            errors=errors,
+            need_reconnect=need_reconnect,
+            auto_calendar=load_settings().get("auto_calendar", True),
+        )
+
+    @app.post("/calendar/settings")
+    def calendar_settings_save():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        try:
+            save_settings({"auto_calendar": request.form.get("auto_calendar") == "1"})
+            flash("Calendar setting saved.")
+        except ConfigError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("calendar_page"))
+
+    @app.post("/calendar/from-mail")
+    def calendar_from_mail():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import calendars
+
+        key = request.form.get("key") or request.args.get("key") or ""
+        mail = _find_mail(key)
+        next_url = request.form.get("next") or url_for("calendar_page")
+        if mail is None:
+            flash("That letter could not be opened.", "error")
+            return redirect(next_url)
+        try:
+            event = calendars.create_from_mail(mail, mail.account or "")
+            flash(f"Added to Calendar: {event.get('title') or mail.subject}.")
+        except ConfigError as exc:
+            flash(str(exc), "error")
+        return redirect(next_url)
+
     # ---- knowledge -----------------------------------------------------------
 
     @app.get("/knowledge")

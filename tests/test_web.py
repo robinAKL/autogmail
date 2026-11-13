@@ -98,6 +98,7 @@ class PageTests(WebCase):
             ("/connections", "Connect Outlook" if False else "Outlook"),
             ("/profile", "Sending mode"),
             ("/profile", "Inbox cleanup"),
+            ("/calendar", "From email"),
             ("/login", "Email me a code to sign in"),
         ):
             response, text = self.page(path)

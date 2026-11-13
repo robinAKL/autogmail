@@ -78,8 +78,9 @@ in your material is held back.
 3. *Certificates & secrets* → new client secret. Put the IDs in `.env` as `MS_CLIENT_ID`,
    `MS_CLIENT_SECRET` (and `MS_TENANT_ID` to limit it to your organisation).
 4. Open **Connections** and choose *Connect Outlook* and/or *Connect SharePoint*. Outlook asks for
-   `Mail.ReadWrite` and `Mail.Send`; SharePoint asks for read-only `Sites.Read.All` and
-   `Files.Read.All`, which some organisations require an admin to approve.
+   `Mail.ReadWrite`, `Mail.Send` and `Calendars.ReadWrite`; SharePoint asks for read-only `Sites.Read.All` and
+   `Files.Read.All`, which some organisations require an admin to approve. Gmail also asks for
+   `calendar.events` so Calendar can list and create meetings. Connect again after this change.
 
 Then on **Knowledge**, paste a link to a SharePoint site, library folder or single file.
 

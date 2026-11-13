@@ -208,6 +208,11 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .pager .button[aria-disabled] { opacity: 0.4; pointer-events: none; }
 .pager-status { font-size: 13px; color: var(--muted); font-weight: 600; min-width: 3.5em; text-align: center; }
 
+.cal-day { display: grid; gap: 8px; }
+.cal-day h2 { font-size: 15px; color: var(--muted); font-weight: 650; }
+.cal-list { position: static; max-height: none; overflow: visible; }
+.cal-event { cursor: default; }
+
 .reader { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); min-width: 0; overflow: hidden; }
 .reader-head { padding: 20px 24px 16px; display: grid; gap: 8px; border-bottom: 1px solid var(--line); }
 .reader-title { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; }

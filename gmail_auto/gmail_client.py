@@ -13,7 +13,10 @@ from gmail_auto.filters import reply_subject
 from gmail_auto.models import Mail
 from gmail_auto.paths import atomic_write, root
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
+SCOPES = [
+    "https://www.googleapis.com/auth/gmail.modify",
+    "https://www.googleapis.com/auth/calendar.events",
+]
 UNREAD_QUERY = (
     "is:unread in:inbox -category:promotions -category:social "
     "-category:forums -in:chats -in:spam -in:trash -label:autogmail-done"

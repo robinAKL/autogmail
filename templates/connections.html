@@ -21,7 +21,7 @@
       </div>
       {% if gmail.connected %}
       <p class="account-line">{{ gmail.account }}</p>
-      <p class="muted">Unread mail is read and answered from this mailbox.{% if gmail.when %} Connected {{ gmail.when }}.{% endif %}</p>
+      <p class="muted">Unread mail is read and answered from this mailbox, and Calendar can add meetings.{% if gmail.when %} Connected {{ gmail.when }}.{% endif %}</p>
       {% else %}
       <p class="muted">{% if local and not gmail.web_ready %}On this computer Gmail connects when the program starts: put the Desktop-app <code>credentials.json</code> in the folder and restart.{% else %}Sign in with Google and allow reading and sending mail.{% endif %}</p>
       {% endif %}
@@ -44,9 +44,9 @@
       </div>
       {% if outlook.connected %}
       <p class="account-line">{{ outlook.account or 'Microsoft account' }}</p>
-      <p class="muted">Works with Microsoft 365 and Outlook.com mailboxes. Connected {{ outlook.connected_at }}.</p>
+      <p class="muted">Works with Microsoft 365 and Outlook.com mail. Calendar uses the same sign-in. Connected {{ outlook.connected_at }}.</p>
       {% elif ms_ready %}
-      <p class="muted">Sign in with Microsoft and allow reading and sending mail. Works with Microsoft 365 and Outlook.com.</p>
+      <p class="muted">Sign in with Microsoft and allow mail and calendar. Works with Microsoft 365 and Outlook.com.</p>
       <p class="hint">Signs in through {{ ms_tenant }}.</p>
       {% else %}
       <p class="muted">Needs a Microsoft app registration first. Set <code>MS_CLIENT_ID</code> and <code>MS_CLIENT_SECRET</code>, and register this redirect address:</p>

@@ -7,3 +7,4 @@ python-dotenv>=1.0.1
 requests>=2.31.0
 pypdf>=4.2.0
 redis>=5.0.0
+tzdata>=2024.1

@@ -222,6 +222,14 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
         if not isinstance(decision, Allow):
             continue
         try:
+            from gmail_auto.calendars import maybe_create_from_mail
+
+            added = maybe_create_from_mail(mail, user)
+            if added:
+                report.lines.append(f"Calendar: {added}")
+        except Exception:
+            pass
+        try:
             draft = _as_draft(generate(mail, profile, decision.language))
         except ReplyError as exc:
             _fail(client, mail, report, str(exc))

@@ -496,7 +496,10 @@ class RunnerTests(TempHome):
                 "refresh_token": "test-refresh-token",
                 "client_id": "test.apps.googleusercontent.com",
                 "client_secret": "test-secret",
-                "scopes": ["https://www.googleapis.com/auth/gmail.modify"],
+                "scopes": [
+                    "https://www.googleapis.com/auth/gmail.modify",
+                    "https://www.googleapis.com/auth/calendar.events",
+                ],
                 "expiry": "2099-01-01T00:00:00Z",
             }
         )
