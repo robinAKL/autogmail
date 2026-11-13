@@ -99,6 +99,7 @@ class PageTests(WebCase):
             ("/profile", "Sending mode"),
             ("/profile", "Inbox cleanup"),
             ("/calendar", "From email"),
+            ("/calendar", "Mon"),
             ("/login", "Email me a code to sign in"),
         ):
             response, text = self.page(path)

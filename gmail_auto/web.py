@@ -311,16 +311,20 @@ def configure_app(app: Flask) -> None:
             return blocked
         from gmail_auto import calendars
 
-        data = {"days": [], "accounts": [], "errors": []}
+        data = {"weeks": [], "accounts": [], "errors": [], "weekdays": [], "title": "Calendar"}
         try:
-            data = calendars.list_upcoming()
+            data = calendars.month_board(
+                request.args.get("year", type=int),
+                request.args.get("month", type=int),
+                request.args.get("day") or "",
+            )
         except ConfigError as exc:
             data["errors"] = [str(exc)]
         errors = list(data.get("errors") or [])
         need_reconnect = any("connect" in (item or "").lower() or "permission" in (item or "").lower() or "grant" in (item or "").lower() for item in errors)
         return _render(
             "calendar.html",
-            days=data.get("days") or [],
+            board=data,
             accounts=data.get("accounts") or [],
             errors=errors,
             need_reconnect=need_reconnect,

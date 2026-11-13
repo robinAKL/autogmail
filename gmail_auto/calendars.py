@@ -13,6 +13,7 @@ from gmail_auto.storage import load_doc, save_doc
 
 ZONE = ZoneInfo("Pacific/Auckland")
 _DAYS = 14
+_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 _HINT = re.compile(
     r"\b(meeting|invitation|invite|appointment|interview|reminder|catch[- ]?up|"
     r"zoom|teams|calendar|parent.?teacher|call at|see you)\b",
@@ -46,21 +47,7 @@ def list_upcoming(days: int = _DAYS) -> dict:
     """Events from connected Outlook and Gmail calendars, next two weeks."""
     start = datetime.now(ZONE).replace(second=0, microsecond=0)
     end = start + timedelta(days=max(1, min(int(days), 60)))
-    events = []
-    errors = []
-    accounts = []
-    for provider, fetch in (("outlook", _outlook_events), ("gmail", _gmail_events)):
-        try:
-            found, account = fetch(start, end)
-        except NotConnected:
-            continue
-        except ConfigError as exc:
-            errors.append(str(exc))
-            continue
-        events.extend(found)
-        if account:
-            accounts.append({"provider": provider, "label": PROVIDERS.get(provider, provider.title()), "email": account})
-    events.sort(key=lambda item: item["start"] or datetime.max.replace(tzinfo=ZONE))
+    events, accounts, errors = _collect(start, end)
     days_out = []
     current = ""
     bucket = None
@@ -72,6 +59,68 @@ def list_upcoming(days: int = _DAYS) -> dict:
             current = day
         bucket["events"].append(event)
     return {"days": days_out, "events": events, "accounts": accounts, "errors": errors, "from": start, "until": end}
+
+
+def month_board(year: int | None = None, month: int | None = None, day: str = "") -> dict:
+    """A Monday–Sunday month grid with events placed on their dates."""
+    now = datetime.now(ZONE)
+    try:
+        year = int(year or now.year)
+        month = int(month or now.month)
+    except (TypeError, ValueError):
+        year, month = now.year, now.month
+    if year < 1970 or year > 2100 or month < 1 or month > 12:
+        year, month = now.year, now.month
+    first = datetime(year, month, 1, tzinfo=ZONE)
+    next_first = datetime(year + 1, 1, 1, tzinfo=ZONE) if month == 12 else datetime(year, month + 1, 1, tzinfo=ZONE)
+    last = next_first - timedelta(seconds=1)
+    grid_start = first - timedelta(days=first.weekday())
+    grid_end = (last + timedelta(days=6 - last.weekday())).replace(hour=23, minute=59, second=59, microsecond=0)
+    events, accounts, errors = _collect(grid_start, grid_end + timedelta(seconds=1))
+    by_date: dict[str, list] = {}
+    for event in events:
+        by_date.setdefault(event["date"], []).append(event)
+    weeks = []
+    cursor = grid_start.date()
+    end_date = grid_end.date()
+    while cursor <= end_date:
+        week = []
+        for _ in range(7):
+            key = cursor.isoformat()
+            week.append(
+                {
+                    "date": key,
+                    "num": cursor.day,
+                    "in_month": cursor.month == month,
+                    "today": cursor == now.date(),
+                    "events": by_date.get(key) or [],
+                }
+            )
+            cursor += timedelta(days=1)
+        weeks.append(week)
+    selected = _selected_day(day, year, month, now)
+    selected_events = by_date.get(selected) or []
+    prev_month = 12 if month == 1 else month - 1
+    prev_year = year - 1 if month == 1 else year
+    next_month = 1 if month == 12 else month + 1
+    next_year = year + 1 if month == 12 else year
+    return {
+        "year": year,
+        "month": month,
+        "title": first.strftime("%B %Y"),
+        "weekdays": list(_WEEKDAYS),
+        "weeks": weeks,
+        "accounts": accounts,
+        "errors": errors,
+        "today": now.date().isoformat(),
+        "selected": selected,
+        "selected_label": _day_heading(selected),
+        "selected_events": selected_events,
+        "prev": {"year": prev_year, "month": prev_month},
+        "next": {"year": next_year, "month": next_month},
+        "this": {"year": now.year, "month": now.month, "day": now.date().isoformat()},
+        "count": len(events),
+    }
 
 
 def suggest_event(mail: Mail, user_email: str = "") -> dict | None:
@@ -137,6 +186,42 @@ def create_event(provider: str, draft: dict) -> dict:
     if provider == "outlook":
         return _outlook_create(draft)
     return _gmail_create(draft)
+
+
+def _collect(start: datetime, end: datetime) -> tuple[list[dict], list[dict], list[str]]:
+    events = []
+    errors = []
+    accounts = []
+    for provider, fetch in (("outlook", _outlook_events), ("gmail", _gmail_events)):
+        try:
+            found, account = fetch(start, end)
+        except NotConnected:
+            continue
+        except ConfigError as exc:
+            errors.append(str(exc))
+            continue
+        events.extend(found)
+        if account:
+            accounts.append({"provider": provider, "label": PROVIDERS.get(provider, provider.title()), "email": account})
+    events.sort(key=lambda item: item["start"] or datetime.max.replace(tzinfo=ZONE))
+    return events, accounts, errors
+
+
+def _selected_day(day: str, year: int, month: int, now: datetime) -> str:
+    if day:
+        try:
+            picked = datetime.strptime(day[:10], "%Y-%m-%d").date()
+            return picked.isoformat()
+        except ValueError:
+            pass
+    if now.year == year and now.month == month:
+        return now.date().isoformat()
+    return datetime(year, month, 1, tzinfo=ZONE).date().isoformat()
+
+
+def _day_heading(iso: str) -> str:
+    moment = datetime.strptime(iso, "%Y-%m-%d")
+    return f"{moment.strftime('%A')} {moment.day} {moment.strftime('%B')}"
 
 
 def already_created(mail_key: str) -> bool:
@@ -278,6 +363,7 @@ def _item(event_id: str, provider: str, title: str, start: datetime, end: dateti
     kind = "invite" if attendees else "reminder"
     if attendees or (end - start) >= timedelta(minutes=25):
         kind = "meeting" if not attendees else "invite"
+    all_day = (end - start) >= timedelta(hours=20) or (start.hour == 0 and start.minute == 0 and end.hour == 0)
     return {
         "id": event_id,
         "provider": provider,
@@ -285,11 +371,14 @@ def _item(event_id: str, provider: str, title: str, start: datetime, end: dateti
         "title": title,
         "start": start,
         "end": end,
-        "when": _when_text(start, end),
+        "when": "All day" if all_day and start.date() == end.date() else _when_text(start, end),
+        "hour": "" if all_day else start.strftime("%H:%M"),
+        "date": start.date().isoformat(),
         "day": start.strftime("%A %d %B %Y"),
         "location": location,
         "attendees": attendees,
         "kind": kind,
+        "all_day": all_day,
         "link": link,
     }
 

@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Calendar{% endblock %}
 {% block body %}
+{% set board = board or {} %}
 <header class="page-head">
   <div>
     <h1>Calendar</h1>
@@ -8,9 +9,12 @@
       {% if accounts %}
         {% for item in accounts %}<span class="chip {{ item.provider }}">{{ item.label }} · {{ item.email }}</span>{% endfor %}
       {% else %}
-        Meetings and reminders from the connected mailboxes
+        <span>Pacific/Auckland · Gmail and Outlook</span>
       {% endif %}
     </p>
+  </div>
+  <div class="head-actions">
+    <a class="button quiet" href="{{ url_for('calendar_page', year=board.this.year, month=board.this.month, day=board.this.day) }}">Today</a>
   </div>
 </header>
 
@@ -21,45 +25,72 @@
 <p class="banner warn">Calendar needs a fresh sign-in so the mailbox can read and write events. Open <a href="{{ url_for('connections_page') }}">Connections</a> and connect Gmail or Outlook again.</p>
 {% endif %}
 
-<section class="card" id="auto">
-  <h2 class="card-title">From email</h2>
-  <p class="muted">Meeting invitations, interviews and reminders in mail can be added automatically. You can also add the opened letter from the inbox.</p>
-  <form method="post" action="{{ url_for('calendar_settings_save') }}" class="stack">
-    <label class="check">
-      <input type="checkbox" name="auto_calendar" value="1" {% if auto_calendar %}checked{% endif %}>
-      <span>When a letter is a meeting, invitation or reminder, add it to this calendar</span>
-    </label>
-    <div class="button-row"><button type="submit">Save</button></div>
-  </form>
-</section>
+<div class="cal-layout">
+  <section class="cal-board" aria-label="{{ board.title }}">
+    <div class="cal-toolbar">
+      <a class="button quiet small" href="{{ url_for('calendar_page', year=board.prev.year, month=board.prev.month) }}" aria-label="Previous month">‹</a>
+      <h2>{{ board.title }}</h2>
+      <a class="button quiet small" href="{{ url_for('calendar_page', year=board.next.year, month=board.next.month) }}" aria-label="Next month">›</a>
+    </div>
+    <div class="cal-weekdays" aria-hidden="true">
+      {% for name in board.weekdays %}<span>{{ name }}</span>{% endfor %}
+    </div>
+    <div class="cal-weeks">
+      {% for week in board.weeks %}
+      <div class="cal-week">
+        {% for cell in week %}
+        <a class="cal-cell{% if not cell.in_month %} out{% endif %}{% if cell.today %} today{% endif %}{% if cell.date == board.selected %} on{% endif %}"
+           href="{{ url_for('calendar_page', year=board.year, month=board.month, day=cell.date) }}">
+          <span class="cal-num">{{ cell.num }}</span>
+          {% for event in cell.events[:3] %}
+          <span class="cal-pill {{ event.provider }}" title="{{ event.when }} · {{ event.title }}">
+            {% if event.hour %}<b>{{ event.hour }}</b>{% endif %}{{ event.title }}
+          </span>
+          {% endfor %}
+          {% if cell.events|length > 3 %}
+          <span class="cal-more">+{{ cell.events|length - 3 }} more</span>
+          {% endif %}
+        </a>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+  </section>
 
-{% if days %}
-{% for group in days %}
-<section class="cal-day">
-  <h2>{{ group.day }}</h2>
-  <div class="list cal-list">
-    {% for event in group.events %}
-    <article class="row cal-event">
-      <span class="row-top">
-        <span class="row-who">{{ event.title }}</span>
-        <span class="row-date">{{ event.when }}</span>
-      </span>
-      <span class="row-snippet">{% if event.location %}{{ event.location }}{% else %}{{ event.kind }}{% endif %}</span>
-      <span class="row-foot">
-        <span class="chip tiny {{ event.provider }}">{{ event.provider_label }}</span>
-        {% if event.attendees %}<span class="muted">{{ event.attendees|length }} invited</span>{% endif %}
-        {% if event.link %}<a href="{{ event.link }}" target="_blank" rel="noopener noreferrer">Open</a>{% endif %}
-      </span>
-    </article>
-    {% endfor %}
-  </div>
-</section>
-{% endfor %}
-{% else %}
-<section class="card empty-state">
-  <h2>No events in the next two weeks</h2>
-  <p>Connect Gmail or Outlook again if the list should not be empty. Meeting mail can create an event from the inbox, or automatically when that setting is on.</p>
-  <a class="button" href="{{ url_for('connections_page') }}">Open Connections</a>
-</section>
-{% endif %}
+  <aside class="cal-side">
+    <section class="card">
+      <h2 class="card-title">{{ board.selected_label or 'This day' }}</h2>
+      {% if board.selected_events %}
+      <div class="cal-agenda">
+        {% for event in board.selected_events %}
+        <article class="cal-item">
+          <span class="cal-item-when">{{ event.when }}</span>
+          <strong>{{ event.title }}</strong>
+          <span class="muted">{% if event.location %}{{ event.location }}{% else %}{{ event.kind }}{% endif %}</span>
+          <span class="row-foot">
+            <span class="chip tiny {{ event.provider }}">{{ event.provider_label }}</span>
+            {% if event.attendees %}<span class="muted">{{ event.attendees|length }} invited</span>{% endif %}
+            {% if event.link %}<a href="{{ event.link }}" target="_blank" rel="noopener noreferrer">Open</a>{% endif %}
+          </span>
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <p class="muted">Nothing on this day.</p>
+      {% endif %}
+    </section>
+
+    <section class="card" id="auto">
+      <h2 class="card-title">From email</h2>
+      <p class="muted">Meeting invitations, interviews and reminders in mail can be added automatically. You can also add the opened letter from the inbox.</p>
+      <form method="post" action="{{ url_for('calendar_settings_save') }}" class="stack">
+        <label class="check">
+          <input type="checkbox" name="auto_calendar" value="1" {% if auto_calendar %}checked{% endif %}>
+          <span>When a letter is a meeting, invitation or reminder, add it to this calendar</span>
+        </label>
+        <div class="button-row"><button type="submit">Save</button></div>
+      </form>
+    </section>
+  </aside>
+</div>
 {% endblock %}

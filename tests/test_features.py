@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from unittest.mock import patch
 
 from gmail_auto import approvals, assistant, cleanup, knowledge, stats, whatsapp
-from gmail_auto.errors import ConfigError
+from gmail_auto.errors import ConfigError, NotConnected
 from gmail_auto.extractors import extract_text
 from gmail_auto.mailview import clean_html, document
 from gmail_auto.models import Draft
@@ -232,6 +232,29 @@ class CalendarTests(TempHome):
             body="Job alert for meetings.",
         )
         self.assertIsNone(suggest_event(alert, "me@example.com"))
+
+    def test_month_board_is_a_monday_week_grid(self):
+        from datetime import datetime
+        from gmail_auto.calendars import ZONE, _item, month_board
+
+        start = datetime(2026, 11, 13, 15, 0, tzinfo=ZONE)
+        event = _item("e1", "gmail", "Parent interview", start, start.replace(hour=16), "Westlake", [], "")
+
+        with patch("gmail_auto.calendars._outlook_events", side_effect=NotConnected()), patch(
+            "gmail_auto.calendars._gmail_events", return_value=([event], "me@example.com")
+        ):
+            board = month_board(2026, 11, "2026-11-13")
+        self.assertEqual(board["title"], "November 2026")
+        self.assertEqual(board["weekdays"][0], "Mon")
+        self.assertGreaterEqual(len(board["weeks"]), 5)
+        for week in board["weeks"]:
+            self.assertEqual(len(week), 7)
+        self.assertEqual(board["weeks"][0][0]["date"], "2026-10-26")
+        found = next(cell for week in board["weeks"] for cell in week if cell["date"] == "2026-11-13")
+        self.assertTrue(found["in_month"])
+        self.assertEqual(found["events"][0]["title"], "Parent interview")
+        self.assertEqual(board["selected_label"], "Friday 13 November")
+        self.assertEqual(len(board["selected_events"]), 1)
 
 
 class CleanupTests(TempHome):
