@@ -13,6 +13,9 @@
     </p>
   </div>
   <div class="head-actions">
+    <form method="get" action="{{ url_for('inbox_refresh') }}" data-busy="Reading mailbox…">
+      <button class="quiet" type="submit" {% if not connected %}disabled{% endif %}>Refresh list</button>
+    </form>
     <form method="post" action="{{ url_for('run_now') }}" data-busy="Checking mail…" {% if live %}data-confirm="Sending is on. This round will really answer unread mail that has not been handled yet."{% endif %}>
       <button type="submit" {% if not connected %}disabled{% endif %}>Check mail now</button>
     </form>
@@ -55,16 +58,13 @@
 <p class="banner danger">{{ last_run.error }}</p>
 {% endif %}
 
-{% if waiting_mailbox %}
-<p class="banner" data-inbox-refresh="{{ url_for('inbox_refresh', show=show, open=request.args.get('open', '')) }}">Reading mailbox… the page stays usable while Outlook or Gmail answers.</p>
-{% endif %}
-{% if not connected and not rows and not waiting_mailbox %}
+{% if not connected and not rows %}
 <section class="card empty-state">
   <h2>Connect a mailbox to begin</h2>
   <p>Mail Autopilot reads your unread mail, drafts replies from your profile and knowledge base, and asks you on WhatsApp when a reply needs your OK.</p>
   <a class="button" href="{{ url_for('connections_page') }}">Open Connections</a>
 </section>
-{% elif connected or rows or waiting_mailbox %}
+{% else %}
 {% if offline %}
 <p class="banner warn">The mailbox could not be reached, so this shows saved records only. Letter text is not available.</p>
 {% endif %}

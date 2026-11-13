@@ -254,15 +254,25 @@ class KnowledgePageTests(WebCase):
         os.environ.pop("OPENAI_API_KEY", None)
 
     def test_files_notes_and_rules_build_the_knowledge_base(self):
-        uploaded = self.client.post(
-            "/knowledge/upload",
-            data={"files": [(io.BytesIO(b"The October workshop costs 450 dollars."), "prices.txt"), (io.BytesIO(b"\x89PNG"), "photo.png")]},
-            content_type="multipart/form-data",
-            follow_redirects=True,
-        )
+        with patch("gmail_auto.knowledge.complete") as mocked:
+            uploaded = self.client.post(
+                "/knowledge/upload",
+                data={"files": [(io.BytesIO(b"The October workshop costs 450 dollars."), "prices.txt"), (io.BytesIO(b"\x89PNG"), "photo.png")]},
+                content_type="multipart/form-data",
+                follow_redirects=True,
+            )
+            mocked.assert_not_called()
         text = uploaded.get_data(as_text=True)
         self.assertIn("Added 1 file", text)
         self.assertIn("not a supported file type", text)
+        quick = self.client.post(
+            "/knowledge/upload",
+            data={"files": (io.BytesIO(b"The October workshop costs 450 dollars."), "prices.txt")},
+            content_type="multipart/form-data",
+            headers={"Accept": "application/json"},
+        )
+        self.assertEqual(quick.status_code, 200)
+        self.assertTrue(quick.get_json()["ok"])
         self.assertIn("prices.txt", text)
         self.client.post("/knowledge/note", data={"title": "Office hours", "text": "I answer mail between 9 and 5."})
         self.client.post("/knowledge/rules", data={"rules": "Never reply to recruiters.\nAlways ask before agreeing to a price."})

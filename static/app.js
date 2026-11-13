@@ -99,8 +99,7 @@
           window.alert(oversized[0].name + " is larger than " + limitLabel + ". Split the file or upload a smaller one. Vercel cannot accept a request over 4.5 MB.");
           return;
         }
-        var total = files.reduce(function (sum, file) { return sum + file.size; }, 0);
-        if (files.length < 2 || total <= max) { return; }
+        if (!files.length) { return; }
         event.preventDefault();
         event.stopImmediatePropagation();
         var button = form.querySelector("button[type=submit]");
@@ -111,18 +110,34 @@
           }
           if (button) {
             button.classList.add("busy");
-            button.textContent = "Reading " + (index + 1) + " of " + files.length + "…";
+            button.textContent = "Saving " + (index + 1) + " of " + files.length + "…";
           }
           var body = new FormData();
           body.append("files", files[index], files[index].name);
-          fetch(form.action, { method: "POST", body: body, redirect: "follow" }).then(function (response) {
-            if (!response.ok) {
-              window.alert("Could not add " + files[index].name + ". Keep each file under " + limitLabel + ".");
-              return;
+          var controller = window.AbortController ? new AbortController() : null;
+          var timer = controller ? window.setTimeout(function () { controller.abort(); }, 25000) : null;
+          fetch(form.action, {
+            method: "POST",
+            body: body,
+            headers: { Accept: "application/json" },
+            redirect: "manual",
+            signal: controller ? controller.signal : undefined,
+          }).then(function (response) {
+            if (timer) { window.clearTimeout(timer); }
+            return response.json().then(function (payload) {
+              if (!response.ok || (payload && payload.ok === false)) {
+                throw new Error((payload && payload.error) || files[index].name);
+              }
+              send(index + 1);
+            });
+          }).catch(function (error) {
+            if (timer) { window.clearTimeout(timer); }
+            var name = files[index].name;
+            window.alert("Could not add " + name + (error && error.name === "AbortError" ? " (it took too long to read)." : ". Keep each file under " + limitLabel + "."));
+            if (button) {
+              button.classList.remove("busy");
+              button.textContent = "Add to knowledge";
             }
-            send(index + 1);
-          }).catch(function () {
-            window.alert("Could not add " + files[index].name + ".");
           });
         };
         send(0);
@@ -135,18 +150,6 @@
       zone.addEventListener(name, function () { zone.classList.remove("over"); });
     });
   });
-
-  // Hosted inbox: show the shell first, then ask the mailbox in the background.
-  var inboxWait = document.querySelector("[data-inbox-refresh]");
-  if (inboxWait) {
-    fetch(inboxWait.getAttribute("data-inbox-refresh"), { headers: { Accept: "application/json" } })
-      .then(function (response) { return response.ok ? response.json() : Promise.reject(); })
-      .then(function () { window.location.reload(); })
-      .catch(function () {
-        inboxWait.textContent = "The mailbox is taking too long. Refresh the page to try again.";
-        inboxWait.classList.add("warn");
-      });
-  }
 
   // Hover details for chart marks.
   var tip = document.getElementById("tip");

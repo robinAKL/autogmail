@@ -176,7 +176,6 @@ def configure_app(app: Flask) -> None:
         blocked = _login_required()
         if blocked:
             return blocked
-        _forget_inbox()
         inbox = _inbox(live=True)
         if "application/json" in (request.headers.get("Accept") or ""):
             return {
@@ -374,19 +373,32 @@ def configure_app(app: Flask) -> None:
         if blocked:
             return blocked
         added = 0
+        problems = []
         for item in request.files.getlist("files"):
             if not item or not item.filename:
                 continue
             name = os.path.basename(item.filename.replace("\\", "/"))
             try:
-                knowledge.add_document(name, extract_text(name, item.read()), "upload", origin=name)
+                knowledge.add_document(
+                    name,
+                    extract_text(name, item.read()),
+                    "upload",
+                    origin=name,
+                    summarize=False,
+                )
                 added += 1
             except ConfigError as exc:
+                problems.append(str(exc))
                 flash(str(exc), "error")
         if added:
             flash(f"Added {added} file{'s' if added != 1 else ''} to the knowledge base.")
         elif not request.files.getlist("files"):
+            problems.append("Choose at least one file.")
             flash("Choose at least one file.", "error")
+        if "application/json" in (request.headers.get("Accept") or ""):
+            if added:
+                return {"ok": True, "added": added, "errors": problems}
+            return {"ok": False, "error": problems[0] if problems else "Choose at least one file."}, 400
         return redirect(url_for("knowledge_page") + "#documents")
 
     @app.post("/knowledge/note")
@@ -892,7 +904,6 @@ def _home_context() -> dict:
         "last_run": last_run,
         "interval": _interval_text(),
         "auth_error": "" if inbox["accounts"] else session.get("auth_error", ""),
-        "waiting_mailbox": bool(hosted and inbox.get("needs_fetch")),
     }
 
 
@@ -908,16 +919,17 @@ def _inbox(live: bool = True) -> dict:
         snapshot = _read_inbox_snapshot(who)
         if snapshot is not None:
             _refresh_status(snapshot)
-            snapshot["needs_fetch"] = time.time() - float(snapshot.get("at") or 0) > _INBOX_TTL
+            snapshot["needs_fetch"] = False
             _inbox_cache.update({"at": time.time(), "who": who, "data": snapshot})
             return snapshot
+        rows = _rows_from_store()
         return {
-            "rows": [],
+            "rows": rows,
             "mails": {},
             "accounts": _account_chips(),
             "errors": [],
-            "offline": False,
-            "needs_fetch": True,
+            "offline": bool(rows),
+            "needs_fetch": False,
             "at": 0.0,
         }
     data = {"rows": [], "mails": {}, "accounts": [], "errors": [], "offline": False, "needs_fetch": False, "at": time.time()}
