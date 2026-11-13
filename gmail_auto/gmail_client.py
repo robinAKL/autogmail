@@ -161,31 +161,53 @@ class GmailClient:
         self._label_ids[name] = created["id"]
         return created["id"]
 
+    def archive_many(self, message_ids: list[str]) -> None:
+        ids = [item for item in message_ids if item]
+        if not ids:
+            return
+        done = self._label_id(DONE_LABEL, create=True)
+        for start in range(0, len(ids), 50):
+            chunk = ids[start : start + 50]
+            body: dict = {"ids": chunk, "removeLabelIds": ["INBOX", "UNREAD"]}
+            if done:
+                body["addLabelIds"] = [done]
+            try:
+                self.service.users().messages().batchModify(userId="me", body=body).execute()
+            except Exception as exc:
+                raise _translate(exc) from exc
+
     def _list(self, query: str, limit: int, full: bool = True) -> list[Mail]:
-        size = max(1, min(int(limit), 25))
+        want = max(1, min(int(limit), 500))
+        ids: list[str] = []
+        token = None
         try:
-            listed = (
-                self.service.users()
-                .messages()
-                .list(userId="me", q=query, maxResults=size)
-                .execute()
-            )
+            while len(ids) < want:
+                page = min(100, want - len(ids))
+                kwargs = {"userId": "me", "q": query, "maxResults": page}
+                if token:
+                    kwargs["pageToken"] = token
+                listed = self.service.users().messages().list(**kwargs).execute()
+                ids.extend(item["id"] for item in listed.get("messages") or [] if item.get("id"))
+                token = listed.get("nextPageToken")
+                if not token or not listed.get("messages"):
+                    break
         except Exception as exc:
             raise _translate(exc) from exc
-        ids = [item["id"] for item in listed.get("messages", [])]
+        ids = ids[:want]
         if not ids:
             return []
         found: dict[str, dict] = {}
         try:
-            # One round trip for the whole page instead of one per letter.
+            # One round trip for each page of letters instead of one per letter.
             def keep(request_id, response, exception):
                 if exception is None and isinstance(response, dict):
                     found[request_id] = response
 
-            batch = self.service.new_batch_http_request(callback=keep)
-            for message_id in ids:
-                batch.add(self._message_get(message_id, full), request_id=message_id)
-            batch.execute()
+            for start in range(0, len(ids), 25):
+                batch = self.service.new_batch_http_request(callback=keep)
+                for message_id in ids[start : start + 25]:
+                    batch.add(self._message_get(message_id, full), request_id=message_id)
+                batch.execute()
         except Exception:
             found = {}
         mails = []

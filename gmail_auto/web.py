@@ -853,6 +853,7 @@ def configure_app(app: Flask) -> None:
                     "cleanup_match": request.form.get("cleanup_match", ""),
                     "cleanup_keep": request.form.get("cleanup_keep", ""),
                     "cleanup_skipped": request.form.get("cleanup_skipped") == "1",
+                    "cleanup_pack": 2,
                 }
             )
             flash("Cleanup rules saved.")
@@ -1582,6 +1583,8 @@ def _login_view(mode=None, email=None, sent=None, error=""):
 
 
 def _profile_context(form=None) -> dict:
+    from gmail_auto.cleanup import LIMIT
+
     settings = load_settings()
     shared = {
         "settings": settings,
@@ -1590,6 +1593,7 @@ def _profile_context(form=None) -> dict:
         "modes": _MODES,
         "mode": _current_mode(),
         "whatsapp_ready": whatsapp.ready(),
+        "cleanup_limit": LIMIT,
     }
     if form is not None:
         return {**shared, "profile": _profile_view(form=form), "placeholder": False, "error": ""}

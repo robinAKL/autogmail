@@ -89,6 +89,11 @@ class OutlookClient:
             self.mark_read(message_id)
             self.note_done(message_id)
 
+    def archive_many(self, message_ids: list[str]) -> None:
+        for message_id in message_ids:
+            if message_id:
+                self.archive(message_id)
+
     def has_retry(self, mail: Mail) -> bool:
         return "RETRY" in (mail.label_ids or [])
 
@@ -113,16 +118,16 @@ class OutlookClient:
             return self._list(folder, min(int(limit), 12), {})
 
     def _list(self, folder: str, limit: int, extra: dict) -> list[Mail]:
-        params = {"$top": max(1, min(int(limit), 50)), "$select": _SELECT_LIST, **extra}
-        data = microsoft.graph(
-            "outlook",
-            "GET",
-            f"/me/mailFolders/{folder}/messages",
-            params=params,
-            timeout=8,
-            attempts=1,
-        )
-        return [self._stamp(parse_message(item)) for item in data.get("value") or []]
+        want = max(1, min(int(limit), 500))
+        out: list[Mail] = []
+        params: dict | None = {"$top": min(50, want), "$select": _SELECT_LIST, **extra}
+        path: str | None = f"/me/mailFolders/{folder}/messages"
+        while path and len(out) < want:
+            data = microsoft.graph("outlook", "GET", path, params=params, timeout=8, attempts=1)
+            out.extend(self._stamp(parse_message(item)) for item in data.get("value") or [])
+            path = data.get("@odata.nextLink") or ""
+            params = None
+        return out[:want]
 
     def _hydrate(self, mails: list[Mail]) -> list[Mail]:
         """Load text bodies in small batches. Keep the list preview if Graph refuses a batch."""

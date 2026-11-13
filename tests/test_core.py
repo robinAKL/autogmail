@@ -103,6 +103,9 @@ class FakeGmail:
     def archive(self, message_id):
         self.archived.append(message_id)
 
+    def archive_many(self, message_ids):
+        self.archived.extend(message_ids)
+
     def list_recent(self, limit=25, full=False):
         return self.mails[:limit]
 

@@ -279,6 +279,48 @@ class CleanupTests(TempHome):
         result = cleanup.run(box, settings)
         self.assertEqual(result["archived"], 1)
         self.assertEqual(box.archived, ["j1"])
+        many = FakeGmail([sample(id=f"x{i}", from_email="jobs-noreply@linkedin.com", subject="You may be a fit") for i in range(60)])
+        deep = cleanup.run(many, settings, limit=60)
+        self.assertEqual(deep["scanned"], 60)
+        self.assertEqual(deep["archived"], 60)
+
+    def test_default_rules_clean_ads_and_job_alerts_but_keep_codes_and_school(self):
+        settings = load_settings()
+        ads = [
+            sample(id="a1", from_email="hello@doordash.com", from_name="DoorDash", subject="Welcome to DashPass"),
+            sample(id="a2", from_email="listings@mail.trademe.co.nz", from_name="Trade Me", subject="Latest listings in mark-sh"),
+            sample(id="a3", from_email="jobalerts-noreply@linkedin.com", from_name="LinkedIn Job Alerts", subject="Solution Architect role"),
+            sample(id="a4", from_email="team@heygen.com", from_name="David from HeyGen", subject="We saved you a spot in the HeyGen Community"),
+            sample(id="a5", from_email="news@moomoo.com", from_name="Moomoo Securities A.", subject="Tech shares fall: how concentrated is your portfolio?"),
+            sample(id="a6", from_email="shots@caffeine.ai", from_name="Caffeine", subject="Caffeine Daily Shot: Airie's $100k seed"),
+            sample(id="a7", from_email="digest@thetip.ai", from_name="TheTip.ai | AI News.", subject="Your Notion AI chats may be exposed"),
+            sample(id="a8", from_email="mail@shopify.com", from_name="Shopify", subject="Your first sale is waiting"),
+            sample(id="a9", from_email="alerts@opps.example.com", subject="Opportunities for You: ICANN89 Fellowship 2027"),
+            sample(id="a10", from_email="jobs@linkedin.com", from_name="LinkedIn", subject="Crossing Hurdles is hiring for a Remote role"),
+        ]
+        for mail in ads:
+            self.assertTrue(cleanup.should_clean(mail, "me@example.com", settings), mail.subject)
+        self.assertFalse(
+            cleanup.should_clean(
+                sample(id="k1", from_email="security@facebookmail.com", from_name="Facebook", subject="629743 is your code to confirm this email"),
+                "me@example.com",
+                settings,
+            )
+        )
+        self.assertFalse(
+            cleanup.should_clean(
+                sample(id="k2", from_email="no-reply@accounts.google.com", subject="Security alert — a new sign-in on Windows"),
+                "me@example.com",
+                settings,
+            )
+        )
+        self.assertFalse(
+            cleanup.should_clean(
+                sample(id="k3", from_email="office@wairau.school.nz", subject="Westlake newsletter"),
+                "me@example.com",
+                settings,
+            )
+        )
 
 
 class StatsTests(TempHome):

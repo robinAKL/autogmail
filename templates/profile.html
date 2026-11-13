@@ -80,7 +80,7 @@
   <form method="post" action="{{ url_for('cleanup_rules_save') }}" class="form-grid">
     <label>
       Clean if the letter matches
-      <textarea name="cleanup_match" rows="8">{{ settings.cleanup_match | join('\n') }}</textarea>
+      <textarea name="cleanup_match" rows="14">{{ settings.cleanup_match | join('\n') }}</textarea>
       <span class="hint">One per line. Use <code>from:linkedin.com</code>, <code>subject:job alert</code>, or any words found in the sender, subject or preview.</span>
     </label>
     <label>
@@ -96,7 +96,7 @@
   </form>
   <form method="post" action="{{ url_for('mailbox_cleanup') }}" class="button-row" data-busy="Cleaning inbox…" data-confirm="Archive letters that match your cleanup rules? They leave the inbox but are not deleted. School and keep-list mail stay.">
     <button type="submit">Clean inbox now</button>
-    <span class="hint">Looks at the latest {{ 40 }} letters in each connected mailbox.</span>
+    <span class="hint">Looks at the latest {{ cleanup_limit }} letters in each connected mailbox. Run it again to continue through older mail.</span>
   </form>
 </section>
 

@@ -28,6 +28,7 @@ DEFAULTS = {
     "cleanup_match": None,
     "cleanup_keep": None,
     "cleanup_skipped": True,
+    "cleanup_pack": 0,
     "auto_calendar": True,
 }
 
@@ -73,6 +74,17 @@ def _clean(data: dict, strict: bool = False) -> dict:
         hour = DEFAULTS["digest_hour"]
     from gmail_auto.cleanup import DEFAULT_KEEP, DEFAULT_MATCH
 
+    match = _lines(data.get("cleanup_match"), DEFAULT_MATCH, strict)
+    keep = _lines(data.get("cleanup_keep"), DEFAULT_KEEP, strict)
+    try:
+        pack = int(data.get("cleanup_pack") or 0)
+    except (TypeError, ValueError):
+        pack = 0
+    if pack < 2:
+        match = _union_lines(match, DEFAULT_MATCH)
+        keep = _union_lines(keep, DEFAULT_KEEP)
+        pack = 2
+
     return {
         "reply_language": language,
         "approval_mode": approval,
@@ -80,9 +92,10 @@ def _clean(data: dict, strict: bool = False) -> dict:
         "notify_auto_replies": bool(data.get("notify_auto_replies")),
         "daily_digest": bool(data.get("daily_digest")),
         "digest_hour": min(23, max(0, hour)),
-        "cleanup_match": _lines(data.get("cleanup_match"), DEFAULT_MATCH, strict),
-        "cleanup_keep": _lines(data.get("cleanup_keep"), DEFAULT_KEEP, strict),
+        "cleanup_match": match,
+        "cleanup_keep": keep,
         "cleanup_skipped": bool(data.get("cleanup_skipped")),
+        "cleanup_pack": pack,
         "auto_calendar": bool(data.get("auto_calendar")),
     }
 
@@ -112,3 +125,13 @@ def _lines(value, fallback: list[str], strict: bool) -> list[str]:
                 raise ConfigError("One of the cleanup rules is too long.")
             return [entry[:_CLEANUP_CHARS] for entry in items]
     return items
+
+
+def _union_lines(items: list[str], fallback: list[str]) -> list[str]:
+    seen = {item.lower() for item in items}
+    out = list(items)
+    for item in fallback:
+        if item.lower() not in seen:
+            out.append(item)
+            seen.add(item.lower())
+    return out[:_CLEANUP_LINES]

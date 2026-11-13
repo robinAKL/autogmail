@@ -5,19 +5,40 @@ from gmail_auto.filters import Skip, classify
 from gmail_auto.models import Mail
 from gmail_auto.settings import load_settings
 
-LIMIT = 40
+LIMIT = 300
 _SKIP_CODES = {"system", "promotions", "social", "list", "forums", "auto"}
 
 DEFAULT_MATCH = [
-    "from:jobalerts-noreply@linkedin.com",
-    "from:jobs-noreply@linkedin.com",
-    "from:newsletters-noreply@linkedin.com",
-    "from:jobs-recommendations@mail.trademe.co.nz",
     "from:linkedin.com",
+    "from:facebookmail.com",
+    "from:facebook.com",
+    "from:instagram.com",
+    "from:meta.com",
+    "from:trademe.co.nz",
+    "from:doordash.com",
+    "from:alibaba.com",
+    "from:aliexpress.com",
+    "from:heygen.com",
+    "from:shopify.com",
+    "from:moomoo.com",
+    "from:futunn.com",
+    "from:thetip.ai",
+    "from:caffeine.ai",
+    "from:indeed.com",
+    "from:seek.co.nz",
+    "from:seek.com.au",
     "from:workablemail.com",
+    "from:greenhouse.io",
     "job alert",
+    "job alerts",
     "you may be a fit",
     "your application was sent",
+    "latest listings",
+    "daily shot",
+    "opportunities for you",
+    "opportunities for y",
+    "is hiring for",
+    "dashpass",
 ]
 DEFAULT_KEEP = [
     "from:etap.co.nz",
@@ -26,6 +47,11 @@ DEFAULT_KEEP = [
     "wairau",
     "kiwiknowledge",
     "innopro",
+    "from:accounts.google.com",
+    "security alert",
+    "verification code",
+    "your code to confirm",
+    "is your code",
 ]
 
 
@@ -48,6 +74,7 @@ def run(client, settings: dict | None = None, limit: int = LIMIT) -> dict:
     scanned = 0
     archived = 0
     kept = 0
+    pending = []
     try:
         mails = client.list_recent(limit, full=False)
     except TypeError:
@@ -59,8 +86,14 @@ def run(client, settings: dict | None = None, limit: int = LIMIT) -> dict:
         if _matches(mail, settings.get("cleanup_keep") or []):
             kept += 1
             continue
-        client.archive(mail.id)
+        pending.append(mail.id)
         archived += 1
+    if pending:
+        if hasattr(client, "archive_many"):
+            client.archive_many(pending)
+        else:
+            for message_id in pending:
+                client.archive(message_id)
     return {"scanned": scanned, "archived": archived, "kept": kept, "account": user}
 
 
