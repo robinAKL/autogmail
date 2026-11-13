@@ -5,7 +5,7 @@ import re
 from gmail_auto.errors import ConfigError
 from gmail_auto.storage import load_doc, save_doc
 
-_CLEANUP_LINES = 40
+_CLEANUP_LINES = 60
 _CLEANUP_CHARS = 200
 
 LANGUAGES = {
@@ -80,10 +80,10 @@ def _clean(data: dict, strict: bool = False) -> dict:
         pack = int(data.get("cleanup_pack") or 0)
     except (TypeError, ValueError):
         pack = 0
-    if pack < 2:
+    if pack < 3:
         match = _union_lines(match, DEFAULT_MATCH)
         keep = _union_lines(keep, DEFAULT_KEEP)
-        pack = 2
+        pack = 3
 
     return {
         "reply_language": language,

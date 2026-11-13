@@ -297,6 +297,12 @@ class CleanupTests(TempHome):
             sample(id="a8", from_email="mail@shopify.com", from_name="Shopify", subject="Your first sale is waiting"),
             sample(id="a9", from_email="alerts@opps.example.com", subject="Opportunities for You: ICANN89 Fellowship 2027"),
             sample(id="a10", from_email="jobs@linkedin.com", from_name="LinkedIn", subject="Crossing Hurdles is hiring for a Remote role"),
+            sample(id="a11", from_email="npm@npmjs.com", from_name="npm", subject="Your weekly npm update"),
+            sample(id="a12", from_email="jobs@zeil.com", from_name="Zeil", subject="New roles this week"),
+            sample(id="a13", from_email="team@openai.com", from_name="OpenAI", subject="What's new in ChatGPT"),
+            sample(id="a14", from_email="hello@osl.com", from_name="OSL", subject="Market update"),
+            sample(id="a15", from_email="news@email.apple.com", from_name="Apple", subject="New on the App Store"),
+            sample(id="a16", from_email="noreply@freelancer.com", from_name="Freelancer", subject="Freelance projects you might like"),
         ]
         for mail in ads:
             self.assertTrue(cleanup.should_clean(mail, "me@example.com", settings), mail.subject)
@@ -321,6 +327,13 @@ class CleanupTests(TempHome):
                 settings,
             )
         )
+        self.assertFalse(
+            cleanup.should_clean(
+                sample(id="k4", from_email="appleid@id.apple.com", from_name="Apple", subject="Your Apple ID verification code is 123456"),
+                "me@example.com",
+                settings,
+            )
+        )
 
     def test_gmail_search_targets_inbox_ads_and_excludes_school(self):
         settings = load_settings()
@@ -328,6 +341,10 @@ class CleanupTests(TempHome):
         self.assertIn("in:inbox", queries)
         self.assertIn("from:linkedin.com", queries)
         self.assertIn("from:doordash.com", queries)
+        self.assertIn("from:npmjs.com", queries)
+        self.assertIn("from:zeil.com", queries)
+        self.assertIn("from:openai.com", queries)
+        self.assertIn("from:apple.com", queries)
         self.assertIn("-from:etap.co.nz", queries)
         self.assertIn('-"westlake"', queries)
 

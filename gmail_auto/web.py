@@ -853,7 +853,7 @@ def configure_app(app: Flask) -> None:
                     "cleanup_match": request.form.get("cleanup_match", ""),
                     "cleanup_keep": request.form.get("cleanup_keep", ""),
                     "cleanup_skipped": request.form.get("cleanup_skipped") == "1",
-                    "cleanup_pack": 2,
+                    "cleanup_pack": 3,
                 }
             )
             flash("Cleanup rules saved.")
