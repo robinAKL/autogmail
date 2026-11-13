@@ -32,6 +32,7 @@ PORT = 8765
 _ALLOWED_HOSTS = {"127.0.0.1", "localhost"}
 _OPEN_PATHS = {"/whatsapp/webhook"}
 _INBOX_TTL = 60
+_INBOX_STORE_TTL = 15 * 60
 _INBOX_PAGE = 20
 _inbox_cache: dict = {"at": 0.0, "who": None, "data": None}
 _FILTERS = {
@@ -169,6 +170,21 @@ def configure_app(app: Flask) -> None:
         if blocked:
             return blocked
         return _render("index.html", **_home_context())
+
+    @app.get("/inbox/refresh")
+    def inbox_refresh():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        _forget_inbox()
+        inbox = _inbox(live=True)
+        if "application/json" in (request.headers.get("Accept") or ""):
+            return {
+                "ok": True,
+                "count": len(inbox.get("rows") or []),
+                "errors": inbox.get("errors") or [],
+            }
+        return redirect(url_for("home", show=request.args.get("show", ""), open=request.args.get("open", "")))
 
     @app.get("/mail/body")
     def mail_body():
@@ -825,7 +841,8 @@ def _home_context() -> dict:
     except ConfigError as exc:
         errors.append(str(exc))
 
-    inbox = _inbox()
+    hosted = bool(os.environ.get("VERCEL"))
+    inbox = _inbox(live=not hosted or request.args.get("live") == "1")
     errors.extend(inbox["errors"])
     rows = inbox["rows"]
     counts = {name: 0 for name in _FILTERS}
@@ -842,7 +859,7 @@ def _home_context() -> dict:
         if row["key"] == wanted:
             opened = row
             break
-    if opened is None and visible:
+    if opened is None and visible and not hosted:
         opened = visible[0]
 
     waiting_item = None
@@ -873,17 +890,35 @@ def _home_context() -> dict:
         "last_run": last_run,
         "interval": _interval_text(),
         "auth_error": "" if inbox["accounts"] else session.get("auth_error", ""),
+        "waiting_mailbox": bool(hosted and inbox.get("needs_fetch")),
     }
 
 
-def _inbox() -> dict:
+def _inbox(live: bool = True) -> dict:
     who = session.get("user", "")
     cached = _inbox_cache["data"]
     if cached is not None and _inbox_cache["who"] == who and time.time() - _inbox_cache["at"] < _INBOX_TTL:
         # Statuses change when a reply is approved, so they are always read fresh.
         _refresh_status(cached)
+        cached["needs_fetch"] = False
         return cached
-    data = {"rows": [], "mails": {}, "accounts": [], "errors": [], "offline": False}
+    if not live:
+        snapshot = _read_inbox_snapshot(who)
+        if snapshot is not None:
+            _refresh_status(snapshot)
+            snapshot["needs_fetch"] = time.time() - float(snapshot.get("at") or 0) > _INBOX_TTL
+            _inbox_cache.update({"at": time.time(), "who": who, "data": snapshot})
+            return snapshot
+        return {
+            "rows": [],
+            "mails": {},
+            "accounts": _account_chips(),
+            "errors": [],
+            "offline": False,
+            "needs_fetch": True,
+            "at": 0.0,
+        }
+    data = {"rows": [], "mails": {}, "accounts": [], "errors": [], "offline": False, "needs_fetch": False, "at": time.time()}
     try:
         clients, problems = connected_clients()
     except Exception as exc:
@@ -914,7 +949,10 @@ def _inbox() -> dict:
     if not pairs and not data["accounts"]:
         data["rows"] = _rows_from_store()
         data["offline"] = bool(data["rows"])
-    _inbox_cache.update({"at": time.time(), "who": who, "data": data})
+    data["at"] = time.time()
+    data["needs_fetch"] = False
+    _inbox_cache.update({"at": data["at"], "who": who, "data": data})
+    _write_inbox_snapshot(who, data)
     return data
 
 
@@ -965,6 +1003,64 @@ def _list_one_mailbox(client) -> tuple:
 
 def _forget_inbox() -> None:
     _inbox_cache.update({"at": 0.0, "data": None})
+    try:
+        from gmail_auto.storage import delete_doc
+
+        delete_doc("inbox_cache")
+    except Exception:
+        pass
+
+
+def _account_chips() -> list[dict]:
+    chips = []
+    outlook = microsoft.status("outlook")
+    if outlook.get("connected"):
+        chips.append({"provider": "outlook", "label": "Outlook", "email": outlook.get("account") or "Outlook"})
+    gmail = gmail_status()
+    if gmail.get("email"):
+        chips.append({"provider": "gmail", "label": "Gmail", "email": gmail["email"]})
+    return chips
+
+
+def _read_inbox_snapshot(who: str) -> dict | None:
+    from gmail_auto.storage import load_doc
+
+    try:
+        saved = load_doc("inbox_cache", None)
+    except ConfigError:
+        return None
+    if not isinstance(saved, dict) or saved.get("who") != who:
+        return None
+    if time.time() - float(saved.get("at") or 0) > _INBOX_STORE_TTL:
+        return None
+    return {
+        "rows": list(saved.get("rows") or []),
+        "mails": {},
+        "accounts": list(saved.get("accounts") or []),
+        "errors": list(saved.get("errors") or []),
+        "offline": bool(saved.get("offline")),
+        "needs_fetch": False,
+        "at": float(saved.get("at") or 0),
+    }
+
+
+def _write_inbox_snapshot(who: str, data: dict) -> None:
+    from gmail_auto.storage import save_doc
+
+    try:
+        save_doc(
+            "inbox_cache",
+            {
+                "who": who,
+                "at": data.get("at") or time.time(),
+                "rows": data.get("rows") or [],
+                "accounts": data.get("accounts") or [],
+                "errors": data.get("errors") or [],
+                "offline": bool(data.get("offline")),
+            },
+        )
+    except ConfigError:
+        return
 
 
 def _find_mail(key: str):

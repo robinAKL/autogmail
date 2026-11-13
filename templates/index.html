@@ -55,13 +55,16 @@
 <p class="banner danger">{{ last_run.error }}</p>
 {% endif %}
 
-{% if not connected and not rows %}
+{% if waiting_mailbox %}
+<p class="banner" data-inbox-refresh="{{ url_for('inbox_refresh', show=show, open=request.args.get('open', '')) }}">Reading mailbox… the page stays usable while Outlook or Gmail answers.</p>
+{% endif %}
+{% if not connected and not rows and not waiting_mailbox %}
 <section class="card empty-state">
   <h2>Connect a mailbox to begin</h2>
   <p>Mail Autopilot reads your unread mail, drafts replies from your profile and knowledge base, and asks you on WhatsApp when a reply needs your OK.</p>
   <a class="button" href="{{ url_for('connections_page') }}">Open Connections</a>
 </section>
-{% else %}
+{% elif connected or rows or waiting_mailbox %}
 {% if offline %}
 <p class="banner warn">The mailbox could not be reached, so this shows saved records only. Letter text is not available.</p>
 {% endif %}

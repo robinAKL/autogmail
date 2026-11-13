@@ -88,6 +88,18 @@
     });
   });
 
+  // Hosted inbox: show the shell first, then ask the mailbox in the background.
+  var inboxWait = document.querySelector("[data-inbox-refresh]");
+  if (inboxWait) {
+    fetch(inboxWait.getAttribute("data-inbox-refresh"), { headers: { Accept: "application/json" } })
+      .then(function (response) { return response.ok ? response.json() : Promise.reject(); })
+      .then(function () { window.location.reload(); })
+      .catch(function () {
+        inboxWait.textContent = "The mailbox is taking too long. Refresh the page to try again.";
+        inboxWait.classList.add("warn");
+      });
+  }
+
   // Hover details for chart marks.
   var tip = document.getElementById("tip");
   if (tip) {
