@@ -6,7 +6,7 @@ import zipfile
 from datetime import date, timedelta
 from unittest.mock import patch
 
-from gmail_auto import approvals, assistant, knowledge, stats, whatsapp
+from gmail_auto import approvals, assistant, cleanup, knowledge, stats, whatsapp
 from gmail_auto.errors import ConfigError
 from gmail_auto.extractors import extract_text
 from gmail_auto.mailview import clean_html, document
@@ -210,6 +210,30 @@ class KnowledgeTests(TempHome):
         self.assertEqual(entry["meta"]["provider"], "outlook")
         self.assertIn("healthy eating", seen[0])
         self.assertEqual(entry["title"], "What your email shows (robin@kiwiknowledge.co.nz)")
+
+
+class CleanupTests(TempHome):
+    def test_cleanup_follows_match_and_keep_rules(self):
+        save_settings(
+            {
+                "cleanup_match": ["from:linkedin.com", "job alert"],
+                "cleanup_keep": ["from:etap.co.nz", "westlake"],
+                "cleanup_skipped": False,
+            }
+        )
+        settings = load_settings()
+        job = sample(id="j1", from_email="jobs-noreply@linkedin.com", subject="You may be a fit")
+        school = sample(id="s1", from_email="office@wairau.school.nz", subject="Westlake and Wairau update")
+        etap = sample(id="e1", from_email="Wairau_Intermediate_School@etap.co.nz", subject="Job alert newsletter")
+        person = sample(id="p1", from_email="lee@example.com", subject="Lunch Friday?")
+        self.assertTrue(cleanup.should_clean(job, "me@example.com", settings))
+        self.assertFalse(cleanup.should_clean(school, "me@example.com", settings))
+        self.assertFalse(cleanup.should_clean(etap, "me@example.com", settings))
+        self.assertFalse(cleanup.should_clean(person, "me@example.com", settings))
+        box = FakeGmail([job, school, etap, person])
+        result = cleanup.run(box, settings)
+        self.assertEqual(result["archived"], 1)
+        self.assertEqual(box.archived, ["j1"])
 
 
 class StatsTests(TempHome):

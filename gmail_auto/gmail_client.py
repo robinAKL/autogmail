@@ -90,6 +90,17 @@ class GmailClient:
         except Exception as exc:
             raise _translate(exc) from exc
 
+    def archive(self, message_id: str) -> None:
+        """Take the letter out of the inbox after cleanup. It stays in All Mail."""
+        done = self._label_id(DONE_LABEL, create=True)
+        body: dict = {"removeLabelIds": ["INBOX", "UNREAD"]}
+        if done:
+            body["addLabelIds"] = [done]
+        try:
+            self.service.users().messages().modify(userId="me", id=message_id, body=body).execute()
+        except Exception as exc:
+            raise _translate(exc) from exc
+
     def has_retry(self, mail: Mail) -> bool:
         label_id = self._label_id(RETRY_LABEL, create=False)
         return bool(label_id and label_id in (mail.label_ids or []))

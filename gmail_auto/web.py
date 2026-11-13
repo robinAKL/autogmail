@@ -783,6 +783,46 @@ def configure_app(app: Flask) -> None:
             flash(str(exc), "error")
         return redirect(url_for("profile_page") + "#replies")
 
+    @app.post("/settings/cleanup-rules")
+    def cleanup_rules_save():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        try:
+            save_settings(
+                {
+                    "cleanup_match": request.form.get("cleanup_match", ""),
+                    "cleanup_keep": request.form.get("cleanup_keep", ""),
+                    "cleanup_skipped": request.form.get("cleanup_skipped") == "1",
+                }
+            )
+            flash("Cleanup rules saved.")
+        except ConfigError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("profile_page") + "#cleanup")
+
+    @app.post("/settings/cleanup")
+    def mailbox_cleanup():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto.cleanup import run_all
+
+        try:
+            clients, problems = connected_clients()
+        except Exception as exc:
+            flash(_safe_error(exc), "error")
+            return redirect(url_for("profile_page") + "#cleanup")
+        if not clients:
+            flash("Connect a mailbox first.", "error")
+            return redirect(url_for("profile_page") + "#cleanup")
+        result = run_all(clients)
+        _forget_inbox()
+        for message in problems + (result.get("errors") or []):
+            flash(message, "error")
+        flash(f"Archived {result['archived']} letters. {result['scanned']} scanned; keep-list matches were left.")
+        return redirect(url_for("profile_page") + "#cleanup")
+
     @app.errorhandler(400)
     def bad_request(_exc):
         return "That request was not understood.", 400

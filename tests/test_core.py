@@ -85,6 +85,7 @@ class FakeGmail:
         self.user = user
         self.sent = []
         self.read = []
+        self.archived = []
 
     def get_user_email(self):
         return self.user
@@ -98,6 +99,12 @@ class FakeGmail:
 
     def mark_read(self, message_id):
         self.read.append(message_id)
+
+    def archive(self, message_id):
+        self.archived.append(message_id)
+
+    def list_recent(self, limit=25, full=False):
+        return self.mails[:limit]
 
 
 def english_reply(*_args):

@@ -97,6 +97,7 @@ class PageTests(WebCase):
             ("/knowledge?view=timeline", "Timeline"),
             ("/connections", "Connect Outlook" if False else "Outlook"),
             ("/profile", "Sending mode"),
+            ("/profile", "Inbox cleanup"),
             ("/login", "Email me a code to sign in"),
         ):
             response, text = self.page(path)
@@ -247,6 +248,29 @@ class PageTests(WebCase):
         self.client.post("/settings", data={"reply_language": "bilingual", "daily_digest": "1", "digest_hour": "7"})
         settings = load_settings()
         self.assertEqual((settings["reply_language"], settings["daily_digest"], settings["notify_auto_replies"], settings["digest_hour"]), ("bilingual", True, False, 7))
+        self.client.post(
+            "/settings/cleanup-rules",
+            data={
+                "cleanup_match": "from:jobs.example.com\njob alert",
+                "cleanup_keep": "from:etap.co.nz\nwestlake",
+                "cleanup_skipped": "1",
+            },
+        )
+        rules = load_settings()
+        self.assertEqual(rules["cleanup_match"], ["from:jobs.example.com", "job alert"])
+        self.assertEqual(rules["cleanup_keep"], ["from:etap.co.nz", "westlake"])
+        self.assertTrue(rules["cleanup_skipped"])
+        box = Inbox(
+            [
+                sample(id="j1", from_email="alerts@jobs.example.com", subject="New roles"),
+                sample(id="s1", from_email="office@etap.co.nz", subject="School newsletter"),
+                sample(id="p1", from_email="lee@example.com", subject="Lunch?"),
+            ]
+        )
+        with patch("gmail_auto.web.connected_clients", return_value=([box], [])):
+            cleaned = self.client.post("/settings/cleanup", follow_redirects=True)
+        self.assertIn("Archived 1 letters", cleaned.get_data(as_text=True))
+        self.assertEqual(box.archived, ["j1"])
 
 
 class ApprovalPageTests(WebCase):

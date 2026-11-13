@@ -81,6 +81,14 @@ class OutlookClient:
     def mark_read(self, message_id: str) -> None:
         microsoft.graph("outlook", "PATCH", f"/me/messages/{message_id}", body={"isRead": True})
 
+    def archive(self, message_id: str) -> None:
+        """Move the letter to Archive so cleanup clears the inbox without deleting it."""
+        try:
+            microsoft.graph("outlook", "POST", f"/me/messages/{message_id}/move", body={"destinationId": "archive"})
+        except ConfigError:
+            self.mark_read(message_id)
+            self.note_done(message_id)
+
     def has_retry(self, mail: Mail) -> bool:
         return "RETRY" in (mail.label_ids or [])
 
