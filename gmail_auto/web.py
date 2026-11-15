@@ -24,11 +24,18 @@ from gmail_auto.paths import CODE_ROOT, atomic_write, data_dir, root
 from gmail_auto.profile_store import load_profile, profile_from_form, profile_is_placeholder, save_profile
 from gmail_auto.runner import check_interval_seconds, format_report, run_once, switch_live
 from gmail_auto.settings import AI_MODELS, APPROVALS, LANGUAGES, load_settings, save_settings
-from gmail_auto.importance import QUIET as PING_QUIET, RULES as PING_RULES
+from gmail_auto.importance import (
+    DIGEST as PING_DIGEST,
+    INTERRUPT as PING_INTERRUPT,
+    QUIET as PING_QUIET,
+    RULES as PING_RULES,
+    known_from_knowledge,
+    preset_of,
+)
 from gmail_auto.storage import persistent
 from gmail_auto.token_store import storage_hint, storage_kind, storage_ready
 from gmail_auto.store import get_state, is_live, list_processed, load_last_run, load_processed, now_text, set_state
-from gmail_auto.story import attach_stories, story_view
+from gmail_auto.story import attach_stories, hide_story, story_board, story_detail, story_view
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -49,10 +56,10 @@ _FILTERS = {
 }
 _DEFAULT_FILTER = "important"
 _MODES = {
-    "draft": ("Draft only", "Replies are written and saved. Nothing is ever sent."),
-    "always": ("Ask every time", "Every reply waits for your OK on WhatsApp or the Approvals page."),
-    "smart": ("Ask when needed", "Routine replies go out by themselves. Anything with a commitment, money, a decision or a missing fact waits for your OK."),
-    "never": ("Send automatically", "Every reply is sent without asking."),
+    "draft": ("Write only", "Drafts are saved. Nothing is sent from your mailbox."),
+    "always": ("Show me every reply", "Every reply waits for your OK on WhatsApp or Approvals."),
+    "smart": ("Send the easy ones", "If the knowledge base can answer without a new promise, it sends. Money, dates, missing facts wait for you."),
+    "never": ("Send whenever it can", "Every reply goes out without asking. Use this only if you fully trust the knowledge base."),
 }
 
 
@@ -191,6 +198,17 @@ def configure_app(app: Flask) -> None:
             }
         return redirect(url_for("home", **_inbox_query()))
 
+    @app.post("/inbox/story/hide")
+    def story_hide():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        hide_story(request.form.get("story", ""))
+        nxt = request.form.get("next") or url_for("home")
+        if not nxt.startswith("/"):
+            nxt = url_for("home")
+        return redirect(nxt)
+
     @app.get("/mail/body")
     def mail_body():
         blocked = _login_required()
@@ -233,9 +251,9 @@ def configure_app(app: Flask) -> None:
                 save_settings({"approval_mode": mode})
         except ConfigError as exc:
             flash(str(exc), "error")
-            return redirect(url_for("profile_page") + "#mode")
+            return redirect(url_for("profile_page") + "#send")
         flash(f"Sending mode is now: {_MODES[mode][0]}.")
-        return redirect(url_for("profile_page") + "#mode")
+        return redirect(url_for("profile_page") + "#send")
 
     # ---- approvals -----------------------------------------------------------
 
@@ -855,7 +873,7 @@ def configure_app(app: Flask) -> None:
             context["error"] = str(exc)
             return _render("profile.html", **context), 400
         flash("Profile saved.")
-        return redirect(url_for("profile_page") + "#profile")
+        return redirect(url_for("profile_page") + "#voice")
 
     @app.post("/settings")
     def settings_save():
@@ -863,21 +881,33 @@ def configure_app(app: Flask) -> None:
         if blocked:
             return blocked
         try:
-            save_settings(
-                {
-                    "reply_language": request.form.get("reply_language", ""),
-                    "notify_auto_replies": request.form.get("notify_auto_replies") == "1",
-                    "notify_important": request.form.get("notify_important") == "1",
-                    "notify_kinds": request.form.getlist("notify_kinds"),
-                    "notify_calendar": request.form.get("notify_calendar") == "1",
-                    "daily_digest": request.form.get("daily_digest") == "1",
-                    "digest_hour": request.form.get("digest_hour", "8"),
-                }
-            )
-            flash("Reply settings saved.")
+            changes = {}
+            if "reply_language" in request.form:
+                changes["reply_language"] = request.form.get("reply_language", "")
+            if "notify_preset" in request.form:
+                changes["notify_auto_replies"] = request.form.get("notify_auto_replies") == "1"
+                changes["notify_important"] = request.form.get("notify_important") == "1"
+                changes["notify_preset"] = request.form.get("notify_preset") or "custom"
+                changes["notify_kinds"] = request.form.getlist("notify_kinds")
+                changes["notify_calendar"] = request.form.get("notify_calendar") == "1"
+                changes["daily_digest"] = request.form.get("daily_digest") == "1"
+                changes["digest_hour"] = request.form.get("digest_hour", "8")
+            else:
+                if "daily_digest" in request.form:
+                    changes["daily_digest"] = request.form.get("daily_digest") == "1"
+                if "digest_hour" in request.form:
+                    changes["digest_hour"] = request.form.get("digest_hour", "8")
+                if "notify_auto_replies" in request.form:
+                    changes["notify_auto_replies"] = request.form.get("notify_auto_replies") == "1"
+            if changes:
+                save_settings(changes)
+            flash("Settings saved.")
         except ConfigError as exc:
             flash(str(exc), "error")
-        return redirect(url_for("profile_page") + "#replies")
+        nxt = request.form.get("next") or "#interrupt"
+        if not nxt.startswith("#"):
+            nxt = "#interrupt"
+        return redirect(url_for("profile_page") + nxt)
 
     @app.post("/settings/model")
     def model_save():
@@ -902,7 +932,7 @@ def configure_app(app: Flask) -> None:
                 flash("Models saved.")
         except (ConfigError, ReplyError) as exc:
             flash(str(exc), "error")
-        return redirect(url_for("profile_page") + "#model")
+        return redirect(url_for("profile_page") + "#send")
 
     @app.post("/settings/cleanup-rules")
     def cleanup_rules_save():
@@ -1026,7 +1056,9 @@ def _home_context() -> dict:
     errors.extend(inbox["errors"])
     rows = attach_stories(_merge_history(inbox["rows"]))
     accounts = _account_chips() or inbox["accounts"]
-    kinds = set(load_settings().get("notify_kinds") or [])
+    from gmail_auto.importance import inbox_kinds
+
+    kinds = set(inbox_kinds(load_settings()))
     counts = {name: 0 for name in _FILTERS}
     for row in rows:
         row["important"] = _row_is_important(row, kinds)
@@ -1085,6 +1117,8 @@ def _home_context() -> dict:
         },
         "opened": opened,
         "story": story_view(opened, rows),
+        "stories": story_board(rows),
+        "matter": story_detail(request.args.get("story", ""), rows),
         "waiting_item": waiting_item,
         "filters": _FILTERS,
         "counts": counts,
@@ -1306,6 +1340,9 @@ def _inbox_query() -> dict:
     opened = request.args.get("open", "")
     if opened:
         query["open"] = opened
+    story = request.args.get("story", "")
+    if story:
+        query["story"] = story
     page = request.args.get("page", "")
     if page.isdigit() and int(page) > 1:
         query["page"] = int(page)
@@ -1786,6 +1823,10 @@ def _profile_context(form=None) -> dict:
         "cleanup_limit": LIMIT,
         "ping_rules": PING_RULES,
         "ping_quiet": PING_QUIET,
+        "ping_interrupt": PING_INTERRUPT,
+        "ping_digest": PING_DIGEST,
+        "notify_preset": preset_of(settings),
+        "known_mail": known_from_knowledge(),
         "ai_models": AI_MODELS,
         "ai_active": active_model("worker"),
         "ai_super": active_model("super"),

@@ -466,7 +466,9 @@ def _maybe_notice(mail: Mail, decision, settings: dict, report: RunReport, summa
     tag = _tag(mail)
     if not tag.get("important"):
         return ""
-    if tag.get("kind") not in settings.get("notify_kinds", []):
+    from gmail_auto.importance import ping_kinds
+
+    if tag.get("kind") not in ping_kinds(settings):
         return ""
     from gmail_auto import whatsapp
 

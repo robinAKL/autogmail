@@ -35,6 +35,7 @@ DEFAULTS = {
     "whatsapp_to": "",
     "notify_auto_replies": True,
     "notify_important": True,
+    "notify_preset": "busy",
     "notify_kinds": None,
     "notify_calendar": True,
     "daily_digest": True,
@@ -60,6 +61,8 @@ def load_settings() -> dict:
 def save_settings(changes: dict) -> dict:
     merged = load_settings()
     merged.update({key: value for key, value in changes.items() if key in DEFAULTS})
+    if "notify_kinds" in changes and "notify_preset" not in changes:
+        merged["notify_preset"] = "custom"
     cleaned = _clean(merged, strict=True)
     save_doc("settings", cleaned)
     return cleaned
@@ -115,6 +118,15 @@ def _clean(data: dict, strict: bool = False) -> dict:
         keep = _union_lines(keep, DEFAULT_KEEP)
         pack = 3
 
+    from gmail_auto.importance import INTERRUPT, KINDS, PRESETS, preset_of
+
+    kinds = _kinds(data.get("notify_kinds"))
+    preset = str(data.get("notify_preset") or "").strip()
+    if preset not in PRESETS:
+        preset = preset_of({"notify_preset": "", "notify_kinds": kinds if data.get("notify_kinds") is not None else list(KINDS)})
+    if preset in ("urgent", "busy"):
+        kinds = list(INTERRUPT)
+
     return {
         "reply_language": language,
         "approval_mode": approval,
@@ -123,7 +135,8 @@ def _clean(data: dict, strict: bool = False) -> dict:
         "whatsapp_to": phone,
         "notify_auto_replies": bool(data.get("notify_auto_replies")),
         "notify_important": bool(data.get("notify_important")),
-        "notify_kinds": _kinds(data.get("notify_kinds")),
+        "notify_preset": preset,
+        "notify_kinds": kinds,
         "notify_calendar": bool(data.get("notify_calendar")),
         "daily_digest": bool(data.get("daily_digest")),
         "digest_hour": min(23, max(0, hour)),

@@ -12,7 +12,7 @@ _SYSTEM = """You answer one person's email as that person. You are not an assist
 How to write:
 - First person only, as if the owner typed it.
 - Answer the specific thing the letter asks before anything else. No empty pleasantries.
-- Use only facts stated in the profile, the knowledge base briefing, the owner's documents and the letter itself.
+- Use only facts stated in the profile, the knowledge base briefing, the owner's documents, this matter's earlier letters, and the letter itself.
   Never invent experience, titles, phone numbers, addresses, prices, dates, schedules or promises.
 - When the material does not cover something, say it cannot be confirmed yet, or decline in line with "Things I cannot promise".
 - Follow the owner's rules exactly. They override everything else here.
@@ -66,7 +66,10 @@ def draft_reply(mail: Mail, profile: dict, detected: str) -> Draft:
     language = reply_language(load_settings()["reply_language"], detected)
     context = context_for(mail)
     knowledge = render_context(context)
-    raw = complete(_SYSTEM, _user_prompt(mail, profile, knowledge, language), role="worker")
+    from gmail_auto.story import format_history, history_for_mail
+
+    history = format_history(history_for_mail(mail))
+    raw = complete(_SYSTEM, _user_prompt(mail, profile, knowledge, language, history), role="worker")
     data = parse_json(raw)
     if data is None:
         # No structure came back. Keep the text as a draft, but never send it without the owner seeing it.
@@ -83,7 +86,7 @@ def draft_reply(mail: Mail, profile: dict, detected: str) -> Draft:
     if draft.action == "skip":
         draft.reply = ""
         return draft
-    ensure_safe(draft.reply, profile, language, mail, knowledge)
+    ensure_safe(draft.reply, profile, language, mail, (knowledge + "\n" + history).strip())
     return draft
 
 
@@ -154,11 +157,12 @@ def clean_reply(text: str) -> str:
     return cleaned.strip()
 
 
-def _user_prompt(mail: Mail, profile: dict, knowledge: str, language: str) -> str:
+def _user_prompt(mail: Mail, profile: dict, knowledge: str, language: str, history: str = "") -> str:
     return (
         "MY PROFILE:\n"
         f"{profile_as_prompt(profile)}\n\n"
         + (knowledge + "\n\n" if knowledge else "")
+        + ((history + "\n\n") if history else "")
         + "THE LETTER TO ANSWER:\n"
         f"From: {mail.from_name or mail.from_email}\n"
         f"Address: {mail.from_email}\n"

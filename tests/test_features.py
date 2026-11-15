@@ -446,14 +446,21 @@ class ImportanceTests(TempHome):
         self.assertFalse(assess(promo)["important"])
         self.assertEqual(set(KINDS), {"fine", "invoice", "action", "school", "institution", "health", "housing", "enquiry", "meeting", "person", "company"})
 
-    def test_settings_keep_only_known_kinds_and_default_to_all(self):
-        from gmail_auto.importance import KINDS
+    def test_settings_keep_only_known_kinds_and_busy_preset_pings_urgent_only(self):
+        from gmail_auto.importance import INTERRUPT, inbox_kinds, ping_kinds
 
-        self.assertEqual(load_settings()["notify_kinds"], KINDS)
+        self.assertEqual(load_settings()["notify_preset"], "busy")
+        self.assertEqual(load_settings()["notify_kinds"], list(INTERRUPT))
+        self.assertEqual(ping_kinds(load_settings()), list(INTERRUPT))
+        self.assertIn("enquiry", inbox_kinds(load_settings()))
         save_settings({"notify_kinds": ["invoice", "nonsense", "fine"]})
+        self.assertEqual(load_settings()["notify_preset"], "custom")
         self.assertEqual(load_settings()["notify_kinds"], ["fine", "invoice"])
         save_settings({"notify_kinds": []})
         self.assertEqual(load_settings()["notify_kinds"], [])
+        save_settings({"notify_preset": "urgent", "notify_kinds": ["enquiry"]})
+        self.assertEqual(load_settings()["notify_kinds"], list(INTERRUPT))
+        self.assertNotIn("enquiry", ping_kinds(load_settings()))
 
 
 class CleanupTests(TempHome):

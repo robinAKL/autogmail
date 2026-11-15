@@ -23,7 +23,7 @@
 </header>
 
 {% if placeholder %}
-<p class="banner warn">Your profile is still the placeholder example. Drafts work, but real sending stays off until you <a href="{{ url_for('profile_page') }}#profile">fill it in</a>.</p>
+<p class="banner warn">Your profile is still the placeholder example. Drafts work, but real sending stays off until you <a href="{{ url_for('profile_page') }}#voice">fill it in</a>.</p>
 {% endif %}
 {% for message in errors %}
 <p class="banner danger">{{ message }}</p>
@@ -36,7 +36,7 @@
   <div class="status-item">
     <span class="label">Mode</span>
     <strong>{{ nav_mode_label }}</strong>
-    <a href="{{ url_for('profile_page') }}#mode">Change</a>
+    <a href="{{ url_for('profile_page') }}#send">Change</a>
   </div>
   <div class="status-item grow">
     <span class="label">Last check</span>
@@ -74,6 +74,7 @@
   {% endfor %}
 </nav>
 
+<div class="inbox-desk">
 <div class="split">
   <section class="list" aria-label="Emails">
     {% for row in rows %}
@@ -128,29 +129,11 @@
       {% if opened.advice %}
       <p class="ai-note"><b>What to do</b> {{ opened.advice }}</p>
       {% endif %}
-      {% if story %}
-      <div class="story">
-        <div class="story-head">
-          <b>This matter</b>
-          {% if story.label %}<span class="tag {{ story.status }}">{{ story.label }}</span>{% endif %}
-        </div>
-        <ol class="story-line">
-          {% for step in story.steps %}
-          <li class="{% if step.current %}on{% endif %} {% if step.outbound %}out{% endif %}">
-            {% if step.outbound %}
-            <span class="story-who">{{ step.who }}</span>
-            {% else %}
-            <a class="story-who" href="{{ url_for('home', show=show, open=step.key) }}">{{ step.who }}</a>
-            {% endif %}
-            <span class="story-date">{{ step.date }}</span>
-            <span class="story-summary">{{ step.summary }}</span>
-          </li>
-          {% endfor %}
-        </ol>
-        {% if story.sources %}
-        <p class="sources">Using {% for title in story.sources %}<span class="chip tiny">{{ title }}</span>{% endfor %}</p>
-        {% endif %}
-      </div>
+      {% if story and not (matter and matter.id == story.id) %}
+      <p class="matter-jump">
+        <a href="{{ url_for('home', show=show, open=opened.key, story=story.id) }}">Open storyline</a>
+        <span class="muted">{{ story.size }} letters{% if story.label %} · {{ story.label }}{% endif %}</span>
+      </p>
       {% endif %}
       <form method="post" action="{{ url_for('calendar_from_mail') }}" class="button-row" data-busy="Adding to calendar…">
         <input type="hidden" name="key" value="{{ opened.key }}">
@@ -203,5 +186,80 @@
     {% endif %}
   </section>
 </div>
+
+<aside class="story-rail" aria-label="Storylines">
+  <header class="story-rail-head">
+    <div>
+      <h2>Storylines</h2>
+      <p class="hint">Open matters, summarised. Remove one when it is finished.</p>
+    </div>
+    {% if stories %}<span class="chip tiny">{{ stories|length }}</span>{% endif %}
+  </header>
+  <div class="story-rail-list">
+    {% for card in stories %}
+    <a class="story-card {% if matter and matter.id == card.id %}on{% endif %}" href="{{ url_for('home', show=show, open=card.open_key, story=card.id) }}">
+      <span class="story-card-top">
+        <span class="story-card-title">{{ card.title }}</span>
+        <span class="tag {{ card.status }}">{{ card.label }}</span>
+      </span>
+      <span class="story-card-who">{{ card.who }}</span>
+      <span class="story-card-blurb">{{ card.blurb }}</span>
+      <span class="story-card-foot">{{ card.size }} letters{% if card.date %} · {{ card.date }}{% endif %}</span>
+    </a>
+    {% else %}
+    <p class="empty">No open storylines. When a thread has more than one letter, it appears here.</p>
+    {% endfor %}
+  </div>
+</aside>
+</div>
+
+{% if matter %}
+<a class="matter-scrim" href="{{ url_for('home', show=show, open=opened.key if opened else matter.open_key) }}" aria-label="Close storyline"></a>
+<aside class="matter-drawer" role="dialog" aria-labelledby="matter-title">
+  <header class="matter-drawer-head">
+    <div>
+      <p class="kicker">Storyline</p>
+      <h2 id="matter-title">{{ matter.title }}</h2>
+      <p class="meta">{{ matter.who }}{% if matter.label %} · {{ matter.label }}{% endif %} · {{ matter.size }} letters</p>
+    </div>
+    <a class="button quiet small" href="{{ url_for('home', show=show, open=opened.key if opened else matter.open_key) }}">Close</a>
+  </header>
+  <p class="ai-note"><b>Status</b> {{ matter.label or 'In progress' }}</p>
+  <h3 class="matter-h">Timeline</h3>
+  <ol class="story-line">
+    {% for step in matter.steps %}
+    <li class="{% if opened and step.key == opened.key and not step.outbound %}on{% endif %} {% if step.outbound %}out{% endif %}">
+      {% if step.outbound %}
+      <span class="story-who">{{ step.who }}</span>
+      {% else %}
+      <a class="story-who" href="{{ url_for('home', show=show, open=step.key, story=matter.id) }}">{{ step.who }}</a>
+      {% endif %}
+      <span class="story-date">{{ step.date }}</span>
+      <span class="story-summary">{{ step.summary }}</span>
+    </li>
+    {% endfor %}
+  </ol>
+  {% if matter.sources %}
+  <p class="sources">Using {% for title in matter.sources %}<span class="chip tiny">{{ title }}</span>{% endfor %}</p>
+  {% endif %}
+  <h3 class="matter-h">Related mail</h3>
+  <ul class="matter-letters">
+    {% for letter in matter.letters %}
+    <li>
+      <a href="{{ url_for('home', show=show, open=letter.key, story=matter.id) }}">
+        <strong>{{ letter.who }}</strong>
+        <span>{{ letter.subject }}</span>
+        <span class="muted">{{ letter.date }} · {{ letter.status }}</span>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+  <form method="post" action="{{ url_for('story_hide') }}" class="matter-actions" data-confirm="Remove this matter from the storyline? The letters stay in Inbox.">
+    <input type="hidden" name="story" value="{{ matter.id }}">
+    <input type="hidden" name="next" value="{{ url_for('home', show=show, open=opened.key if opened else '') }}">
+    <button class="quiet danger-text" type="submit">Remove from storyline</button>
+  </form>
+</aside>
+{% endif %}
 {% endif %}
 {% endblock %}

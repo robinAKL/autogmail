@@ -720,6 +720,74 @@ class StoryTests(unittest.TestCase):
         self.assertFalse(rows[0]["story_open"])
         self.assertIsNone(story_view(rows[0], rows))
 
+    def test_drafting_history_pulls_earlier_letters_on_the_same_thread(self):
+        from gmail_auto.store import mark_processed
+        from gmail_auto.story import format_history, history_for_mail
+
+        mark_processed(
+            {
+                "id": "old",
+                "thread_id": "t-quote",
+                "provider": "gmail",
+                "from_name": "Lee",
+                "from_email": "lee@client.example",
+                "subject": "Quote for May",
+                "summary": "Asked for a May quote.",
+                "reply": "Standard rate is 200 an hour.",
+                "action": "sent",
+                "date": "2026-11-01 10:00",
+                "processed_at": "2026-11-01 10:00",
+            }
+        )
+        mail = sample(id="new", thread_id="t-quote", from_email="lee@client.example", subject="Re: Quote for May")
+        text = format_history(history_for_mail(mail))
+        self.assertIn("Asked for a May quote.", text)
+        self.assertIn("200 an hour", text)
+
+    def test_story_board_hides_a_finished_matter(self):
+        from gmail_auto.story import attach_stories, hide_story, story_board
+
+        rows = [
+            {
+                "key": "a",
+                "provider": "gmail",
+                "thread_id": "deal",
+                "email": "lee@client.example",
+                "who": "Lee",
+                "subject": "Quote for May",
+                "date": "2026-11-01",
+                "received_ts": 1,
+                "kind": "sent",
+                "group": "replied",
+                "status": "Replied",
+                "summary": "Asked for a quote.",
+                "snippet": "Quote?",
+                "short_date": "1 Nov",
+            },
+            {
+                "key": "b",
+                "provider": "gmail",
+                "thread_id": "deal",
+                "email": "lee@client.example",
+                "who": "Lee",
+                "subject": "Re: Quote for May",
+                "date": "2026-11-02",
+                "received_ts": 2,
+                "kind": "waiting",
+                "group": "needs",
+                "status": "Waiting",
+                "summary": "Wants a cheaper option.",
+                "snippet": "Better price",
+                "short_date": "2 Nov",
+            },
+        ]
+        attach_stories(rows)
+        board = story_board(rows, hidden=set())
+        self.assertEqual(len(board), 1)
+        self.assertEqual(board[0]["title"], "Quote for May")
+        hide_story(board[0]["id"])
+        self.assertEqual(story_board(rows), [])
+
 
 def _b64(text: str) -> str:
     return base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii")

@@ -174,10 +174,11 @@
     var panels = Array.prototype.slice.call(document.querySelectorAll("[data-panel]"));
     var hashToTab = function (hash) {
       var key = (hash || "").replace(/^#/, "").toLowerCase();
-      if (key === "replies" || key === "notifications") { return "notifications"; }
+      if (key === "replies" || key === "notifications" || key === "interrupt") { return "interrupt"; }
       if (key === "cleanup") { return "cleanup"; }
-      if (key === "profile") { return "profile"; }
-      return "general";
+      if (key === "profile" || key === "voice") { return "voice"; }
+      if (key === "mode" || key === "model" || key === "send" || key === "general") { return "send"; }
+      return "send";
     };
     var activateTab = function (name) {
       tabs.forEach(function (tab) {
@@ -206,4 +207,12 @@
     });
     activateTab(hashToTab(window.location.hash));
   }
+
+  document.addEventListener("keydown", function (event) {
+    if (event.key !== "Escape") { return; }
+    var close = document.querySelector(".matter-drawer a[aria-label='Close storyline'], .matter-drawer-head a");
+    if (close && close.href) {
+      window.location.href = close.href;
+    }
+  });
 })();

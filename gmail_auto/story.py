@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 
 from gmail_auto.filters import is_system_address
 
@@ -42,7 +43,8 @@ def attach_stories(rows: list[dict]) -> list[dict]:
         members.sort(key=_when)
         status = story_status(members)
         size = len(members)
-        open_story = size >= 2 and status != "settled"
+        system = all(is_system_address((item.get("email") or "").strip()) for item in members)
+        open_story = size >= 2 and status != "settled" and not system
         for row in members:
             row["story_size"] = size
             row["story_status"] = status
@@ -55,6 +57,8 @@ def story_view(row: dict | None, rows: list[dict]) -> dict | None:
     if not row:
         return None
     story_id = row.get("story_id") or ""
+    if not story_id or story_id in hidden_ids():
+        return None
     members = [item for item in rows if item.get("story_id") == story_id]
     members.sort(key=_when)
     if len(members) < 2:
@@ -137,11 +141,30 @@ def _groups(rows: list[dict]) -> list[str]:
                 union(index, other)
         else:
             by_topic[topic] = index
-    out = []
+    canon: dict[int, dict] = {}
     for index, row in enumerate(rows):
         root = find(index)
-        provider = (rows[root].get("provider") or row.get("provider") or "gmail").strip()
-        out.append(f"{provider}:g{root}")
+        info = canon.setdefault(
+            root,
+            {"provider": (row.get("provider") or "gmail").strip(), "thread": "", "email": "", "stem": "", "key": row.get("key") or index},
+        )
+        thread = (row.get("thread_id") or "").strip()
+        if thread and not info["thread"]:
+            info["thread"] = thread
+        email = (row.get("email") or "").strip().casefold()
+        stem = stem_subject(row.get("subject") or "")
+        if email and stem and not info["stem"]:
+            info["email"] = email
+            info["stem"] = stem
+    out = []
+    for index, row in enumerate(rows):
+        info = canon[find(index)]
+        if info["thread"]:
+            out.append(f"{info['provider']}:t:{info['thread']}")
+        elif info["email"] and info["stem"]:
+            out.append(f"{info['provider']}:s:{info['email']}:{info['stem']}")
+        else:
+            out.append(f"{info['provider']}:m:{info['key']}")
     return out
 
 
@@ -156,6 +179,190 @@ def _topic_row(row: dict) -> bool:
     if _GENERIC.search(stem) or _GENERIC.search(row.get("subject") or ""):
         return False
     return True
+
+
+def story_board(rows: list[dict], hidden: set[str] | None = None) -> list[dict]:
+    """One card per open matter, newest activity first. Hidden ids stay off the rail."""
+    skip = hidden if hidden is not None else hidden_ids()
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        story_id = row.get("story_id") or ""
+        if not story_id or story_id in skip or not row.get("story_open"):
+            continue
+        groups.setdefault(story_id, []).append(row)
+    cards = []
+    for story_id, members in groups.items():
+        members.sort(key=_when)
+        newest = members[-1]
+        first = members[0]
+        status = newest.get("story_status") or story_status(members)
+        cards.append(
+            {
+                "id": story_id,
+                "title": display_title(first.get("subject") or newest.get("subject") or "This matter"),
+                "who": newest.get("who") or first.get("who") or "Unknown",
+                "blurb": (newest.get("summary") or newest.get("snippet") or newest.get("subject") or "")[:160],
+                "status": status,
+                "label": _STATUS.get(status, "In progress") or "In progress",
+                "size": len(members),
+                "date": newest.get("short_date") or newest.get("date") or "",
+                "open_key": newest.get("key") or "",
+                "letters": [
+                    {
+                        "key": item.get("key") or "",
+                        "who": item.get("who") or "",
+                        "subject": item.get("subject") or "",
+                        "date": item.get("short_date") or item.get("date") or "",
+                        "status": item.get("status") or "",
+                    }
+                    for item in members
+                ],
+            }
+        )
+    waiting = [card for card in cards if card["status"] == "waiting_on_me"]
+    rest = [card for card in cards if card["status"] != "waiting_on_me"]
+    rest.sort(key=lambda card: card.get("date") or "", reverse=True)
+    return waiting + rest
+
+
+def story_detail(story_id: str, rows: list[dict]) -> dict | None:
+    story_id = (story_id or "").strip()
+    if not story_id or story_id in hidden_ids():
+        return None
+    members = [row for row in rows if row.get("story_id") == story_id]
+    if not members:
+        return None
+    members.sort(key=_when)
+    view = story_view(members[-1], rows)
+    if view is None:
+        return None
+    view["title"] = display_title(members[0].get("subject") or "")
+    view["who"] = members[-1].get("who") or ""
+    view["open_key"] = members[-1].get("key") or ""
+    view["letters"] = [
+        {
+            "key": item.get("key") or "",
+            "who": item.get("who") or "",
+            "subject": item.get("subject") or "",
+            "date": item.get("short_date") or item.get("date") or "",
+            "status": item.get("status") or "",
+            "kind": item.get("kind") or "",
+        }
+        for item in members
+    ]
+    return view
+
+
+def display_title(subject: str) -> str:
+    text = " ".join((subject or "").split())
+    while True:
+        cleaned = _PREFIX.sub("", text, count=1).strip()
+        if cleaned == text:
+            return cleaned or "This matter"
+        text = cleaned
+
+
+def hidden_ids() -> set[str]:
+    from gmail_auto.storage import load_doc
+
+    try:
+        saved = load_doc("story_board", {})
+    except Exception:
+        return set()
+    if not isinstance(saved, dict):
+        return set()
+    hidden = saved.get("hidden") or {}
+    if not isinstance(hidden, dict):
+        return set()
+    return set(hidden)
+
+
+def hide_story(story_id: str) -> None:
+    from gmail_auto.storage import LOCK, load_doc, save_doc
+
+    story_id = (story_id or "").strip()[:400]
+    if not story_id:
+        return
+    with LOCK:
+        saved = load_doc("story_board", {})
+        if not isinstance(saved, dict):
+            saved = {}
+        hidden = dict(saved.get("hidden") or {})
+        hidden[story_id] = {"at": time.time()}
+        saved["hidden"] = hidden
+        save_doc("story_board", saved)
+
+
+def history_for_mail(mail) -> list[dict]:
+    """Earlier letters in this matter, from saved records. Used when drafting a reply."""
+    from gmail_auto.store import list_processed
+
+    try:
+        records = list_processed(400)
+    except Exception:
+        return []
+    rows = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        rows.append(
+            {
+                "key": record.get("id") or "",
+                "provider": record.get("provider") or getattr(mail, "provider", "gmail") or "gmail",
+                "thread_id": record.get("thread_id") or "",
+                "email": record.get("from_email") or "",
+                "subject": record.get("subject") or "",
+                "date": record.get("processed_at") or record.get("date") or "",
+                "received_ts": 0,
+                "kind": record.get("action") or "",
+                "group": record.get("action") or "",
+                "status": record.get("action") or "",
+                "summary": record.get("summary") or "",
+                "snippet": record.get("summary") or "",
+                "reply": record.get("reply") or "",
+                "short_date": record.get("date") or record.get("processed_at") or "",
+                "sources": record.get("sources") or [],
+                "who": record.get("from_name") or record.get("from_email") or "",
+            }
+        )
+    current = {
+        "key": getattr(mail, "key", "") or getattr(mail, "id", ""),
+        "provider": getattr(mail, "provider", "gmail") or "gmail",
+        "thread_id": getattr(mail, "thread_id", "") or "",
+        "email": getattr(mail, "from_email", "") or "",
+        "subject": getattr(mail, "subject", "") or "",
+        "date": getattr(mail, "date", "") or "",
+        "received_ts": float(getattr(mail, "received_ts", 0) or 0),
+        "kind": "pending",
+        "group": "needs",
+        "status": "current",
+        "summary": getattr(mail, "snippet", "") or "",
+        "snippet": getattr(mail, "snippet", "") or "",
+        "reply": "",
+        "short_date": getattr(mail, "date", "") or "",
+        "sources": [],
+        "who": getattr(mail, "from_name", "") or getattr(mail, "from_email", "") or "",
+    }
+    attach_stories(rows + [current])
+    story_id = current.get("story_id")
+    members = [item for item in rows if item.get("story_id") == story_id and item.get("key") != current.get("key")]
+    members.sort(key=_when)
+    return members[-8:]
+
+
+def format_history(members: list[dict]) -> str:
+    if not members:
+        return ""
+    lines = ["THIS MATTER (earlier letters — do not invent facts that are not here):"]
+    for item in members:
+        who = item.get("who") or "Unknown"
+        when = item.get("short_date") or item.get("date") or ""
+        summary = (item.get("summary") or item.get("snippet") or item.get("subject") or "").strip()
+        lines.append(f"- {when} {who}: {summary[:180]}")
+        reply = (item.get("reply") or "").strip()
+        if reply:
+            lines.append(f"  You said: {reply[:180]}")
+    return "\n".join(lines)
 
 
 def _when(row: dict) -> tuple:

@@ -35,6 +35,10 @@ QUIET = [
     "Social media, forums, job alerts and product updates",
 ]
 KINDS = [key for key, _, _ in RULES]
+# Phone pings for a busy owner. Quotes, people and company mail go to Inbox / the morning digest.
+INTERRUPT = ("fine", "invoice", "action", "school", "institution", "health", "housing")
+DIGEST = ("enquiry", "meeting", "person", "company")
+PRESETS = ("urgent", "busy", "custom")
 _ANY_SENDER = {"fine", "invoice", "action", "school", "institution", "health", "housing"}
 LABELS = {
     "fine": "fine",
@@ -249,6 +253,77 @@ def _known_person(mail: Mail, blob: str) -> bool:
     except Exception:
         return False
     return False
+
+
+def ping_kinds(settings: dict | None = None) -> list[str]:
+    """Kinds that may WhatsApp the owner. Not the same as the Inbox Important tab."""
+    from gmail_auto.settings import load_settings
+
+    data = settings if isinstance(settings, dict) else load_settings()
+    preset = preset_of(data)
+    if preset in ("urgent", "busy"):
+        return list(INTERRUPT)
+    return list(data.get("notify_kinds") or [])
+
+
+def inbox_kinds(settings: dict | None = None) -> list[str]:
+    """Kinds that belong on the Inbox Important tab."""
+    from gmail_auto.settings import load_settings
+
+    data = settings if isinstance(settings, dict) else load_settings()
+    preset = preset_of(data)
+    if preset == "busy":
+        return list(INTERRUPT) + list(DIGEST)
+    if preset == "urgent":
+        return list(INTERRUPT)
+    return list(data.get("notify_kinds") or [])
+
+
+def preset_of(settings: dict | None) -> str:
+    data = settings or {}
+    preset = str(data.get("notify_preset") or "").strip()
+    if preset in PRESETS:
+        return preset
+    stored = data.get("notify_kinds")
+    kinds = set(stored or [])
+    if stored is None or kinds == set(KINDS):
+        return "busy"
+    if kinds == set(INTERRUPT):
+        return "urgent"
+    return "custom"
+
+
+def known_from_knowledge(limit: int = 8) -> dict:
+    """Short lists so Settings can show *your* people and topics, not a generic checklist."""
+    people: list[str] = []
+    topics: list[str] = []
+    try:
+        from gmail_auto.knowledge import list_items
+
+        for item in list_items("person", active_only=True):
+            text = _short_fact(item.get("text") or "")
+            if text and text not in people:
+                people.append(text)
+            if len(people) >= limit:
+                break
+        for item in list_items("topic", active_only=True):
+            text = _short_fact(item.get("text") or "")
+            if text and text not in topics:
+                topics.append(text)
+            if len(topics) >= limit:
+                break
+    except Exception:
+        pass
+    return {"people": people, "topics": topics}
+
+
+def _short_fact(value: str) -> str:
+    text = re.sub(r"[*_`]+", "", " ".join((value or "").split()))
+    if ":" in text:
+        head = text.split(":", 1)[0].strip()
+        if 1 < len(head) <= 48:
+            text = head
+    return text[:80]
 
 
 def _from_knowledge(email: str, name: str, blob: str) -> bool:

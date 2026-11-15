@@ -99,6 +99,9 @@ class PageTests(WebCase):
             ("/profile", "Sending mode"),
             ("/profile", "Inbox cleanup"),
             ("/profile", "important mail"),
+            ("/profile", "How far it sends"),
+            ("/profile", "When to ping me"),
+            ("/profile", "Who it sounds like"),
             ("/profile", "from:linkedin.com"),
             ("/calendar", "From email"),
             ("/calendar", "Mon"),
@@ -109,6 +112,9 @@ class PageTests(WebCase):
             self.assertIn(marker, text, path)
             self.assertIsNone(re.search(r"[一-鿿]", text), path)
             self.assertIn('lang="en"', text)
+            if path != "/login":
+                self.assertIn('class="topbar"', text, path)
+                self.assertIn(">Inbox</span>", text, path)
         remote = self.client.get("/", base_url="http://evil.example")
         self.assertEqual(remote.status_code, 403)
         forged = self.client.post("/run", headers={"Origin": "http://evil.example"})
@@ -200,7 +206,7 @@ class PageTests(WebCase):
 
             _, needs = self.page("/?show=needs")
             self.assertIn("Spring sale", needs)
-            self.assertNotIn("Lunch?", needs)
+            self.assertNotIn('row-subject">Lunch?', needs)
             self.assertIn("Waiting on me", needs)
             self.assertIn("In progress", needs)
 
@@ -246,11 +252,17 @@ class PageTests(WebCase):
         box = Inbox([first, follow])
         with patch("gmail_auto.web.connected_clients", return_value=([box], [])), patch("gmail_auto.web.client_for", return_value=box):
             _, one = self.page("/?show=all&open=q2")
-            self.assertIn("This matter", one)
+            self.assertIn("Storylines", one)
+            self.assertIn("Open storyline", one)
             self.assertIn("Waiting on you", one)
-            self.assertIn("Please find the quote attached.", one)
-            self.assertIn("Price list", one)
             self.assertIn('chip tiny story', one)
+            _, drawer = self.page("/?show=all&open=q2&story=gmail:t:quote-thread")
+            self.assertIn("matter-drawer", drawer)
+            self.assertIn("Please find the quote attached.", drawer)
+            self.assertIn("Price list", drawer)
+            self.assertIn("Related mail", drawer)
+            gone = self.client.post("/inbox/story/hide", data={"story": "gmail:t:quote-thread", "next": "/?show=all"}, follow_redirects=True)
+            self.assertNotIn("Open storyline", gone.get_data(as_text=True))
             _, open_tab = self.page("/?show=open")
             self.assertIn("Quote for May", open_tab)
             self.assertIn("Can you do better", open_tab)
@@ -258,7 +270,7 @@ class PageTests(WebCase):
             box.mails = [lone]
             _forget_inbox()
             _, plain = self.page("/?show=all&open=solo")
-            self.assertNotIn("This matter", plain)
+            self.assertNotIn("Open storyline", plain)
             self.assertIn("Lunch?", plain)
 
     def test_inbox_opens_on_important_and_saved_letters_still_show_their_text(self):
@@ -401,7 +413,7 @@ class PageTests(WebCase):
         self.assertFalse(is_live())
         save_profile(dict(PLACEHOLDER, name="Test User", role="Tester", introduction="Real facts.", tone="Short."))
         on = self.client.post("/mode", data={"mode": "always", "confirm": "1"}, follow_redirects=True)
-        self.assertIn("Ask every time", on.get_data(as_text=True))
+        self.assertIn("Show me every reply", on.get_data(as_text=True))
         self.assertTrue(is_live())
         self.assertEqual(load_settings()["approval_mode"], "always")
         self.client.post("/mode", data={"mode": "draft"})
@@ -437,7 +449,7 @@ class PageTests(WebCase):
         self.assertIn("Enter your name", blank.get_data(as_text=True))
         self.client.post("/settings", data={"reply_language": "bilingual", "daily_digest": "1", "digest_hour": "7"})
         settings = load_settings()
-        self.assertEqual((settings["reply_language"], settings["daily_digest"], settings["notify_auto_replies"], settings["digest_hour"]), ("bilingual", True, False, 7))
+        self.assertEqual((settings["reply_language"], settings["daily_digest"], settings["notify_auto_replies"], settings["digest_hour"]), ("bilingual", True, True, 7))
         self.client.post(
             "/settings/cleanup-rules",
             data={
@@ -930,9 +942,9 @@ class ModelSettingsTests(WebCase):
 
     def test_settings_page_uses_compact_tabs_and_preserves_section_anchors(self):
         _, text = self.page("/profile")
-        for label in ("General", "Notifications", "Cleanup", "Profile"):
+        for label in ("How far it sends", "When to ping me", "Who it sounds like", "Cleanup"):
             self.assertIn(label, text)
-        for panel in ('data-panel="general"', 'data-panel="notifications"', 'data-panel="cleanup"', 'data-panel="profile"'):
+        for panel in ('data-panel="send"', 'data-panel="interrupt"', 'data-panel="voice"', 'data-panel="cleanup"'):
             self.assertIn(panel, text)
         for anchor in ('id="mode"', 'id="model"', 'id="replies"', 'id="cleanup"', 'id="profile"'):
             self.assertIn(anchor, text)
