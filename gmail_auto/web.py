@@ -37,12 +37,14 @@ _INBOX_STORE_TTL = 15 * 60
 _INBOX_PAGE = 20
 _inbox_cache: dict = {"at": 0.0, "who": None, "data": None}
 _FILTERS = {
+    "important": "Important",
     "all": "All",
     "needs": "Needs you",
     "replied": "Replied",
     "drafts": "Drafts",
     "skipped": "Skipped",
 }
+_DEFAULT_FILTER = "important"
 _MODES = {
     "draft": ("Draft only", "Replies are written and saved. Nothing is ever sent."),
     "always": ("Ask every time", "Every reply waits for your OK on WhatsApp or the Approvals page."),
@@ -996,14 +998,21 @@ def _home_context() -> dict:
     errors.extend(inbox["errors"])
     rows = _merge_history(inbox["rows"])
     accounts = _account_chips() or inbox["accounts"]
+    kinds = set(load_settings().get("notify_kinds") or [])
     counts = {name: 0 for name in _FILTERS}
     for row in rows:
+        row["important"] = _row_is_important(row, kinds)
         counts["all"] += 1
         counts[row["group"]] = counts.get(row["group"], 0) + 1
-    show = request.args.get("show", "all")
+        if row["important"]:
+            counts["important"] += 1
+    show = request.args.get("show", _DEFAULT_FILTER)
     if show not in _FILTERS:
-        show = "all"
-    visible = [row for row in rows if show == "all" or row["group"] == show]
+        show = _DEFAULT_FILTER
+    if show == "important":
+        visible = [row for row in rows if row["important"]]
+    else:
+        visible = [row for row in rows if show == "all" or row["group"] == show]
     wanted = request.args.get("open", "")
     page, pages = _inbox_page(visible, wanted)
     listed = visible[(page - 1) * _INBOX_PAGE : page * _INBOX_PAGE]
@@ -1254,7 +1263,7 @@ def _find_mail(key: str):
 def _inbox_query() -> dict:
     query = {}
     show = request.args.get("show", "")
-    if show in _FILTERS and show != "all":
+    if show in _FILTERS and show != _DEFAULT_FILTER:
         query["show"] = show
     opened = request.args.get("open", "")
     if opened:
@@ -1314,6 +1323,7 @@ def _row_from_mail(mail, record, user_email: str) -> dict:
         "short_date": _short_date(mail.date),
         "snippet": snippet[:160],
         "unread": "UNREAD" in (mail.label_ids or []),
+        "labels": [item for item in (mail.label_ids or []) if str(item).startswith("CATEGORY_")],
         "status": label,
         "kind": kind,
         "group": group,
@@ -1330,6 +1340,40 @@ def _row_from_mail(mail, record, user_email: str) -> dict:
 
 def _rows_from_store() -> list[dict]:
     return _merge_history([])
+
+
+def _row_is_important(row: dict, kinds: set[str]) -> bool:
+    """The Important tab: letters that need you or got a reply, plus anything the push rules call important.
+
+    Skipped notifications, newsletters and job alerts stay out unless a push rule (a bill, a fine, a school
+    or government letter...) picks them up and that kind is switched on in Settings.
+    """
+    if row.get("group") in ("needs", "replied", "drafts"):
+        return True
+    if row.get("sensitive"):
+        return False
+    from gmail_auto.importance import assess
+    from gmail_auto.models import Mail
+
+    key = row.get("key") or ""
+    provider = row.get("provider") or "gmail"
+    mail = Mail(
+        id=key.partition(":")[2] if ":" in key else key,
+        thread_id="",
+        from_name=row.get("who") or "",
+        from_email=row.get("email") or "",
+        reply_email="",
+        subject=row.get("subject") or "",
+        date=row.get("date") or "",
+        body=row.get("snippet") or row.get("summary") or "",
+        label_ids=list(row.get("labels") or []),
+        provider=provider,
+    )
+    try:
+        tag = assess(mail, lookups=False)
+    except Exception:
+        return False
+    return bool(tag.get("important")) and tag.get("kind") in kinds
 
 
 def _row_from_record(record: dict) -> dict:
@@ -1349,7 +1393,10 @@ def _row_from_record(record: dict) -> dict:
         "status": label,
         "kind": kind,
         "group": group,
-        "has_body": False,
+        # The letter text is fetched from the mailbox when it is opened. Letters that mention passwords,
+        # codes or ID are never shown.
+        "has_body": bool(record.get("id")) and not record.get("sensitive"),
+        "sensitive": bool(record.get("sensitive")),
         "reply": record.get("reply") or "",
         "summary": record.get("summary") or "",
         "reason": "",

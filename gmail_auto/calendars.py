@@ -1,7 +1,7 @@
 """Mailbox calendars: upcoming events, and reminders or meetings created from email."""
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from gmail_auto.errors import ConfigError, NotConnected
@@ -527,17 +527,44 @@ def _item(event_id: str, provider: str, title: str, start: datetime, end: dateti
     }
 
 
+_WINDOWS_ZONES = {
+    "new zealand standard time": "Pacific/Auckland",
+    "nz standard time": "Pacific/Auckland",
+    "aus eastern standard time": "Australia/Sydney",
+    "e. australia standard time": "Australia/Brisbane",
+    "china standard time": "Asia/Shanghai",
+    "gmt standard time": "Europe/London",
+    "pacific standard time": "America/Los_Angeles",
+    "eastern standard time": "America/New_York",
+}
+
+
 def _graph_time(value: dict) -> datetime | None:
+    """Microsoft Graph sends a wall-clock time plus its own timeZone field, which is UTC unless asked otherwise."""
     stamp = (value.get("dateTime") or value.get("date") or "").strip()
     if not stamp:
         return None
+    stamp = stamp.replace("Z", "+00:00")
+    # Graph writes seven fractional digits ("…T17:45:00.0000000"); older Pythons only read six.
+    stamp = re.sub(r"(\.\d{6})\d+", r"\1", stamp)
     try:
-        moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        moment = datetime.fromisoformat(stamp)
     except ValueError:
         return None
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=ZONE)
+        moment = moment.replace(tzinfo=_graph_zone(value.get("timeZone")))
     return moment.astimezone(ZONE)
+
+
+def _graph_zone(name):
+    text = (name or "").strip()
+    if not text or text.upper() in {"UTC", "GMT", "Z", "ETC/UTC", "COORDINATED UNIVERSAL TIME", "TZONE://MICROSOFT/UTC"}:
+        return timezone.utc
+    mapped = _WINDOWS_ZONES.get(text.lower(), text)
+    try:
+        return ZoneInfo(mapped)
+    except Exception:
+        return timezone.utc
 
 
 def _google_time(value: dict) -> datetime | None:

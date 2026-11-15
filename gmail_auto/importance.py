@@ -131,8 +131,12 @@ _ROBOT_NAMES = {
 _NOT_IMPORTANT = {"kind": "other", "important": False, "why": "", "label": ""}
 
 
-def assess(mail: Mail) -> dict:
-    """Return kind, whether it is important, and a short English why."""
+def assess(mail: Mail, lookups: bool = True) -> dict:
+    """Return kind, whether it is important, and a short English why.
+
+    lookups=False skips the knowledge base and mail-history checks, so it is cheap enough to run on every
+    row of the inbox list.
+    """
     sender = f"{mail.from_email or ''} {mail.from_name or ''}".lower()
     text = f"{mail.subject or ''}\n{mail.body or mail.snippet or ''}"
     blob = f"{sender}\n{text}"
@@ -164,7 +168,7 @@ def assess(mail: Mail) -> dict:
         return _tag("enquiry", "Looks like a quote or enquiry.")
     if _is_meeting(mail):
         return _tag("meeting", "Looks like an appointment or invitation with a date.")
-    if _known_person(mail, blob):
+    if lookups and _known_person(mail, blob):
         return _tag("person", "Someone already in your knowledge or mail history.")
     if any(token in lowered for token in _COMPANY):
         return _tag("company", "Your company or a known organisation.")

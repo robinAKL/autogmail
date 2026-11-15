@@ -315,6 +315,33 @@ class CalendarTests(TempHome):
         self.assertTrue(calendars.already_created("old1"))
         self.assertEqual(calendars.added_from_mail(), 1)
 
+    def test_outlook_times_are_read_in_their_own_time_zone(self):
+        from gmail_auto.calendars import _view
+
+        # Graph sends UTC by default: Tuesday 06:45 in Auckland (NZDT, +13) arrives as Monday 17:45 UTC.
+        weekly = {
+            "id": "o1",
+            "subject": "Elite Ponsonby Breakfast",
+            "start": {"dateTime": "2026-11-16T17:45:00.0000000", "timeZone": "UTC"},
+            "end": {"dateTime": "2026-11-16T19:15:00.0000000", "timeZone": "UTC"},
+        }
+        event = _view(weekly, "outlook")
+        self.assertEqual(event["date"], "2026-11-17")
+        self.assertEqual(event["hour"], "06:45")
+        self.assertTrue(event["day"].startswith("Tuesday"))
+        local = _view(
+            {
+                "id": "o2",
+                "subject": "Local",
+                "start": {"dateTime": "2026-11-17T06:45:00.0000000", "timeZone": "New Zealand Standard Time"},
+                "end": {"dateTime": "2026-11-17T08:15:00.0000000", "timeZone": "New Zealand Standard Time"},
+            },
+            "outlook",
+        )
+        self.assertEqual((local["date"], local["hour"]), ("2026-11-17", "06:45"))
+        missing = _view({"id": "o3", "subject": "No zone", "start": {"dateTime": "2026-11-16T17:45:00"}, "end": {"dateTime": "2026-11-16T18:45:00"}}, "outlook")
+        self.assertEqual((missing["date"], missing["hour"]), ("2026-11-17", "06:45"))
+
     def test_removal_works_in_batches(self):
         from gmail_auto import calendars
         from gmail_auto.storage import save_doc

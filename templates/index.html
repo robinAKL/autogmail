@@ -66,7 +66,7 @@
 </section>
 {% else %}
 {% if offline %}
-<p class="banner warn">The mailbox could not be reached, so this shows saved records only. Letter text is not available.</p>
+<p class="banner warn">This list comes from saved records. Opening a letter loads its text from the mailbox. Press Refresh list to load the newest mail.</p>
 {% endif %}
 <nav class="tabs-row" aria-label="Filter">
   {% for name, label in filters.items() %}
@@ -90,7 +90,7 @@
       </span>
     </a>
     {% else %}
-    <p class="empty">Nothing here.</p>
+    <p class="empty">{% if show == 'important' %}Nothing important right now. Skipped notifications are under All and Skipped.{% else %}Nothing here.{% endif %}</p>
     {% endfor %}
     {% if pager and pager.pages > 1 %}
     <nav class="pager" aria-label="Inbox pages">
@@ -135,7 +135,7 @@
     <iframe class="mail-frame" title="Email content" src="{{ url_for('mail_body', key=opened.key) }}"
             sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" data-autosize></iframe>
     {% else %}
-    <p class="empty">The original letter is not available offline.</p>
+    <p class="empty">This letter mentions passwords, codes or ID, so its text is not shown here. Open it in your mailbox.</p>
     {% endif %}
 
     {% if waiting_item %}

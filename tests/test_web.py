@@ -174,7 +174,7 @@ class PageTests(WebCase):
         plain_mail = sample(id="p1", subject="Lunch?", body="Lunch on <Friday>?", label_ids=["INBOX"], received_ts=1794380000.0)
         box = Inbox([html_mail, plain_mail])
         with patch("gmail_auto.web.connected_clients", return_value=([box], [])), patch("gmail_auto.web.client_for", return_value=box):
-            _, text = self.page("/")
+            _, text = self.page("/?show=all")
             self.assertIn("Spring sale", text)
             self.assertIn("Lunch?", text)
             self.assertIn("Not handled yet", text)
@@ -193,7 +193,7 @@ class PageTests(WebCase):
             self.assertIn("default-src 'none'", body.headers["Content-Security-Policy"])
             self.assertIn("sandbox", body.headers["Content-Security-Policy"])
 
-            _, opened = self.page("/?open=p1")
+            _, opened = self.page("/?show=all&open=p1")
             self.assertIn('src="/mail/body?key=p1"', opened)
             plain = self.client.get("/mail/body?key=p1").get_data(as_text=True)
             self.assertIn("Lunch on &lt;Friday&gt;?", plain)
@@ -201,6 +201,71 @@ class PageTests(WebCase):
             _, needs = self.page("/?show=needs")
             self.assertIn("Spring sale", needs)
             self.assertNotIn("Lunch?", needs)
+
+    def test_inbox_opens_on_important_and_saved_letters_still_show_their_text(self):
+        from gmail_auto.settings import save_settings
+
+        records = [
+            ("bill", "noreply@mercury.co.nz", "Your power bill is ready", "Amount due $182 by 30 November.", "system", False),
+            ("jobs", "jobalerts-noreply@linkedin.com", "You may be a fit for a role", "Job alert.", "system", False),
+            ("promo", "news@shop.example", "Big sale ends tonight", "50% off. Unsubscribe.", "list", False),
+            ("code", "", "", "", "sensitive", True),
+        ]
+        for key, sender, subject, summary, code, sensitive in records:
+            mark_processed(
+                {
+                    "id": key,
+                    "provider": "gmail",
+                    "from_email": sender,
+                    "subject": subject,
+                    "summary": summary,
+                    "date": "2026-11-14 09:00",
+                    "processed_at": "2026-11-14 09:00",
+                    "action": "skipped",
+                    "skip_code": code,
+                    "sensitive": sensitive,
+                }
+            )
+        mark_processed(
+            {
+                "id": "asked",
+                "provider": "gmail",
+                "from_name": "Lee",
+                "from_email": "lee@client.example",
+                "subject": "Workshop next week",
+                "date": "2026-11-14 10:00",
+                "processed_at": "2026-11-14 10:00",
+                "action": "waiting",
+            }
+        )
+        saved = sample(id="bill", subject="Your power bill is ready", body="Amount due $182 by 30 November.", from_email="noreply@mercury.co.nz")
+        box = Inbox([saved])
+        with patch("gmail_auto.web.connected_clients", return_value=([], [])), patch("gmail_auto.web.client_for", return_value=box):
+            _, text = self.page("/")
+            self.assertIn('class="tab on" href="/?show=important"', text)
+            self.assertIn("Workshop next week", text)
+            self.assertIn("Your power bill is ready", text)
+            self.assertNotIn("You may be a fit", text)
+            self.assertNotIn("Big sale", text)
+            self.assertIn("This list comes from saved records", text)
+            self.assertNotIn("could not be reached", text)
+
+            _, opened = self.page("/?open=bill")
+            self.assertIn('src="/mail/body?key=bill"', opened)
+            self.assertIn("Amount due $182", self.client.get("/mail/body?key=bill").get_data(as_text=True))
+
+            _, every = self.page("/?show=all")
+            self.assertIn("You may be a fit", every)
+            self.assertIn("Big sale", every)
+            _, secret = self.page("/?show=all&open=code")
+            self.assertNotIn('src="/mail/body?key=code"', secret)
+            self.assertIn("passwords, codes or ID", secret)
+
+        save_settings({"notify_kinds": ["fine"]})
+        with patch("gmail_auto.web.connected_clients", return_value=([], [])):
+            _, text = self.page("/")
+        self.assertNotIn("Your power bill is ready", text)
+        self.assertIn("Workshop next week", text)
 
     def test_inbox_pages_older_history_and_keeps_mailbox_marks(self):
         live = sample(id="now", subject="Today's letter", received_ts=1794387660.0, date="2026-11-13 18:00")
@@ -220,13 +285,13 @@ class PageTests(WebCase):
             )
         box = Inbox([live])
         with patch("gmail_auto.web.connected_clients", return_value=([box], [])), patch("gmail_auto.web.client_for", return_value=box):
-            _, text = self.page("/")
+            _, text = self.page("/?show=all")
             self.assertIn("Today&#39;s letter", text)
             self.assertIn("chip tiny gmail", text)
             self.assertIn("Older", text)
             self.assertIn("1 / 2", text)
             self.assertNotIn("History 0", text)
-            _, older = self.page("/?page=2")
+            _, older = self.page("/?show=all&page=2")
             self.assertIn("History 0", older)
             self.assertIn("chip tiny outlook", older)
             self.assertIn("Newer", older)
