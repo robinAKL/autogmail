@@ -246,7 +246,7 @@
       <h3>Learn from past email</h3>
       <p class="muted">Reads recent sent and received mail. Passwords and codes are left out.</p>
       {% if mailboxes %}
-      <div class="stack-sm">
+      <div class="button-row">
         {% for item in mailboxes %}
         <button class="{% if not loop.first %}quiet{% endif %}" type="submit" name="provider" value="{{ item.provider }}" {% if not has_key %}disabled{% endif %}>Summarise {{ item.label }} history</button>
         {% endfor %}

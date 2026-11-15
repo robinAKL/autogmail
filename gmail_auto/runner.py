@@ -10,6 +10,7 @@ from gmail_auto.envfile import require_openai_key
 from gmail_auto.errors import ConfigError, NotConnected, ReplyError, named_error
 from gmail_auto.filters import Allow, Skip, classify, short_subject
 from gmail_auto.models import Draft, Mail
+from gmail_auto.screen import screen_mail
 from gmail_auto.profile_store import load_profile, profile_is_placeholder
 from gmail_auto.settings import load_settings
 from gmail_auto.store import (
@@ -322,11 +323,25 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
                 report.lines.append(f"Calendar: {added}")
         except Exception:
             pass
+        from gmail_auto.worker import brief_mail, remember_verdict
+
+        brief = brief_mail(mail)
+        verdict = screen_mail(mail, brief)
+        if verdict is not None:
+            remember_verdict(mail.key, verdict)
+        if verdict is not None and verdict.disposition == "ignore":
+            _skip(client, mail, Skip(verdict.reason or "junk", code=verdict.code or "junk"), report)
+            continue
         try:
             draft = _as_draft(generate(mail, profile, decision.language))
         except ReplyError as exc:
             _fail(client, mail, report, str(exc))
             continue
+        if verdict is not None and verdict.disposition == "ask" and draft.action == "reply":
+            draft.action = "ask"
+            draft.reason = draft.reason or verdict.reason
+        if draft.action in {"reply", "ask"} and not draft.summary and brief.get("summary"):
+            draft.summary = brief["summary"]
         subject = short_subject(mail.subject)
         if draft.action == "skip":
             reason = draft.reason or "no reply needed"
@@ -434,6 +449,7 @@ def _summarize_notice(mail: Mail, tag: dict) -> str:
             prompt,
             max_tokens=120,
             temperature=0.2,
+            role="worker",
         ).strip()
         return summary or tag["why"]
     except ConfigError:

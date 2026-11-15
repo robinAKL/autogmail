@@ -83,7 +83,11 @@ def find_by_hint(text: str) -> list[dict]:
     words = [
         part
         for part in re.split(r"\s+", needle)
-        if len(part) > 2 and part not in {"the", "and", "for", "you", "want", "what", "say", "tell", "them", "that", "this", "with", "from", "will", "we'll"}
+        if len(part) > 2 and part not in {
+            "the", "and", "for", "you", "want", "what", "say", "tell", "them", "that", "this", "with", "from",
+            "will", "we'll", "drop", "skip", "reject", "cancel", "discard", "ignore", "reply", "send",
+            "archive", "search", "find", "list", "unread",
+        }
     ]
     if not words:
         return []

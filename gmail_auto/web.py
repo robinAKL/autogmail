@@ -28,6 +28,7 @@ from gmail_auto.importance import QUIET as PING_QUIET, RULES as PING_RULES
 from gmail_auto.storage import persistent
 from gmail_auto.token_store import storage_hint, storage_kind, storage_ready
 from gmail_auto.store import get_state, is_live, list_processed, load_last_run, load_processed, now_text, set_state
+from gmail_auto.story import attach_stories, story_view
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -40,7 +41,8 @@ _inbox_cache: dict = {"at": 0.0, "who": None, "data": None}
 _FILTERS = {
     "important": "Important",
     "all": "All",
-    "needs": "Needs you",
+    "open": "In progress",
+    "needs": "Waiting on me",
     "replied": "Replied",
     "drafts": "Drafts",
     "skipped": "Skipped",
@@ -883,14 +885,21 @@ def configure_app(app: Flask) -> None:
         if blocked:
             return blocked
         try:
-            save_settings({"ai_model": request.form.get("ai_model", "")})
-            if request.form.get("test") == "1":
-                reply = complete("Reply with OK.", "Say OK.", max_tokens=16, temperature=0.2)
+            save_settings(
+                {
+                    "ai_model": request.form.get("ai_model", ""),
+                    "super_model": request.form.get("super_model", ""),
+                }
+            )
+            which = request.form.get("test") or ""
+            if which in {"1", "worker", "super"}:
+                role = "super" if which == "super" else "worker"
+                reply = complete("Reply with OK.", "Say OK.", max_tokens=16, temperature=0.2, role=role)
                 if not reply.strip():
                     raise ReplyError("The model returned an empty reply. Try another model or retry.")
-                flash(f"Model {active_model()} responded: {reply.strip()[:80]}")
+                flash(f"Model {active_model(role)} responded: {reply.strip()[:80]}")
             else:
-                flash("Model saved.")
+                flash("Models saved.")
         except (ConfigError, ReplyError) as exc:
             flash(str(exc), "error")
         return redirect(url_for("profile_page") + "#model")
@@ -1015,7 +1024,7 @@ def _home_context() -> dict:
     hosted = bool(os.environ.get("VERCEL"))
     inbox = _inbox(live=not hosted or request.args.get("live") == "1")
     errors.extend(inbox["errors"])
-    rows = _merge_history(inbox["rows"])
+    rows = attach_stories(_merge_history(inbox["rows"]))
     accounts = _account_chips() or inbox["accounts"]
     kinds = set(load_settings().get("notify_kinds") or [])
     counts = {name: 0 for name in _FILTERS}
@@ -1025,11 +1034,15 @@ def _home_context() -> dict:
         counts[row["group"]] = counts.get(row["group"], 0) + 1
         if row["important"]:
             counts["important"] += 1
+        if row.get("story_open"):
+            counts["open"] = counts.get("open", 0) + 1
     show = request.args.get("show", _DEFAULT_FILTER)
     if show not in _FILTERS:
         show = _DEFAULT_FILTER
     if show == "important":
         visible = [row for row in rows if row["important"]]
+    elif show == "open":
+        visible = [row for row in rows if row.get("story_open")]
     else:
         visible = [row for row in rows if show == "all" or row["group"] == show]
     wanted = request.args.get("open", "")
@@ -1040,6 +1053,11 @@ def _home_context() -> dict:
         opened = listed[0]
 
     waiting_item = None
+    if opened:
+        try:
+            _attach_review(opened)
+        except (ConfigError, ReplyError):
+            pass
     if opened and opened.get("approval_id") and opened["kind"] == "waiting":
         waiting_item = approvals.get(opened["approval_id"])
 
@@ -1066,6 +1084,7 @@ def _home_context() -> dict:
             "next": page + 1 if page < pages else 0,
         },
         "opened": opened,
+        "story": story_view(opened, rows),
         "waiting_item": waiting_item,
         "filters": _FILTERS,
         "counts": counts,
@@ -1343,6 +1362,8 @@ def _row_from_mail(mail, record, user_email: str) -> dict:
         "snippet": snippet[:160],
         "unread": "UNREAD" in (mail.label_ids or []),
         "labels": [item for item in (mail.label_ids or []) if str(item).startswith("CATEGORY_")],
+        "thread_id": mail.thread_id or "",
+        "received_ts": float(mail.received_ts or 0),
         "status": label,
         "kind": kind,
         "group": group,
@@ -1354,7 +1375,57 @@ def _row_from_mail(mail, record, user_email: str) -> dict:
         "outbox": record.get("outbox") or "",
         "approval_id": record.get("approval_id") or "",
         "needs_review": bool(record.get("needs_review")),
+        "advice": "",
     }
+
+
+def _attach_review(opened: dict) -> None:
+    """Fill Super's suggestion and the clerk brief when a letter is opened."""
+    from gmail_auto.llm import model_ready
+    from gmail_auto.models import Mail
+    from gmail_auto.screen import screen_mail
+    from gmail_auto.worker import brief_mail, load_review, remember_verdict
+
+    key = opened.get("key") or ""
+    review = load_review(key)
+    if review.get("summary") and not opened.get("summary"):
+        opened["summary"] = review["summary"]
+    if review.get("disposition"):
+        opened["advice"] = _advice_line(review.get("disposition"), review.get("advice") or review.get("summary"))
+        return
+    if not model_ready():
+        return
+    mail = Mail(
+        id=key.partition(":")[2] if ":" in key else key,
+        thread_id="",
+        from_name=opened.get("who") or "",
+        from_email=opened.get("email") or "",
+        reply_email="",
+        subject=opened.get("subject") or "",
+        date=opened.get("date") or "",
+        body=opened.get("snippet") or opened.get("summary") or "",
+        snippet=opened.get("snippet") or "",
+        provider=opened.get("provider") or "gmail",
+    )
+    brief = brief_mail(mail)
+    if brief.get("summary") and not opened.get("summary"):
+        opened["summary"] = brief["summary"]
+    verdict = screen_mail(mail, brief)
+    if verdict is None:
+        return
+    remember_verdict(mail.key, verdict)
+    opened["advice"] = _advice_line(verdict.disposition, verdict.reason)
+
+
+def _advice_line(disposition: str, reason: str) -> str:
+    labels = {
+        "ignore": "Ignore",
+        "reply": "Can reply",
+        "ask": "Ask you first",
+    }
+    title = labels.get(disposition or "", disposition or "Review")
+    reason = (reason or "").strip()
+    return f"{title}: {reason}" if reason else title
 
 
 def _rows_from_store() -> list[dict]:
@@ -1409,6 +1480,8 @@ def _row_from_record(record: dict) -> dict:
         "short_date": _short_date(when),
         "snippet": (record.get("summary") or "")[:160],
         "unread": False,
+        "thread_id": record.get("thread_id") or "",
+        "received_ts": _record_ts(when),
         "status": label,
         "kind": kind,
         "group": group,
@@ -1418,6 +1491,7 @@ def _row_from_record(record: dict) -> dict:
         "sensitive": bool(record.get("sensitive")),
         "reply": record.get("reply") or "",
         "summary": record.get("summary") or "",
+        "advice": "",
         "reason": "",
         "sources": record.get("sources") or [],
         "outbox": record.get("outbox") or "",
@@ -1460,6 +1534,16 @@ def _legacy_summary(last_run: dict) -> str:
         f"[{last_run.get('finished_at', '')}] checked {last_run.get('checked', 0)}, sent {last_run.get('sent', 0)}, "
         f"drafted {last_run.get('drafted', 0)}, skipped {last_run.get('skipped', 0)}, failed {last_run.get('failed', 0)}."
     )
+
+
+def _record_ts(value: str) -> float:
+    text = (value or "").strip().replace("T", " ")
+    for width, fmt in ((19, "%Y-%m-%d %H:%M:%S"), (16, "%Y-%m-%d %H:%M"), (10, "%Y-%m-%d")):
+        try:
+            return time.mktime(time.strptime(text[:width], fmt))
+        except (ValueError, OverflowError):
+            continue
+    return 0.0
 
 
 def _short_date(value: str) -> str:
@@ -1615,7 +1699,12 @@ def _connections_context() -> dict:
             "last_webhook": get_state("wa_webhook_last", {}),
         },
         "storage": {"persistent": persistent(), "kind": storage_kind() or "This computer (data folder)", "hint": "" if storage_ready() else storage_hint()},
-        "ai": {"ready": has_openai_key(), "model": active_model(), "gateway": using_gateway()},
+        "ai": {
+            "ready": has_openai_key(),
+            "model": active_model("worker"),
+            "super_model": active_model("super"),
+            "gateway": using_gateway(),
+        },
         "local": local,
     }
 
@@ -1698,7 +1787,8 @@ def _profile_context(form=None) -> dict:
         "ping_rules": PING_RULES,
         "ping_quiet": PING_QUIET,
         "ai_models": AI_MODELS,
-        "ai_active": active_model(),
+        "ai_active": active_model("worker"),
+        "ai_super": active_model("super"),
         "ai_gateway": using_gateway(),
         "ai_ready": has_openai_key(),
     }

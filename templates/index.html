@@ -77,7 +77,7 @@
 <div class="split">
   <section class="list" aria-label="Emails">
     {% for row in rows %}
-    <a class="row {% if opened and opened.key == row.key %}on{% endif %} {% if row.unread %}unread{% endif %}" href="{{ url_for('home', show=show, open=row.key) }}" {% if opened and opened.key == row.key %}aria-current="true" data-current{% endif %}>
+    <a class="row {% if opened and opened.key == row.key %}on{% endif %} {% if row.unread %}unread{% endif %}" href="{{ url_for('home', show=show, open=row.key) }}" data-thread="{{ row.thread_id or '' }}" data-story="{{ row.story_id or '' }}" {% if opened and opened.key == row.key %}aria-current="true" data-current{% endif %}>
       <span class="row-top">
         <span class="row-who">{{ row.who }}</span>
         <span class="row-date">{{ row.short_date }}</span>
@@ -86,11 +86,12 @@
       <span class="row-snippet">{{ row.snippet }}</span>
       <span class="row-foot">
         <span class="tag {{ row.kind }}">{{ row.status }}</span>
+        {% if row.story_size and row.story_size > 1 %}<span class="chip tiny story" title="{{ row.story_size }} letters in this matter">{{ row.story_size }}</span>{% endif %}
         <span class="chip tiny {{ row.provider }}">{{ row.provider_label }}</span>
       </span>
     </a>
     {% else %}
-    <p class="empty">{% if show == 'important' %}Nothing important right now. Skipped notifications are under All and Skipped.{% else %}Nothing here.{% endif %}</p>
+    <p class="empty">{% if show == 'important' %}Nothing important right now. Skipped notifications are under All and Skipped.{% elif show == 'open' %}No ongoing matters. A story appears here once the same thread has more than one letter.{% elif show == 'needs' %}Nothing waiting on you.{% else %}Nothing here.{% endif %}</p>
     {% endfor %}
     {% if pager and pager.pages > 1 %}
     <nav class="pager" aria-label="Inbox pages">
@@ -123,6 +124,33 @@
       </p>
       {% if opened.summary %}
       <p class="ai-note"><b>What they want</b> {{ opened.summary }}</p>
+      {% endif %}
+      {% if opened.advice %}
+      <p class="ai-note"><b>What to do</b> {{ opened.advice }}</p>
+      {% endif %}
+      {% if story %}
+      <div class="story">
+        <div class="story-head">
+          <b>This matter</b>
+          {% if story.label %}<span class="tag {{ story.status }}">{{ story.label }}</span>{% endif %}
+        </div>
+        <ol class="story-line">
+          {% for step in story.steps %}
+          <li class="{% if step.current %}on{% endif %} {% if step.outbound %}out{% endif %}">
+            {% if step.outbound %}
+            <span class="story-who">{{ step.who }}</span>
+            {% else %}
+            <a class="story-who" href="{{ url_for('home', show=show, open=step.key) }}">{{ step.who }}</a>
+            {% endif %}
+            <span class="story-date">{{ step.date }}</span>
+            <span class="story-summary">{{ step.summary }}</span>
+          </li>
+          {% endfor %}
+        </ol>
+        {% if story.sources %}
+        <p class="sources">Using {% for title in story.sources %}<span class="chip tiny">{{ title }}</span>{% endfor %}</p>
+        {% endif %}
+      </div>
       {% endif %}
       <form method="post" action="{{ url_for('calendar_from_mail') }}" class="button-row" data-busy="Adding to calendar…">
         <input type="hidden" name="key" value="{{ opened.key }}">

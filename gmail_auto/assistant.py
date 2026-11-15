@@ -3,7 +3,8 @@
 import re
 
 from gmail_auto import approvals, stats, whatsapp
-from gmail_auto.errors import ConfigError
+from gmail_auto import llm as llm_mod
+from gmail_auto.errors import ConfigError, ReplyError
 from gmail_auto.llm import complete, parse_json
 from gmail_auto.profile_store import load_profile
 from gmail_auto.store import get_state, is_live, list_processed, set_live, set_state
@@ -13,35 +14,60 @@ _YES = {
     "同意", "可以", "好", "好的", "发", "发送", "发吧", "行", "确认", "是", "是的", "批准",
 }
 _NO = {
-    "no", "n", "nope", "skip", "reject", "cancel", "dont send", "do not send", "don't send", "discard",
-    "不同意", "不", "不用", "不发", "不要发", "拒绝", "取消", "跳过", "不行",
+    "no", "n", "nope", "skip", "reject", "cancel", "dont send", "do not send", "don't send", "discard", "drop",
+    "ignore", "junk", "spam",
+    "不同意", "不", "不用", "不发", "不要发", "拒绝", "取消", "跳过", "不行", "丢掉", "丢弃", "忽略", "删除草稿",
 }
 _HELP = (
-    "I can do these from here:\n"
-    "- YES / NO — send or drop the reply that is waiting (add its number, e.g. YES 12, when several wait)\n"
-    "- 12 <what to say> — draft a reply to that letter, then YES to send\n"
-    "- Reply lee <what to say> — find the open letter from that person and draft it\n"
-    "- UNREAD — summarize important unread emails with numbers\n"
-    "- SEARCH <keyword> — search recent emails (last 50 unread/recent) with numbers\n"
-    "- REPLY <n> <what to say> / ARCHIVE <n> — draft a reply or archive by number\n"
-    "- Any other text while a reply is waiting — I rewrite the draft that way and ask again\n"
-    "- LIST — letters waiting for you\n"
-    "- STATUS — today's and yesterday's numbers\n"
-    "- PAUSE — stop sending anything until you turn it back on in the web page\n"
-    "- Anything else — ask me about your mail"
+    "Tell me what you want in ordinary language, for example:\n"
+    "- Search / summarise unread / show details / is this spam\n"
+    "- Reply to #12, drop 145 139 138, or send the waiting draft\n"
+    "- Write a new email to someone\n"
+    "- Create a meeting or invite\n"
+    "- LIST / STATUS / PAUSE still work as shortcuts"
 )
-_CHAT_SYSTEM = """You are the owner's email assistant, chatting with the owner on WhatsApp.
+_INTENTS = (
+    "approve", "reject", "revise", "list", "status", "pause", "help",
+    "summarize", "search", "read", "analyze", "draft_reply", "compose",
+    "archive", "mark_read", "create_event", "invite", "calendar", "answer",
+)
+_INTENT_SYSTEM = """You are the owner's email and calendar assistant on WhatsApp.
+Read the owner's message and decide what they want done. Do not treat this as a keyword command list.
 Reply in the language the owner wrote in (Chinese or English).
-Use ONLY the knowledge base, profile, and email context given below. Never invent emails, senders, prices, or dates.
-Return ONE JSON object with these fields:
-- intent: one of "answer", "summarize", "read", "draft_reply", "compose", "archive", "mark_read"
-- number: listed email number as string (e.g. "1") if referring to a listed email, else ""
-- query: search keyword or sender name if looking up an email, else ""
-- to: recipient email address for "compose", else ""
-- subject: email subject for "compose", else ""
-- body: full email body for "compose" (written in the owner's tone and grounded in the knowledge base), else ""
-- instruction: editing/reply instruction for "draft_reply", else ""
-- reply: concise plain-text answer for "answer" (or short summary for "read"), else ""
+Use ONLY the knowledge base, profile, waiting items, listed emails, and recent mail given below. Never invent emails, senders, prices, or dates.
+
+Return ONE JSON object:
+- intent: one of
+  approve (send waiting draft(s)),
+  reject (drop waiting draft(s), or cancel a pending confirm),
+  revise (rewrite a waiting draft using instruction),
+  list, status, pause, help,
+  summarize (unread / important mail),
+  search (query is the keyword),
+  read (full details of a letter),
+  analyze (what it is, spam/phishing/ad vs real, what they want, whether to reply),
+  draft_reply (write a reply to a listed or waiting letter),
+  compose (new email; fill to, subject, body),
+  archive, mark_read,
+  create_event (personal reminder/meeting),
+  invite (meeting with attendees),
+  calendar (what's on the calendar),
+  answer (a question; put the answer in reply)
+- numbers: array of waiting-item or listed-email ids mentioned (e.g. ["145","139","138"]). Empty if none.
+- number: first number as a string, or ""
+- query: search keyword, sender, or calendar range, else ""
+- to, subject, body: for compose
+- instruction: how to reply or revise
+- title, start, end, location: for calendar (start/end ISO 8601 in Pacific/Auckland if known, else "")
+- attendees: array of email addresses for invite
+- reply: short answer for intent=answer or analyze, else ""
+
+Examples:
+- "Drop 145 139 138" or "这三封不用回" with those ids → reject, numbers ["145","139","138"]
+- "NO" while several wait and last_focus is set → reject those last_focus ids
+- "帮我看看第一封是不是广告" → analyze, number "1"
+- "明天下午3点和 lee@x.com 开会" → invite
+- "给 lee@x.com 发邮件说明报价" → compose
 """
 
 
@@ -50,80 +76,490 @@ def handle(incoming: whatsapp.Incoming, clients: list | None = None) -> str:
     text = incoming.text.strip()
     action, target = _button(incoming.button)
     waiting = approvals.open_items()
-    item = None
-    if target:
-        item = approvals.get(target)
-    if item is None:
-        item = approvals.find_by_whatsapp(incoming.context_id)
-    number = _number(text)
-    if item is None and number:
-        found = approvals.get(number)
-        if found is not None and found.get("status") == "pending":
-            item = found
-        elif _listed_entry(number) is None:
-            item = found
-    word = _word(text)
-
-    if action == "approve" or (not action and word in _YES):
-        if item is None and not target and not number:
-            pending = get_state("wa_pending_action")
-            if isinstance(pending, dict) and pending.get("kind"):
-                return _execute_pending(pending, clients)
-        return _approve(_pick(item, waiting), waiting)
-    if action == "reject" or (not action and word in _NO):
-        if item is None and not target and not number:
-            pending = get_state("wa_pending_action")
-            if isinstance(pending, dict) and pending.get("kind"):
-                set_state("wa_pending_action", None)
-                return "Cancelled. Nothing was sent or deleted."
-        return _reject(_pick(item, waiting), waiting)
-    if word in {"help", "?", "帮助", "menu"}:
-        return _HELP
-    if word in {"list", "pending", "waiting", "待处理", "列表"}:
-        return _list(waiting)
-    if word in {"status", "stats", "today", "yesterday", "summary", "统计", "状态"}:
-        return _status(waiting)
-    if word in {"pause", "stop", "暂停"}:
-        return _pause()
-    if word in {"unread", "总结未读", "未读", "未读邮件", "summary unread", "summarize unread"}:
-        return _summarize_unread(clients)
-    search_query = _search_query(text)
-    if search_query is not None:
-        return _search_mail(search_query, clients)
-    archive_num = _archive_number(text)
-    if archive_num:
-        return _archive_by_number(archive_num, clients)
+    if action == "approve":
+        return _apply_many("approve", [target] if target else [], waiting, clients)
+    if action == "reject":
+        return _apply_many("reject", [target] if target else [], waiting, clients)
     if not text:
         return _HELP
+    parsed = _interpret(text, waiting, incoming.context_id, clients)
+    return _dispatch(parsed, text, waiting, clients)
+
+
+def _interpret(text: str, waiting: list, context_id: str, clients: list | None) -> dict:
+    """LLM first when a real model is wired; otherwise a fallback that still understands drop/YES/search."""
+    fallback = _fallback_intent(text, waiting, context_id)
+    try:
+        llm_data = _llm_intent(text, waiting, clients)
+    except (ConfigError, ReplyError):
+        llm_data = None
+    if llm_data and llm_data.get("intent") in _INTENTS:
+        if not llm_data.get("numbers") and fallback.get("numbers"):
+            llm_data["numbers"] = fallback["numbers"]
+        return llm_data
+    return fallback
+
+
+def _llm_intent(text: str, waiting: list, clients: list | None) -> dict | None:
+    raw = _complete_intent(_INTENT_SYSTEM, _intent_user_prompt(text, waiting, clients), max_tokens=700)
+    if not raw:
+        return None
+    data = parse_json(raw)
+    if not isinstance(data, dict):
+        return {"intent": "answer", "reply": raw, "numbers": []}
+    numbers = _as_numbers(data.get("numbers") or data.get("number"))
+    data["numbers"] = numbers
+    data["number"] = numbers[0] if numbers else str(data.get("number") or "").strip().lstrip("#")
+    data["intent"] = str(data.get("intent") or "answer").strip().lower()
+    if data["intent"] not in _INTENTS:
+        data["intent"] = "answer"
+    return data
+
+
+def _complete_intent(system: str, user: str, max_tokens: int = 700) -> str:
+    """Call Super, but skip the network with dummy test keys unless complete() is mocked."""
+    from gmail_auto.llm import model_ready
+
+    if complete is llm_mod.complete and not model_ready():
+        raise ConfigError("no AI key")
+    return complete(system, user, max_tokens=max_tokens, role="super").strip()
+
+
+def _intent_user_prompt(text: str, waiting: list, clients: list | None) -> str:
+    waiting_lines = []
+    for item in waiting[:20]:
+        waiting_lines.append(
+            f"#{item.get('id')} [{item.get('kind') or item.get('role') or ''}] "
+            f"{item.get('from_name') or item.get('from_email')} — {_short(item.get('subject'))}"
+        )
+    listed = get_state("wa_mail_list", [])
+    listed_lines = []
+    if isinstance(listed, list):
+        for entry in listed[:10]:
+            listed_lines.append(
+                f"#{entry.get('num')} {entry.get('from_name') or entry.get('from_email')} — {_short(entry.get('subject'))}"
+            )
+    focus = _last_focus()
+    pending = get_state("wa_pending_action")
+    pending_line = ""
+    if isinstance(pending, dict) and pending.get("kind"):
+        pending_line = f"{pending.get('kind')} {pending.get('label') or pending.get('to') or ''}"
+    recent = []
+    for record in list_processed(8):
+        if record.get("sensitive"):
+            continue
+        recent.append(
+            f"- {record.get('from_name') or record.get('from_email') or 'unknown'} | {_short(record.get('subject'))} | {record.get('action')}"
+        )
+    return (
+        _kb_and_profile_context(text) + "\n\n"
+        "WAITING APPROVALS:\n" + ("\n".join(waiting_lines) or "(none)") + "\n\n"
+        "LISTED EMAILS:\n" + ("\n".join(listed_lines) or "(none)") + "\n\n"
+        f"LAST FOCUS IDS: {', '.join(focus) if focus else '(none)'}\n"
+        f"PENDING CONFIRM: {pending_line or '(none)'}\n\n"
+        "RECENTLY HANDLED:\n" + ("\n".join(recent) or "(none)") + "\n\n"
+        "NUMBERS:\n" + stats.digest_text() + "\n\n"
+        f"OWNER'S MESSAGE:\n{text}"
+    )
+
+
+def _fallback_intent(text: str, waiting: list, context_id: str) -> dict:
+    numbers = _numbers(text)
+    word = _word(text)
+    item = _resolve_waiting_item(text, numbers, context_id, waiting)
+    empty = {"intent": "answer", "numbers": numbers, "instruction": text, "query": "", "reply": ""}
+
+    if word in _YES:
+        return {"intent": "approve", "numbers": numbers, "instruction": "", "query": "", "reply": ""}
+    if word in _NO:
+        return {"intent": "reject", "numbers": numbers, "instruction": "", "query": "", "reply": ""}
+    if word in {"help", "?", "帮助", "menu"}:
+        return {"intent": "help", "numbers": numbers, "instruction": "", "query": "", "reply": ""}
+    if word in {"list", "pending", "waiting", "待处理", "列表"}:
+        return {"intent": "list", "numbers": numbers, "instruction": "", "query": "", "reply": ""}
+    if word in {"status", "stats", "today", "yesterday", "summary", "统计", "状态"}:
+        return {"intent": "status", "numbers": numbers, "instruction": "", "query": "", "reply": ""}
+    if word in {"pause", "stop", "暂停"}:
+        return {"intent": "pause", "numbers": numbers, "instruction": "", "query": "", "reply": ""}
+    if word in {"unread", "总结未读", "未读", "未读邮件", "summary unread", "summarize unread"}:
+        return {"intent": "summarize", "numbers": numbers, "instruction": "", "query": "", "reply": ""}
+    search_query = _search_query(text)
+    if search_query is not None:
+        return {"intent": "search", "numbers": numbers, "instruction": "", "query": search_query, "reply": ""}
+    archive_num = _archive_number(text)
+    if archive_num:
+        return {"intent": "archive", "numbers": [archive_num], "instruction": "", "query": "", "reply": "", "immediate": True}
+
+    number = numbers[0] if numbers else ""
     if item is None and number:
         listed = _listed_entry(number)
         if listed is not None:
             instruction = _instruction(text)
             if not instruction:
-                who = listed.get("from_name") or listed.get("from_email") or "Unknown"
-                return f"#{number}: {who} — {_short(listed.get('subject'))}\nSend: REPLY {number} <what to say> or ARCHIVE {number}"
-            return _reply_listed(number, listed, instruction, clients)
+                return {"intent": "read", "numbers": [number], "instruction": "", "query": "", "reply": ""}
+            return {"intent": "draft_reply", "numbers": [number], "instruction": instruction, "query": "", "reply": ""}
+
     if item is None:
         hinted = approvals.find_by_hint(text)
         if len(hinted) == 1:
             item = hinted[0]
+            numbers = [str(item["id"])]
         elif len(hinted) > 1:
-            return "Which letter?\n\n" + _list(hinted)
+            _remember_focus([str(row["id"]) for row in hinted])
+            return {
+                "intent": "list",
+                "numbers": [str(row["id"]) for row in hinted],
+                "instruction": "",
+                "query": "",
+                "reply": "Which letter?\n\n" + _list(hinted),
+                "subset": hinted,
+            }
 
     chosen = item if item is not None and item.get("status") == "pending" else (waiting[0] if len(waiting) == 1 else None)
     if chosen is not None:
         instruction = _instruction(text)
         if not instruction:
-            if chosen.get("draft"):
-                return (
-                    f"Draft for #{chosen['id']} (to {chosen.get('from_name') or chosen.get('from_email')}):\n\n"
-                    f"{chosen['draft']}\n\nReply YES to send, NO to drop it, or tell me what to change."
-                )
-            return f"#{chosen['id']} has no draft yet. Send: {chosen['id']} <what you want to say>"
-        return _revise(chosen, instruction)
+            return {"intent": "read", "numbers": [str(chosen["id"])], "instruction": "", "query": "", "reply": "", "approval": chosen}
+        return {"intent": "revise", "numbers": [str(chosen["id"])], "instruction": instruction, "query": "", "reply": "", "approval": chosen}
     if len(waiting) > 1:
-        return "Several letters are waiting. Start with the number, for example: 12 make it shorter\n\n" + _list(waiting)
+        return {
+            "intent": "list",
+            "numbers": [],
+            "instruction": "",
+            "query": "",
+            "reply": "Several letters are waiting. Tell me the number, or what you want done (search, reply, drop, meeting…)\n\n" + _list(waiting),
+        }
+    return empty
+
+
+def _dispatch(parsed: dict, text: str, waiting: list, clients: list | None) -> str:
+    intent = parsed.get("intent") or "answer"
+    numbers = parsed.get("numbers") or []
+    if parsed.get("number") and not numbers:
+        numbers = [str(parsed["number"]).lstrip("#")]
+    if numbers:
+        _remember_focus(numbers)
+
+    if intent == "help":
+        return _HELP
+    if intent == "list":
+        if parsed.get("reply"):
+            return parsed["reply"]
+        subset = parsed.get("subset")
+        if subset:
+            _remember_focus([str(row["id"]) for row in subset])
+            return "Which letter?\n\n" + _list(subset)
+        return _list(waiting)
+    if intent == "status":
+        return _status(waiting)
+    if intent == "pause":
+        return _pause()
+    if intent == "approve":
+        return _apply_many("approve", numbers, waiting, clients)
+    if intent == "reject":
+        return _apply_many("reject", numbers, waiting, clients)
+    if intent == "revise":
+        item = parsed.get("approval") or _item_from_numbers(numbers, waiting)
+        if item is None:
+            return _which(waiting, "change")
+        return _revise(item, parsed.get("instruction") or text)
+    if intent == "summarize":
+        if parsed.get("query"):
+            return _search_mail(parsed["query"], clients)
+        return _summarize_unread(clients)
+    if intent == "search":
+        query = (parsed.get("query") or _search_query(text) or text).strip()
+        if query.lower() in {"search", "find", "搜索", "查找", "找"}:
+            return "What should I search for?"
+        return _search_mail(query, clients)
+    if intent == "read":
+        approval = parsed.get("approval") or _item_from_numbers(numbers, waiting)
+        if approval is not None and approval.get("draft"):
+            return (
+                f"Draft for #{approval['id']} (to {approval.get('from_name') or approval.get('from_email')}):\n\n"
+                f"{approval['draft']}\n\nReply YES to send, NO to drop it, or tell me what to change."
+            )
+        if approval is not None and not (approval.get("draft") or "").strip():
+            return f"#{approval['id']} has no draft yet. Send: {approval['id']} <what you want to say>"
+        entry = _resolve_mail_entry(numbers[0] if numbers else "", parsed.get("query") or "", clients)
+        if entry is None:
+            return parsed.get("reply") or "Could not find that email. Ask me to summarise unread or search first."
+        return _read_entry(entry, clients)
+    if intent == "analyze":
+        return _analyze(numbers, parsed, clients)
+    if intent == "draft_reply":
+        number = numbers[0] if numbers else ""
+        entry = _listed_entry(number) if number else _resolve_mail_entry(number, parsed.get("query") or "", clients)
+        if entry is None:
+            item = _item_from_numbers(numbers, waiting)
+            if item is not None:
+                return _revise(item, parsed.get("instruction") or text)
+            return "Which email should I reply to? Ask me to summarise unread or search first."
+        return _reply_listed(str(entry.get("num") or number or "1"), entry, parsed.get("instruction") or text, clients)
+    if intent == "compose":
+        return _compose_preview(parsed)
+    if intent == "archive":
+        number = numbers[0] if numbers else ""
+        if parsed.get("immediate") and number:
+            return _archive_by_number(number, clients)
+        return _ask_archive(number, parsed.get("query") or "", clients)
+    if intent == "mark_read":
+        return _mark_read_listed(numbers, parsed.get("query") or "", clients)
+    if intent in {"create_event", "invite"}:
+        return _ask_calendar(parsed, invite=intent == "invite")
+    if intent == "calendar":
+        return _calendar_brief(parsed.get("query") or "")
+    reply = str(parsed.get("reply") or "").strip()
+    if reply:
+        return reply
     return _answer(text, clients)
+
+
+def _apply_many(verb: str, numbers: list[str], waiting: list, clients: list | None) -> str:
+    pending = get_state("wa_pending_action")
+    if verb == "approve" and not numbers and isinstance(pending, dict) and pending.get("kind"):
+        return _execute_pending(pending, clients)
+    if verb == "reject" and not numbers and isinstance(pending, dict) and pending.get("kind"):
+        set_state("wa_pending_action", None)
+        return "Cancelled. Nothing was sent or deleted."
+    ids = [str(n).lstrip("#") for n in numbers if str(n).strip()]
+    if not ids:
+        ids = list(_last_focus()) if verb == "reject" else []
+    items = []
+    for item_id in ids:
+        found = approvals.get(item_id)
+        if found is not None and found.get("status") == "pending":
+            items.append(found)
+    if not items:
+        if len(ids) == 1:
+            listed = _listed_entry(ids[0])
+            if listed is not None and verb == "reject":
+                return _ask_archive(ids[0], "", clients)
+        picked = _pick(None, waiting)
+        if picked is None:
+            return _which(waiting, "send" if verb == "approve" else "drop")
+        items = [picked]
+    lines = []
+    current = waiting
+    for item in items:
+        if verb == "approve":
+            lines.append(_approve(item, current))
+        else:
+            lines.append(_reject(item, current))
+        current = approvals.open_items()
+    set_state("wa_last_focus", [])
+    return "\n".join(lines)
+
+
+def _analyze(numbers: list[str], parsed: dict, clients: list | None) -> str:
+    canned = str(parsed.get("reply") or "").strip()
+    number = numbers[0] if numbers else str(parsed.get("number") or "").lstrip("#")
+    entry = _resolve_mail_entry(number, parsed.get("query") or "", clients)
+    item = None
+    if entry is None and number:
+        item = approvals.get(number)
+    if entry is None and item is None:
+        return canned or "Which letter should I look at? Give a number, or ask me to summarise unread first."
+    blob = ""
+    header = ""
+    if item is not None:
+        header = f"#{item.get('id')} {item.get('from_name') or item.get('from_email')} — {item.get('subject')}"
+        blob = f"From: {item.get('from_name')} <{item.get('from_email')}>\nSubject: {item.get('subject')}\nDate: {item.get('date')}\n\n{item.get('body') or item.get('draft') or ''}"
+    else:
+        header = f"#{entry.get('num')} {entry.get('from_name') or entry.get('from_email')} — {entry.get('subject')}"
+        details = _read_entry(entry, clients)
+        blob = details
+    if canned:
+        return f"{header}\n\n{canned}"
+    from gmail_auto.models import Mail
+    from gmail_auto.screen import screen_mail
+    from gmail_auto.worker import brief_mail, format_brief
+
+    source = item or entry or {}
+    mail = Mail(
+        id=source.get("mail_id") or number or "",
+        thread_id=source.get("thread_id") or "",
+        from_name=source.get("from_name") or "",
+        from_email=source.get("from_email") or "",
+        reply_email=source.get("reply_email") or "",
+        subject=source.get("subject") or "",
+        date=source.get("date") or "",
+        body=blob,
+        snippet=source.get("snippet") or "",
+        provider=source.get("provider") or "gmail",
+    )
+    brief = brief_mail(mail)
+    verdict = screen_mail(mail, brief)
+    parts = [header, format_brief(brief)]
+    if verdict is not None:
+        parts.append(f"Decision: {verdict.disposition} — {verdict.reason}")
+    return "\n\n".join(part for part in parts if part)
+
+
+def _compose_preview(parsed: dict) -> str:
+    to_addr = str(parsed.get("to") or "").strip()
+    subject = str(parsed.get("subject") or "").strip() or "Hello"
+    body = str(parsed.get("body") or "").strip()
+    if not to_addr or not body:
+        return str(parsed.get("reply") or "Please tell me the recipient email address and what you want to say.")
+    set_state("wa_pending_action", {"kind": "send_new", "to": to_addr, "subject": subject, "body": body})
+    return f"Ready to send:\nTo: {to_addr}\nSubject: {subject}\n\n{body}\n\nReply YES to send, or NO to cancel."
+
+
+def _ask_archive(number: str, query: str, clients: list | None) -> str:
+    entry = _resolve_mail_entry(number, query, clients)
+    if entry is None or not entry.get("mail_id"):
+        return "Could not find which email to archive. Ask me to summarise unread or search first."
+    who = entry.get("from_name") or entry.get("from_email") or "Unknown"
+    label = f"{who} — {_short(entry.get('subject'))}"
+    set_state(
+        "wa_pending_action",
+        {"kind": "archive", "mail_id": entry["mail_id"], "provider": entry.get("provider") or "gmail", "label": label},
+    )
+    return f"Archive/delete \"{label}\"? Reply YES to confirm, or NO to cancel."
+
+
+def _mark_read_listed(numbers: list[str], query: str, clients: list | None) -> str:
+    entry = _resolve_mail_entry(numbers[0] if numbers else "", query, clients)
+    if entry is None or not entry.get("mail_id"):
+        return "Could not find which email to mark as read."
+    client = _client_for(entry.get("provider") or "gmail", clients)
+    if client is None:
+        return "Mailbox is not connected."
+    try:
+        client.mark_read(entry["mail_id"])
+    except ConfigError as exc:
+        return f"Could not mark as read: {exc}"
+    return f"Marked as read: {_short(entry.get('subject'))}."
+
+
+def _ask_calendar(parsed: dict, invite: bool) -> str:
+    title = str(parsed.get("title") or parsed.get("subject") or "").strip() or "Meeting"
+    start = _parse_when(parsed.get("start"))
+    end = _parse_when(parsed.get("end"))
+    if start is None:
+        return str(parsed.get("reply") or "When should I put this on the calendar? Give a day and time.")
+    if end is None:
+        from datetime import timedelta
+
+        end = start + timedelta(hours=1)
+    attendees = parsed.get("attendees") or []
+    if isinstance(attendees, str):
+        attendees = [part.strip() for part in attendees.split(",") if part.strip()]
+    if invite and not attendees:
+        to_addr = str(parsed.get("to") or "").strip()
+        if to_addr:
+            attendees = [to_addr]
+    draft = {
+        "title": title[:160],
+        "start": start,
+        "end": end,
+        "location": str(parsed.get("location") or "").strip(),
+        "attendees": attendees,
+        "description": str(parsed.get("body") or parsed.get("instruction") or "").strip(),
+        "kind": "invite" if attendees else "meeting",
+    }
+    set_state("wa_pending_action", {"kind": "create_event", "provider": "", "draft": _event_draft_payload(draft)})
+    when = start.strftime("%a %d %b %Y %H:%M")
+    who = (", ".join(attendees) if attendees else "just you")
+    return f"Add to calendar:\n{title}\n{when}\nWho: {who}\n\nReply YES to create, or NO to cancel."
+
+
+def _event_draft_payload(draft: dict) -> dict:
+    payload = dict(draft)
+    start, end = payload.get("start"), payload.get("end")
+    payload["start"] = start.isoformat() if hasattr(start, "isoformat") else str(start or "")
+    payload["end"] = end.isoformat() if hasattr(end, "isoformat") else str(end or "")
+    return payload
+
+
+def _parse_when(value) -> object | None:
+    if value is None or value == "":
+        return None
+    if hasattr(value, "year"):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    from datetime import datetime
+    from gmail_auto.calendars import ZONE
+
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            parsed = datetime.strptime(text.replace("Z", "")[:19] if "T" in text else text[:16], fmt)
+            return parsed.replace(tzinfo=ZONE)
+        except ValueError:
+            continue
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=ZONE)
+    except ValueError:
+        return None
+
+
+def _calendar_brief(query: str) -> str:
+    from gmail_auto.calendars import list_upcoming
+
+    try:
+        data = list_upcoming(14)
+    except ConfigError as exc:
+        return f"Could not read the calendar: {exc}"
+    events = data.get("events") or []
+    if query:
+        needle = query.lower()
+        events = [event for event in events if needle in f"{event.get('title')} {event.get('location')}".lower()]
+    if not events:
+        return "Nothing on the calendar in the next two weeks."
+    lines = ["Upcoming:"]
+    for event in events[:12]:
+        lines.append(f"- {event.get('when')}: {event.get('title')}")
+    return "\n".join(lines)
+
+
+def _resolve_waiting_item(text: str, numbers: list[str], context_id: str, waiting: list):
+    item = approvals.find_by_whatsapp(context_id)
+    if item is not None:
+        return item
+    number = numbers[0] if numbers else _number(text)
+    if not number:
+        return None
+    found = approvals.get(number)
+    if found is not None and found.get("status") == "pending":
+        return found
+    if _listed_entry(number) is None:
+        return found
+    return None
+
+
+def _item_from_numbers(numbers: list[str], waiting: list):
+    for item_id in numbers:
+        found = approvals.get(str(item_id).lstrip("#"))
+        if found is not None and found.get("status") == "pending":
+            return found
+    return _pick(None, waiting) if len(numbers) == 0 else None
+
+
+def _as_numbers(value) -> list[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip().lstrip("#") for item in value if str(item).strip()]
+    text = str(value).strip()
+    if "," in text or " " in text:
+        return _numbers(text)
+    return [text.lstrip("#")] if text else []
+
+
+def _remember_focus(ids: list[str]) -> None:
+    clean = [str(item).lstrip("#") for item in ids if str(item).strip()]
+    set_state("wa_last_focus", clean[:20])
+
+
+def _last_focus() -> list[str]:
+    saved = get_state("wa_last_focus", [])
+    if isinstance(saved, list):
+        return [str(item) for item in saved if str(item).strip()]
+    return []
 
 
 def seen_before(message_id: str) -> bool:
@@ -188,7 +624,7 @@ def _list(waiting) -> str:
             lines.append(f"#{item['id']}{mark} {item.get('from_name') or item.get('from_email')} — {_short(item.get('subject'))} (reply {item['id']} <what to say>)")
         else:
             lines.append(f"#{item['id']}{mark} {item.get('from_name') or item.get('from_email')} — {_short(item.get('subject'))}")
-    lines.append("Answer with YES or NO and the number, or 12 <what to say>.")
+    lines.append("Say what you want done, e.g. drop 12 15, reply 12 I'll call tomorrow, or YES 12 to send.")
     return "\n".join(lines)
 
 
@@ -321,6 +757,18 @@ def _execute_pending(pending: dict, clients: list | None) -> str:
             client.archive(pending["mail_id"])
             set_state("wa_pending_action", None)
             return f"Archived: {pending.get('label') or pending['mail_id']}."
+        if kind == "create_event":
+            from gmail_auto.calendars import create_event
+
+            raw_draft = dict(pending.get("draft") or {})
+            raw_draft["start"] = _parse_when(raw_draft.get("start"))
+            raw_draft["end"] = _parse_when(raw_draft.get("end"))
+            if raw_draft["start"] is None or raw_draft["end"] is None:
+                set_state("wa_pending_action", None)
+                return "That calendar draft had no valid time, so I cancelled it."
+            event = create_event(provider or getattr(client, "provider", "gmail") or "gmail", raw_draft)
+            set_state("wa_pending_action", None)
+            return f"Added to calendar: {event.get('title') or raw_draft.get('title')} — {event.get('when') or ''}."
     except ConfigError as exc:
         return f"Action failed: {exc}"
     set_state("wa_pending_action", None)
@@ -328,95 +776,21 @@ def _execute_pending(pending: dict, clients: list | None) -> str:
 
 
 def _answer(question: str, clients: list | None = None) -> str:
-    recent = []
-    for record in list_processed(12):
-        if record.get("sensitive"):
-            continue
-        recent.append(
-            f"- {record.get('processed_at', '')[:16]} | {record.get('from_name') or record.get('from_email') or 'unknown'} | "
-            f"{_short(record.get('subject'))} | {record.get('action')}"
-        )
-    listed = get_state("wa_mail_list", [])
-    listed_lines = []
-    if isinstance(listed, list):
-        for entry in listed[:10]:
-            listed_lines.append(f"#{entry.get('num')} {entry.get('from_name') or entry.get('from_email')} — {_short(entry.get('subject'))}")
-
-    context = (
-        _kb_and_profile_context(question) + "\n\n"
-        "LISTED EMAILS (numbered for quick actions):\n" + ("\n".join(listed_lines) or "(none)") + "\n\n"
-        "RECENTLY HANDLED EMAIL (time | sender | subject | outcome):\n" + ("\n".join(recent) or "(none)") + "\n\n"
-        "NUMBERS:\n" + stats.digest_text() + "\n\n"
-        f"OWNER'S MESSAGE:\n{question}"
-    )
     try:
-        raw = complete(_CHAT_SYSTEM, context, max_tokens=600).strip()
-    except ConfigError as exc:
+        raw = _complete_intent(_INTENT_SYSTEM, _intent_user_prompt(question, approvals.open_items(), clients), max_tokens=600)
+    except (ConfigError, ReplyError) as exc:
         return f"I could not answer that right now: {exc}\n\n{_HELP}"
     if not raw:
         return _HELP
-
     data = parse_json(raw)
-    if not isinstance(data, dict):
-        return raw
-
-    intent = str(data.get("intent") or "answer").strip().lower()
-    number = str(data.get("number") or "").strip().lstrip("#")
-    query = str(data.get("query") or "").strip()
-
-    if intent == "summarize":
-        if query:
-            return _search_mail(query, clients)
-        return _summarize_unread(clients)
-
-    if intent == "read":
-        entry = _resolve_mail_entry(number, query, clients)
-        if entry is None:
-            return str(data.get("reply") or "Could not find that email. Send UNREAD or SEARCH <keyword> first.")
-        return _read_entry(entry, clients)
-
-    if intent == "draft_reply":
-        entry = _resolve_mail_entry(number, query, clients)
-        if entry is None:
-            return "Which email should I reply to? Send UNREAD or SEARCH <keyword> first."
-        instruction = str(data.get("instruction") or question).strip()
-        return _reply_listed(str(entry.get("num") or "1"), entry, instruction, clients)
-
-    if intent == "compose":
-        to_addr = str(data.get("to") or "").strip()
-        subject = str(data.get("subject") or "").strip() or "Hello"
-        body = str(data.get("body") or "").strip()
-        if not to_addr or not body:
-            return str(data.get("reply") or "Please tell me the recipient email address and what you want to say.")
-        set_state("wa_pending_action", {"kind": "send_new", "to": to_addr, "subject": subject, "body": body})
-        return f"Ready to send:\nTo: {to_addr}\nSubject: {subject}\n\n{body}\n\nReply YES to send, or NO to cancel."
-
-    if intent == "archive":
-        entry = _resolve_mail_entry(number, query, clients)
-        if entry is None or not entry.get("mail_id"):
-            return "Could not find which email to archive. Send UNREAD or SEARCH <keyword> first."
-        who = entry.get("from_name") or entry.get("from_email") or "Unknown"
-        label = f"{who} — {_short(entry.get('subject'))}"
-        set_state(
-            "wa_pending_action",
-            {"kind": "archive", "mail_id": entry["mail_id"], "provider": entry.get("provider") or "gmail", "label": label},
-        )
-        return f"Archive/delete \"{label}\"? Reply YES to confirm, or NO to cancel."
-
-    if intent == "mark_read":
-        entry = _resolve_mail_entry(number, query, clients)
-        if entry is None or not entry.get("mail_id"):
-            return "Could not find which email to mark as read."
-        client = _client_for(entry.get("provider") or "gmail", clients)
-        if client is None:
-            return "Mailbox is not connected."
-        try:
-            client.mark_read(entry["mail_id"])
-        except ConfigError as exc:
-            return f"Could not mark as read: {exc}"
-        return f"Marked as read: {_short(entry.get('subject'))}."
-
-    return str(data.get("reply") or "").strip() or raw
+    if isinstance(data, dict):
+        reply = str(data.get("reply") or "").strip()
+        if reply:
+            return reply
+        if str(data.get("intent") or "") in _INTENTS and data.get("intent") != "answer":
+            data["numbers"] = _as_numbers(data.get("numbers") or data.get("number"))
+            return _dispatch(data, question, approvals.open_items(), clients)
+    return raw
 
 
 def _pick(item, waiting):
@@ -439,13 +813,16 @@ def _button(value: str) -> tuple[str, str]:
 
 
 def _number(text: str) -> str:
-    match = (
-        re.search(r"#\s*(\d{1,6})\b", text)
-        or re.match(r"^\s*(?:reply|re|回[复覆]?)\s+#?(\d{1,6})\b", text, flags=re.IGNORECASE)
-        or re.match(r"^\s*(\d{1,6})\b", text)
-        or re.fullmatch(r"\D{1,20}?\s(\d{1,6})\s*", text)
-    )
-    return match.group(1) if match else ""
+    found = _numbers(text)
+    return found[0] if found else ""
+
+
+def _numbers(text: str) -> list[str]:
+    cleaned = re.sub(r"\b\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?\b", " ", text or "")
+    hashed = re.findall(r"#\s*(\d{1,6})\b", cleaned)
+    if hashed:
+        return list(dict.fromkeys(hashed))
+    return list(dict.fromkeys(re.findall(r"\b(\d{1,6})\b", cleaned)))
 
 
 def _strip_number(text: str) -> str:

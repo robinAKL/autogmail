@@ -24,7 +24,7 @@ Decide one action:
 - "ask": the owner must confirm before this is sent. Choose it when the reply would commit to a date, time, meeting,
   price, payment, delivery or decision; when a fact you need is missing; when a rule says to ask; when the subject is
   sensitive (legal, contract, complaint, HR, money, health); or whenever you are not sure. Still write your best draft.
-- "skip": the letter needs no answer (a notification, an FYI, a thank-you with nothing to add).
+- "skip": the letter needs no answer (spam, phishing, ads, a notification, an FYI, a thank-you with nothing to add). Do not write a reply for junk.
 
 Return JSON only, no other text:
 {"action": "reply" | "ask" | "skip", "reason": "one short sentence in English", "summary": "one sentence in English saying what the sender wants", "reply": "the reply body, or empty for skip"}"""
@@ -66,7 +66,7 @@ def draft_reply(mail: Mail, profile: dict, detected: str) -> Draft:
     language = reply_language(load_settings()["reply_language"], detected)
     context = context_for(mail)
     knowledge = render_context(context)
-    raw = complete(_SYSTEM, _user_prompt(mail, profile, knowledge, language))
+    raw = complete(_SYSTEM, _user_prompt(mail, profile, knowledge, language), role="worker")
     data = parse_json(raw)
     if data is None:
         # No structure came back. Keep the text as a draft, but never send it without the owner seeing it.
@@ -103,7 +103,7 @@ def revise_reply(item: dict, instruction: str, profile: dict) -> str:
         f"OWNER'S INSTRUCTION:\n{instruction.strip()}\n\n"
         f"{_LANGUAGE_LINES[language]}"
     )
-    reply = clean_reply(complete(_REVISE_SYSTEM, prompt))
+    reply = clean_reply(complete(_REVISE_SYSTEM, prompt, role="worker"))
     check_basics(reply)
     return reply
 

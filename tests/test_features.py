@@ -690,6 +690,17 @@ class WhatsAppTests(TempHome):
         self.assertEqual(approvals.pending(), [])
         self.assertEqual(get_processed("w1")["action"], "rejected")
 
+    def test_drop_several_waiting_ids_in_one_message(self):
+        self.ask("w1", "First")
+        self.ask("w2", "Second")
+        self.ask("w3", "Third")
+        ids = [item["id"] for item in approvals.open_items()]
+        self.assertEqual(len(ids), 3)
+        answer = assistant.handle(whatsapp.Incoming(sender="64211234567", text=f"Drop {ids[0]} {ids[1]} {ids[2]}"))
+        self.assertIn("nothing sent", answer.lower())
+        self.assertEqual(approvals.pending(), [])
+        self.assertEqual({get_processed("w1")["action"], get_processed("w2")["action"], get_processed("w3")["action"]}, {"rejected"})
+
     def test_a_kind_switched_off_on_settings_is_not_pinged(self):
         save_settings({"notify_kinds": ["fine", "school"]})
         fake = FakeGmail(
@@ -1246,3 +1257,40 @@ class ConversationalAgentTests(TempHome):
         done = assistant.handle(whatsapp.Incoming(sender="64211234567", text="确认"), clients=[client])
         self.assertIn("Archived:", done)
         self.assertEqual(client.archived, ["m9"])
+
+    def test_analyze_and_invite_intents_from_natural_language(self):
+        from gmail_auto import assistant, whatsapp
+        from gmail_auto.store import get_state
+
+        mail = sample(
+            id="spam1",
+            from_name="Carhireexcess.com",
+            from_email="info@carhireexcess.com",
+            subject="特邀开户領取188彩金",
+            body="企鹅Q：914797848 領取！",
+        )
+        client = FakeGmail([mail])
+        assistant.handle(whatsapp.Incoming(sender="64211234567", text="UNREAD"), clients=[client])
+        analyze_json = (
+            '{"intent":"analyze","number":"1","numbers":["1"],"query":"","to":"","subject":"",'
+            '"body":"","instruction":"","reply":"This is a phishing gambling ad. Ignore it."}'
+        )
+        with patch("gmail_auto.assistant.complete", return_value=analyze_json):
+            result = assistant.handle(whatsapp.Incoming(sender="64211234567", text="这封是不是广告"), clients=[client])
+        self.assertIn("phishing", result.lower())
+        self.assertIn("特邀开户", result)
+
+        invite_json = (
+            '{"intent":"invite","title":"Call with Lee","start":"2026-11-17T15:00:00",'
+            '"end":"2026-11-17T16:00:00","attendees":["lee@example.com"],'
+            '"number":"","query":"","to":"lee@example.com","subject":"","body":"","instruction":"","reply":""}'
+        )
+        with patch("gmail_auto.assistant.complete", return_value=invite_json):
+            preview = assistant.handle(
+                whatsapp.Incoming(sender="64211234567", text="明天下午3点和 lee@example.com 开会"),
+                clients=[client],
+            )
+        self.assertIn("Add to calendar", preview)
+        self.assertIn("lee@example.com", preview)
+        pending = get_state("wa_pending_action")
+        self.assertEqual(pending["kind"], "create_event")

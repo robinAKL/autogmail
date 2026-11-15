@@ -201,6 +201,65 @@ class PageTests(WebCase):
             _, needs = self.page("/?show=needs")
             self.assertIn("Spring sale", needs)
             self.assertNotIn("Lunch?", needs)
+            self.assertIn("Waiting on me", needs)
+            self.assertIn("In progress", needs)
+
+    def test_inbox_story_timeline_only_when_the_same_matter_has_more_than_one_letter(self):
+        first = sample(
+            id="q1",
+            thread_id="quote-thread",
+            from_email="lee@client.example",
+            from_name="Lee",
+            subject="Quote for May",
+            snippet="Please quote May",
+            received_ts=1794300000.0,
+            date="2026-11-01 10:00",
+            label_ids=["INBOX"],
+        )
+        follow = sample(
+            id="q2",
+            thread_id="quote-thread",
+            from_email="lee@client.example",
+            from_name="Lee",
+            subject="Re: Quote for May",
+            snippet="Can you do better on price",
+            received_ts=1794380000.0,
+            date="2026-11-02 10:00",
+            label_ids=["INBOX", "UNREAD"],
+        )
+        mark_processed(
+            {
+                "id": "q1",
+                "provider": "gmail",
+                "thread_id": "quote-thread",
+                "from_name": "Lee",
+                "from_email": "lee@client.example",
+                "subject": "Quote for May",
+                "date": "2026-11-01 10:00",
+                "processed_at": "2026-11-01 10:00",
+                "action": "sent",
+                "reply": "Please find the quote attached.",
+                "summary": "Asked for a May quote.",
+                "sources": ["Price list"],
+            }
+        )
+        box = Inbox([first, follow])
+        with patch("gmail_auto.web.connected_clients", return_value=([box], [])), patch("gmail_auto.web.client_for", return_value=box):
+            _, one = self.page("/?show=all&open=q2")
+            self.assertIn("This matter", one)
+            self.assertIn("Waiting on you", one)
+            self.assertIn("Please find the quote attached.", one)
+            self.assertIn("Price list", one)
+            self.assertIn('chip tiny story', one)
+            _, open_tab = self.page("/?show=open")
+            self.assertIn("Quote for May", open_tab)
+            self.assertIn("Can you do better", open_tab)
+            lone = sample(id="solo", thread_id="solo-thread", subject="Lunch?", snippet="Friday?", received_ts=1794390000.0, label_ids=["INBOX"])
+            box.mails = [lone]
+            _forget_inbox()
+            _, plain = self.page("/?show=all&open=solo")
+            self.assertNotIn("This matter", plain)
+            self.assertIn("Lunch?", plain)
 
     def test_inbox_opens_on_important_and_saved_letters_still_show_their_text(self):
         from gmail_auto.settings import save_settings

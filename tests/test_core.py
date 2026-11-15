@@ -143,6 +143,20 @@ class FilterTests(unittest.TestCase):
         self.assertIn("promotion", classify(promo, "me@example.com").reason)
         self.assertEqual(classify(sample(body="  "), "me@example.com").code, "empty")
 
+    def test_obvious_phishing_ad_is_junk_and_not_an_invoice(self):
+        from gmail_auto.importance import assess
+
+        mail = sample(
+            from_name="Carhireexcess.com",
+            from_email="info@carhireexcess.com",
+            subject="[CARHIREEXCESSCOM #BUV-925-88274]: 特邀开户領取188彩金，企鵝Q：914797848領取！不要錯過！ 》 al3iPkksnNKezgsmCVgG",
+            date="2018-09-26 09:00",
+            body="Looks like a bill or invoice.",
+            received_ts=1763250000.0,
+        )
+        self.assertEqual(classify(mail, "me@example.com").code, "junk")
+        self.assertFalse(assess(mail)["important"])
+
     def test_sensitive_mail_is_skipped_without_treating_ordinary_words_as_secrets(self):
         ordinary = classify(sample(body="I passed the exam yesterday. Can we talk tomorrow?"), "me@example.com")
         self.assertIsInstance(ordinary, Allow)
@@ -296,6 +310,44 @@ class RunnerTests(TempHome):
         self.assertEqual(fake.sent, [])
         self.assertEqual(again.sent, 0)
         self.assertIn("already handled", again.lines[0])
+
+    def test_screening_agent_can_ignore_or_force_confirmation(self):
+        from unittest.mock import patch
+
+        from gmail_auto.screen import Screen
+        from gmail_auto.store import get_processed
+
+        write_test_profile()
+        set_live(True)
+        junk = sample(id="junk1", subject="Weekly roundup", body="Hello from a colleague about the notes.")
+        fake = FakeGmail([junk])
+        generated = []
+
+        def generate(*_args):
+            generated.append(True)
+            return Draft(action="reply", reply="Thanks, I saw your note.", reason="Routine.")
+
+        with patch("gmail_auto.runner.screen_mail", return_value=Screen("ignore", "Bulk marketing.", "Promo", "ad")):
+            report = run_once(gmail=fake, generate=generate)
+        self.assertEqual(report.skipped, 1)
+        self.assertEqual(generated, [])
+        self.assertEqual(get_processed("junk1")["skip_code"], "ad")
+        self.assertEqual(fake.sent, [])
+
+        real = sample(id="ask1", subject="Can we meet Friday?", body="Are you free Friday?")
+        fake2 = FakeGmail([real])
+        with patch("gmail_auto.runner.screen_mail", return_value=Screen("ask", "Needs a time.", "Meeting", "person")):
+            report = run_once(gmail=fake2, generate=lambda *_: Draft(action="reply", reply="Friday works.", reason="Routine."))
+        self.assertEqual(report.asked, 1)
+        self.assertEqual(fake2.sent, [])
+
+    def test_super_and_worker_use_separate_models(self):
+        from gmail_auto.llm import active_model
+
+        save_settings({"ai_model": "openai/gpt-4o-mini", "super_model": "openai/gpt-5-mini"})
+        self.assertEqual(active_model(), "openai/gpt-4o-mini")
+        self.assertEqual(active_model("worker"), "openai/gpt-4o-mini")
+        self.assertEqual(active_model("super"), "openai/gpt-5-mini")
 
     def test_live_send_replies_once_and_marks_read(self):
         write_test_profile()
@@ -531,6 +583,142 @@ class RunnerTests(TempHome):
             clean_profile(dict(SafetyTests.profile, introduction="key sk-abcdefghijklmnopqrstuvwxyz"))
         with self.assertRaises(ProfileError):
             clean_profile(dict(SafetyTests.profile, name="  "))
+
+
+class StoryTests(unittest.TestCase):
+    def test_thread_and_related_subject_form_one_story(self):
+        from gmail_auto.story import attach_stories, story_view
+
+        first = {
+            "key": "a",
+            "provider": "gmail",
+            "thread_id": "t-quote",
+            "email": "lee@client.example",
+            "who": "Lee",
+            "subject": "Quote for May",
+            "date": "2026-11-01 10:00",
+            "received_ts": 1,
+            "kind": "sent",
+            "group": "replied",
+            "status": "Replied automatically",
+            "reply": "Please find the quote.",
+            "summary": "Asked for a May quote.",
+            "snippet": "Can I have a quote",
+            "short_date": "1 Nov",
+            "sources": ["Price list"],
+        }
+        follow = {
+            "key": "b",
+            "provider": "gmail",
+            "thread_id": "t-quote",
+            "email": "lee@client.example",
+            "who": "Lee",
+            "subject": "Re: Quote for May",
+            "date": "2026-11-02 10:00",
+            "received_ts": 2,
+            "kind": "waiting",
+            "group": "needs",
+            "status": "Waiting for your OK",
+            "summary": "Wants a cheaper option.",
+            "snippet": "Can you do better",
+            "short_date": "2 Nov",
+        }
+        related = {
+            "key": "c",
+            "provider": "gmail",
+            "thread_id": "",
+            "email": "lee@client.example",
+            "who": "Lee",
+            "subject": "FW: Quote for May",
+            "date": "2026-11-03 10:00",
+            "received_ts": 3,
+            "kind": "pending",
+            "group": "needs",
+            "status": "Not handled yet",
+            "snippet": "Forwarding the same quote",
+            "short_date": "3 Nov",
+        }
+        lone = {
+            "key": "d",
+            "provider": "gmail",
+            "thread_id": "other",
+            "email": "news@shop.example",
+            "who": "Shop",
+            "subject": "Sale",
+            "date": "2026-11-03 11:00",
+            "received_ts": 4,
+            "kind": "skipped",
+            "group": "skipped",
+            "status": "Skipped",
+            "snippet": "50% off",
+            "short_date": "3 Nov",
+        }
+        rows = attach_stories([first, follow, related, lone])
+        self.assertEqual(rows[0]["story_id"], rows[1]["story_id"])
+        self.assertEqual(rows[0]["story_id"], rows[2]["story_id"])
+        self.assertNotEqual(rows[0]["story_id"], rows[3]["story_id"])
+        self.assertEqual(rows[0]["story_size"], 3)
+        self.assertTrue(rows[0]["story_open"])
+        self.assertEqual(rows[0]["story_status"], "waiting_on_me")
+        self.assertFalse(rows[3]["story_open"])
+        self.assertIsNone(story_view(lone, rows))
+        view = story_view(follow, rows)
+        self.assertEqual(view["size"], 3)
+        self.assertEqual(view["label"], "Waiting on you")
+        self.assertEqual(view["sources"], ["Price list"])
+        self.assertTrue(any(step["current"] and step["key"] == "b" for step in view["steps"]))
+        self.assertTrue(any(step["outbound"] for step in view["steps"]))
+
+    def test_one_off_unread_is_waiting_but_not_an_open_story(self):
+        from gmail_auto.story import attach_stories, story_view
+
+        row = {
+            "key": "solo",
+            "provider": "gmail",
+            "thread_id": "solo",
+            "email": "pat@example.com",
+            "who": "Pat",
+            "subject": "Lunch?",
+            "date": "2026-11-16 09:00",
+            "received_ts": 1,
+            "kind": "pending",
+            "group": "needs",
+            "status": "Not handled yet",
+            "snippet": "Free Friday?",
+            "short_date": "16 Nov",
+        }
+        attach_stories([row])
+        self.assertEqual(row["story_size"], 1)
+        self.assertFalse(row["story_open"])
+        self.assertEqual(row["story_status"], "waiting_on_me")
+        self.assertIsNone(story_view(row, [row]))
+
+    def test_bounce_notifications_are_not_one_story(self):
+        from gmail_auto.story import attach_stories, story_view
+
+        rows = [
+            {
+                "key": f"b{index}",
+                "provider": "gmail",
+                "thread_id": f"thread-{index}",
+                "email": "mailer-daemon@googlemail.com",
+                "who": "Mail Delivery Subsystem",
+                "subject": "Delivery Status Notification (Failure)",
+                "date": f"2026-11-14 15:0{index}:00",
+                "received_ts": index,
+                "kind": "skipped",
+                "group": "skipped",
+                "status": "Skipped: System or no-reply address",
+                "snippet": "Address not found",
+                "short_date": "14 Nov",
+            }
+            for index in (1, 2)
+        ]
+        attach_stories(rows)
+        self.assertNotEqual(rows[0]["story_id"], rows[1]["story_id"])
+        self.assertEqual(rows[0]["story_size"], 1)
+        self.assertFalse(rows[0]["story_open"])
+        self.assertIsNone(story_view(rows[0], rows))
 
 
 def _b64(text: str) -> str:

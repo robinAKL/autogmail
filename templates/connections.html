@@ -81,14 +81,12 @@
           <div class="inline-form">
             <input id="wa" name="whatsapp_to" inputmode="tel" placeholder="+64 21 123 4567" value="{% if whatsapp.to %}+{{ whatsapp.to }}{% endif %}">
             <button class="quiet" type="submit">Save</button>
+            {% if whatsapp.ready %}
+            <button type="submit" name="test" value="1">Send a test message</button>
+            {% endif %}
           </div>
           <p class="hint">Only this number is written to, and only messages from it are obeyed. Leave out the 0 after the country code (+64 21..., not +64 021...); it is removed for you if you type it.</p>
         </form>
-        {% if whatsapp.ready %}
-        <form method="post" action="{{ url_for('whatsapp_save') }}" data-busy="Sending…">
-          <button type="submit" name="test" value="1">Send a test message</button>
-        </form>
-        {% endif %}
       </div>
       <div class="setup">
         <h4>Setup</h4>
@@ -163,9 +161,9 @@
     <article class="card conn">
       <div class="conn-head">
         <span class="logo ai" aria-hidden="true">AI</span>
-        <div><h3>Writing model</h3>{{ state(ai.ready, 'Key set', 'Key missing') }}</div>
+        <div><h3>AI agents</h3>{{ state(ai.ready, 'Key set', 'Key missing') }}</div>
       </div>
-      <p class="muted">{% if ai.ready %}Replies and summaries are written with <code>{{ ai.model }}</code>{% if ai.gateway %} (via Vercel AI Gateway){% endif %}.{% else %}Set <code>AI_GATEWAY_API_KEY</code> or <code>OPENAI_API_KEY</code> in <code>.env</code>. Without it nothing can be drafted.{% endif %}</p>
+      <p class="muted">{% if ai.ready %}Super (decides) uses <code>{{ ai.super_model }}</code>. Worker (reads and writes) uses <code>{{ ai.model }}</code>{% if ai.gateway %} (via Vercel AI Gateway){% endif %}.{% else %}Set <code>AI_GATEWAY_API_KEY</code> or <code>OPENAI_API_KEY</code> in <code>.env</code>. Without it nothing can be drafted.{% endif %}</p>
     </article>
     <article class="card conn">
       <div class="conn-head">

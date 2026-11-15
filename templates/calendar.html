@@ -90,19 +90,23 @@
     <section class="card" id="auto">
       <h2 class="card-title">From email</h2>
       <p class="muted">A letter from a real person that names a meeting or appointment with a date still ahead can be added automatically. Notifications, newsletters and letters without a date are never added. You can also add the opened letter from the inbox.</p>
-      <form method="post" action="{{ url_for('calendar_settings_save') }}" class="stack">
+      <form id="calendar-settings" method="post" action="{{ url_for('calendar_settings_save') }}" class="stack">
         <label class="check">
           <input type="checkbox" name="auto_calendar" value="1" {% if auto_calendar %}checked{% endif %}>
           <span>Add dated meetings and appointments from mail to this calendar</span>
         </label>
-        <div class="button-row"><button type="submit">Save</button></div>
       </form>
       {% if added_from_mail %}
-      <form method="post" action="{{ url_for('calendar_remove_added') }}" class="stack" data-busy="Removing…" data-confirm="Remove {{ added_from_mail }} calendar items that were added from email automatically? They are deleted from your Gmail or Outlook calendar. Events you made yourself and invitations from other people stay.">
-        <p class="muted">{{ added_from_mail }} calendar items were added from email automatically. If they are not real meetings, remove them here. Nothing else in your calendar is touched.</p>
-        <div class="button-row"><button type="submit" class="quiet">Remove items added from email</button></div>
-      </form>
+      <p class="muted">{{ added_from_mail }} calendar items were added from email automatically. If they are not real meetings, remove them here. Nothing else in your calendar is touched.</p>
       {% endif %}
+      <div class="button-row">
+        <button type="submit" form="calendar-settings">Save</button>
+        {% if added_from_mail %}
+        <form method="post" action="{{ url_for('calendar_remove_added') }}" data-busy="Removing…" data-confirm="Remove {{ added_from_mail }} calendar items that were added from email automatically? They are deleted from your Gmail or Outlook calendar. Events you made yourself and invitations from other people stay.">
+          <button type="submit" class="quiet">Remove items added from email</button>
+        </form>
+        {% endif %}
+      </div>
     </section>
   </aside>
 </div>

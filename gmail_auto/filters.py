@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from gmail_auto.models import Mail
 
@@ -33,6 +34,16 @@ _AUTO_SUBJECTS = (
     "外出自动回复",
     "休假自动回复",
 )
+_PHISH = re.compile(
+    r"彩金|開戶|开户|領取\s*\d+|领取\s*\d+|企鵝\s*Q|企鹅\s*Q|QQ\s*[：:]\s*\d{5,}|"
+    r"免費領|免费领|不要錯過|不要错过|博彩|赌场|赌钱|中奖通知|点击领取|"
+    r"\byou(?:'ve| have) won\b|\bclaim your (?:prize|bonus)\b",
+    re.IGNORECASE,
+)
+_MARKETING_ZH = re.compile(r"退订|取消订阅|限时优惠|立即抢购|促销活动|优惠券")
+_GARBLED_TAIL = re.compile(r"(?:[\s》>]+|[|：:])[A-Za-z0-9]{16,}\s*$")
+_STALE_YEARS = 2
+
 _SENSITIVE = re.compile(
     "|".join(
         [
@@ -106,6 +117,8 @@ def classify(mail: Mail, user_email: str) -> Skip | Allow:
         return Skip("social notification", code="social")
     if "CATEGORY_FORUMS" in labels:
         return Skip("forum mail", code="forums")
+    if obvious_junk(mail):
+        return Skip("spam, phishing or junk", code="junk")
     if not mail.body.strip():
         return Skip("no text to answer", code="empty")
     return Allow(detect_language(f"{mail.subject}\n{mail.body}"))
@@ -158,6 +171,61 @@ def is_system_address(address: str) -> bool:
 
 def is_sensitive(text: str) -> bool:
     return bool(_SENSITIVE.search(text or ""))
+
+
+def rule_signals(mail: Mail) -> list[str]:
+    """Cheap observations for the screening agent. These do not decide the outcome on their own."""
+    text = f"{mail.subject or ''}\n{mail.body or mail.snippet or ''}"
+    signals = []
+    if _PHISH.search(text):
+        signals.append("gambling_or_phishing_phrasing")
+    if _MARKETING_ZH.search(text):
+        signals.append("chinese_marketing")
+    if _GARBLED_TAIL.search(mail.subject or ""):
+        signals.append("garbled_tracking_subject")
+    if _stale_header_date(mail):
+        signals.append("header_date_much_older_than_received")
+    cjk = len(re.findall(r"[\u4e00-\u9fff]", text))
+    latin = len(re.findall(r"[A-Za-z]", text))
+    if cjk >= 8 and latin >= 20 and _PHISH.search(text):
+        signals.append("mixed_language_with_scam_phrasing")
+    return signals
+
+
+def obvious_junk(mail: Mail) -> bool:
+    """High-confidence junk from rules only. Ambiguous mail is left for the screening agent."""
+    signals = set(rule_signals(mail))
+    strong = {
+        "gambling_or_phishing_phrasing",
+        "garbled_tracking_subject",
+        "header_date_much_older_than_received",
+        "mixed_language_with_scam_phrasing",
+    }
+    return bool(signals & strong)
+
+
+def _stale_header_date(mail: Mail) -> bool:
+    received = float(getattr(mail, "received_ts", 0) or 0)
+    if received <= 0:
+        return False
+    stamp = _parse_header_date(mail.date or "")
+    if stamp is None:
+        return False
+    received_dt = datetime.fromtimestamp(received, tz=timezone.utc)
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    return (received_dt - stamp).days >= 365 * _STALE_YEARS
+
+
+def _parse_header_date(value: str):
+    text = (value or "").strip()
+    match = re.match(r"(\d{4})-(\d{2})-(\d{2})", text)
+    if not match:
+        return None
+    try:
+        return datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)), tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 def reply_subject(subject: str) -> str:

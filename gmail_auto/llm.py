@@ -1,22 +1,43 @@
 """One way to call the model, shared by replies, summaries and the WhatsApp chat."""
 
 import json
+import os
 import re
 
 from gmail_auto.envfile import VERCEL_GATEWAY_URL, openai_base_url, openai_model, require_openai_key
 from gmail_auto.errors import ReplyError
 
 
-def active_model() -> str:
-    """Return the selected Settings model, or fall back to OPENAI_MODEL / gpt-4o-mini."""
+def model_ready() -> bool:
+    """True when a real API key is configured. Dummy test keys do not count."""
+    from gmail_auto.envfile import ai_gateway_key
+
+    key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    gateway = ai_gateway_key()
+    if not key and not gateway:
+        return False
+    if key.startswith("test-key") or key.startswith("sk-test") or key == "sk-custom":
+        return False
+    return True
+
+
+def active_model(role: str = "worker") -> str:
+    """Worker writes and summarises; Super decides intent and what to do next."""
     try:
         from gmail_auto.settings import load_settings
 
-        chosen = (load_settings().get("ai_model") or "").strip()
+        settings = load_settings()
+        if role == "super":
+            chosen = (settings.get("super_model") or "").strip()
+            if chosen:
+                return chosen
+            return "openai/gpt-5-mini"
+        chosen = (settings.get("ai_model") or "").strip()
         if chosen:
             return chosen
     except Exception:
-        pass
+        if role == "super":
+            return "openai/gpt-5-mini"
     return openai_model()
 
 
@@ -38,7 +59,7 @@ def _is_reasoning_model(model: str) -> bool:
     return bare.startswith("gpt-5")
 
 
-def complete(system: str, user: str, max_tokens: int = 900, temperature: float = 0.3) -> str:
+def complete(system: str, user: str, max_tokens: int = 900, temperature: float = 0.3, role: str = "worker") -> str:
     try:
         from openai import APIConnectionError, APIStatusError, AuthenticationError, OpenAI, RateLimitError
     except ImportError as exc:
@@ -48,7 +69,7 @@ def complete(system: str, user: str, max_tokens: int = 900, temperature: float =
     base_url = openai_base_url()
     if base_url:
         kwargs["base_url"] = base_url
-    model = resolve_model(active_model(), base_url)
+    model = resolve_model(active_model(role), base_url)
     client = OpenAI(**kwargs)
     req = {
         "model": model,

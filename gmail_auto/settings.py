@@ -31,6 +31,7 @@ DEFAULTS = {
     "reply_language": "en",
     "approval_mode": "smart",
     "ai_model": "",
+    "super_model": "",
     "whatsapp_to": "",
     "notify_auto_replies": True,
     "notify_important": True,
@@ -89,6 +90,9 @@ def _clean(data: dict, strict: bool = False) -> dict:
     ai_model = str(data.get("ai_model") or "").strip()
     if ai_model not in AI_MODELS:
         ai_model = DEFAULTS["ai_model"]
+    super_model = str(data.get("super_model") or "").strip()
+    if super_model not in AI_MODELS:
+        super_model = DEFAULTS["super_model"]
     phone = normalize_phone(str(data.get("whatsapp_to") or ""))
     if phone and not 8 <= len(phone) <= 15:
         if strict:
@@ -115,6 +119,7 @@ def _clean(data: dict, strict: bool = False) -> dict:
         "reply_language": language,
         "approval_mode": approval,
         "ai_model": ai_model,
+        "super_model": super_model,
         "whatsapp_to": phone,
         "notify_auto_replies": bool(data.get("notify_auto_replies")),
         "notify_important": bool(data.get("notify_important")),

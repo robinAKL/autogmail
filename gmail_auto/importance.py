@@ -137,12 +137,16 @@ def assess(mail: Mail, lookups: bool = True) -> dict:
     lookups=False skips the knowledge base and mail-history checks, so it is cheap enough to run on every
     row of the inbox list.
     """
+    from gmail_auto.filters import obvious_junk
+
     sender = f"{mail.from_email or ''} {mail.from_name or ''}".lower()
     text = f"{mail.subject or ''}\n{mail.body or mail.snippet or ''}"
     blob = f"{sender}\n{text}"
     lowered = blob.lower()
+    if obvious_junk(mail):
+        return dict(_NOT_IMPORTANT)
     notice = is_notification(mail)
-    selling = bool(_MARKETING.search(text))
+    selling = bool(_MARKETING.search(text) or re.search(r"退订|限时优惠|立即抢购|优惠券", text))
 
     # These matter even when an automated system sends them, as long as it is not selling something.
     if not selling:
