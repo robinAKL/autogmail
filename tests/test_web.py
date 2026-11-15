@@ -576,6 +576,26 @@ class WhatsAppWebhookTests(WebCase):
         self.assertIn("Test message sent", sent.get_data(as_text=True))
         self.assertIn("Mail Autopilot is connected", self.out[-1]["text"]["body"])
 
+    def test_connections_shows_last_whatsapp_webhook_status(self):
+        from gmail_auto.store import set_state
+
+        _, empty_text = self.page("/connections")
+        self.assertIn("No WhatsApp webhook received yet.", empty_text)
+
+        set_state(
+            "wa_webhook_last",
+            {
+                "status": "signature_failed",
+                "detail": "Meta X-Hub-Signature-256 mismatch or WHATSAPP_APP_SECRET unset",
+                "at": "2026-11-15 14:20",
+            },
+        )
+        _, filled_text = self.page("/connections")
+        self.assertIn("signature_failed", filled_text)
+        self.assertIn("Meta X-Hub-Signature-256 mismatch", filled_text)
+        self.assertIn("2026-11-15 14:20", filled_text)
+        self.assertNotIn("还没有", filled_text)
+
 
 class SignInTests(WebCase):
     def test_oauth_without_client_id_explains_the_missing_setting(self):

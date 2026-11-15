@@ -106,6 +106,13 @@
             {% if whatsapp.needs_tunnel %}<span class="hint">This address is only reachable on this computer. To answer from your phone, run a tunnel (for example ngrok) to port 8765 and use its https address, or use the hosted site.</span>{% endif %}
             {% if whatsapp.provider != 'twilio' %}<span class="hint">Meta also needs <code>WHATSAPP_VERIFY_TOKEN</code>{% if whatsapp.verify_set %} ✓{% endif %} and <code>WHATSAPP_APP_SECRET</code>{% if whatsapp.secret_set %} ✓{% endif %}.</span>{% endif %}
           </li>
+          <li class="{% if whatsapp.last_webhook and whatsapp.last_webhook.status == 'ok' %}done{% endif %}">
+            <b>Last webhook</b>
+            {% if whatsapp.last_webhook and whatsapp.last_webhook.status %}
+            <code>{{ whatsapp.last_webhook.status }}</code>{% if whatsapp.last_webhook.at %} <span class="hint">{{ whatsapp.last_webhook.at }}</span>{% endif %}
+            {% if whatsapp.last_webhook.detail %}<span class="hint">{{ whatsapp.last_webhook.detail }}</span>{% endif %}
+            {% else %}No WhatsApp webhook received yet.{% endif %}
+          </li>
         </ol>
       </div>
     </div>
