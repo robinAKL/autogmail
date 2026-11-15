@@ -10,6 +10,7 @@ _BRIEF_SYSTEM = """You are the owner's mail clerk. Read the letter and extract a
 Do not decide whether to reply, ignore, or ask the owner. Do not write a reply.
 Return JSON only:
 {"summary":"5-8 short lines of what the letter is","facts":["sender=...","asks=...","deadline=..."],"quotes":["short phrases copied from the letter"],"spam_cues":["gambling bonus","QQ id","old date", ...]}
+facts.asks must be what the SENDER is requesting of the owner. FAQ headings in a notice ("How can I see the result?") are not asks. If the letter tells the owner a process is complete and how to look it up, set asks=none (status notice).
 """
 _KEEP = 80
 

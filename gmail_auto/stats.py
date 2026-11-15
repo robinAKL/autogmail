@@ -21,6 +21,7 @@ SKIP_LABELS = {
     "self": "From yourself",
     "empty": "No text to answer",
     "no_reply_needed": "No reply needed",
+    "notification": "Status notice, no reply needed",
     "junk": "Spam, ads or phishing",
     "phishing": "Phishing or scam",
     "ad": "Advertisement",

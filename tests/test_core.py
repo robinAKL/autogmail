@@ -8,7 +8,7 @@ from email.header import Header
 from email.policy import default
 
 from gmail_auto.errors import ConfigError, ProfileError, ReplyError
-from gmail_auto.filters import Allow, Skip, classify, detect_language, is_system_address, same_mailbox
+from gmail_auto.filters import Allow, Skip, classify, detect_language, is_status_notice, is_system_address, same_mailbox
 from gmail_auto.generator import clean_reply, ensure_safe, reply_language
 from gmail_auto.gmail_client import build_send_body, find_client_file, load_credentials, parse_message
 from gmail_auto.models import Draft, Mail
@@ -165,6 +165,41 @@ class FilterTests(unittest.TestCase):
         self.assertTrue(secret.sensitive)
         code = classify(sample(subject="验证码", body="123456"), "me@example.com")
         self.assertTrue(code.sensitive)
+
+    def test_status_notice_with_faq_copy_is_not_a_question(self):
+        iqa = sample(
+            from_name="NZQA QRS",
+            from_email="qrsadmin@nzqa.govt.nz",
+            subject="IQA Application 164200 – IQA EVALUATION COMPLETE",
+            body=(
+                "Dear Bin E, the evaluation of your International Qualification Assessment "
+                "(IQA) application 164200 is complete.\n\n"
+                "How can I see the result of my IQA?\n"
+                "You can view the result of your IQA by logging into the online application portal."
+            ),
+        )
+        self.assertTrue(is_status_notice(iqa))
+        decision = classify(iqa, "ebin198351@gmail.com")
+        self.assertIsInstance(decision, Skip)
+        self.assertEqual(decision.code, "notification")
+
+        receipt = sample(
+            from_email="qrsadmin@nzqa.govt.nz",
+            subject="IQA Application 164200 – Receipt Confirmation",
+            body="This email confirms we have received your application. Log into the online application portal to check progress.",
+        )
+        self.assertEqual(classify(receipt, "me@example.com").code, "notification")
+
+        client = sample(
+            from_email="jane@gmail.com",
+            subject="How can I see my IQA result?",
+            body="Hi Robin, how can I see the result of my IQA? I don't know how to log into the portal.",
+        )
+        self.assertFalse(is_status_notice(client))
+        self.assertIsInstance(classify(client, "me@example.com"), Allow)
+
+        meeting = sample(subject="Can we meet Friday?", body="Are you free Friday?")
+        self.assertIsInstance(classify(meeting, "me@example.com"), Allow)
 
 
 class SafetyTests(unittest.TestCase):
@@ -340,6 +375,42 @@ class RunnerTests(TempHome):
             report = run_once(gmail=fake2, generate=lambda *_: Draft(action="reply", reply="Friday works.", reason="Routine."))
         self.assertEqual(report.asked, 1)
         self.assertEqual(fake2.sent, [])
+
+    def test_iqa_status_notice_is_skipped_without_drafting(self):
+        from gmail_auto.screen import screen_mail
+        from gmail_auto.store import get_processed
+
+        write_test_profile()
+        set_live(True)
+        mail = sample(
+            id="iqa1",
+            from_email="qrsadmin@nzqa.govt.nz",
+            subject="IQA Application 164200 – IQA EVALUATION COMPLETE",
+            body=(
+                "The evaluation of your IQA application 164200 is complete.\n"
+                "How can I see the result of my IQA?\n"
+                "You can view the result by logging into the online application portal."
+            ),
+        )
+        generated = []
+
+        def generate(*_args):
+            generated.append(True)
+            return Draft(
+                action="reply",
+                reply="Thanks for your email. You can view the result by logging into the online application portal.",
+                reason="Routine.",
+            )
+
+        fake = FakeGmail([mail])
+        report = run_once(gmail=fake, generate=generate)
+        self.assertEqual(report.skipped, 1)
+        self.assertEqual(generated, [])
+        self.assertEqual(fake.sent, [])
+        self.assertEqual(get_processed("iqa1")["skip_code"], "notification")
+        verdict = screen_mail(mail, {"summary": "The sender wants to know how to see the result."})
+        self.assertEqual(verdict.disposition, "ignore")
+        self.assertEqual(verdict.code, "notification")
 
     def test_super_and_worker_use_separate_models(self):
         from gmail_auto.llm import active_model

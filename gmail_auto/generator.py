@@ -24,7 +24,7 @@ Decide one action:
 - "ask": the owner must confirm before this is sent. Choose it when the reply would commit to a date, time, meeting,
   price, payment, delivery or decision; when a fact you need is missing; when a rule says to ask; when the subject is
   sensitive (legal, contract, complaint, HR, money, health); or whenever you are not sure. Still write your best draft.
-- "skip": the letter needs no answer (spam, phishing, ads, a notification, an FYI, a thank-you with nothing to add). Do not write a reply for junk.
+- "skip": the letter needs no answer (spam, phishing, ads, a notification, an FYI, a thank-you with nothing to add, a status update, "evaluation complete", a receipt, or FAQ / "how to log in" copy written for the owner). Do not email the sender back their own instructions. Do not write a reply for junk.
 
 Return JSON only, no other text:
 {"action": "reply" | "ask" | "skip", "reason": "one short sentence in English", "summary": "one sentence in English saying what the sender wants", "reply": "the reply body, or empty for skip"}"""
@@ -83,6 +83,11 @@ def draft_reply(mail: Mail, profile: dict, detected: str) -> Draft:
             summary=_line(data.get("summary")),
         )
     draft.sources = context["sources"]
+    if draft.action != "skip" and _echoes_notice_help(mail, draft.reply):
+        draft.action = "skip"
+        draft.reason = draft.reason or "The letter already told the owner how to look this up."
+        draft.reply = ""
+        return draft
     if draft.action == "skip":
         draft.reply = ""
         return draft
@@ -193,6 +198,23 @@ def _context(profile: dict, mail: Mail | None, knowledge: str = "") -> str:
     if mail is not None:
         parts.extend([mail.from_email, mail.reply_email, mail.subject, mail.body])
     return "\n".join(parts)
+
+
+_HELP_ECHO = re.compile(
+    r"(?i)("
+    r"log(?:ging)?\s+into (?:the )?(?:online )?(?:application )?portal|"
+    r"view (?:the |your )result of your"
+    r")"
+)
+
+
+def _echoes_notice_help(mail: Mail, reply: str) -> bool:
+    """True when a draft just sends the sender's own portal/FAQ instructions back to them."""
+    from gmail_auto.filters import is_status_notice
+
+    if not (reply or "").strip() or not is_status_notice(mail):
+        return False
+    return bool(_HELP_ECHO.search(reply))
 
 
 def _line(value) -> str:

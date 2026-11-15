@@ -121,6 +121,8 @@ def classify(mail: Mail, user_email: str) -> Skip | Allow:
         return Skip("spam, phishing or junk", code="junk")
     if not mail.body.strip():
         return Skip("no text to answer", code="empty")
+    if is_status_notice(mail):
+        return Skip("status notification, no reply needed", code="notification")
     return Allow(detect_language(f"{mail.subject}\n{mail.body}"))
 
 
@@ -153,6 +155,46 @@ def mailbox_key(address: str) -> tuple[str, str] | None:
     if not local or "." not in domain:
         return None
     return local, domain
+
+
+_STATUS_SUBJECT = re.compile(
+    r"(?i)("
+    r"evaluation complete|assessment complete|"
+    r"receipt confirmation|"
+    r"application.{0,60}\b(complete|received|confirmation)|"
+    r"\byour (?:application|assessment|request) (?:has been|is)\b"
+    r")"
+)
+_NOTICE_HELP = re.compile(
+    r"(?i)("
+    r"log(?:\s*in|\s*into)? (?:to )?(?:the )?(?:online )?(?:application )?portal|"
+    r"view (?:the |your )(?:result|ers|assessment)|"
+    r"this (?:email|message) (?:is to |confirms )"
+    r")"
+)
+_FAQ_HEADING = re.compile(r"(?i)\bhow (?:can|do) i (?:see|view|check|access|log)\b")
+_ASKS_OWNER = re.compile(
+    r"(?i)\b("
+    r"could you|can you please|would you be able|"
+    r"are you (?:free|available)|what do you think|"
+    r"please (?:send|confirm|advise|review|reply)"
+    r")\b"
+)
+
+
+def is_status_notice(mail: Mail) -> bool:
+    """True when an office is telling the owner a process finished, including FAQ copy for them.
+
+    Headings like "How can I see the result?" in that letter are instructions to the owner,
+    not a question the sender asked. A person writing to the owner with a real request is left through.
+    """
+    subject = mail.subject or ""
+    body = mail.body or mail.snippet or ""
+    if not _STATUS_SUBJECT.search(subject):
+        return False
+    if not (_NOTICE_HELP.search(body) or _FAQ_HEADING.search(body)):
+        return False
+    return not _ASKS_OWNER.search(body)
 
 
 def is_system_address(address: str) -> bool:
