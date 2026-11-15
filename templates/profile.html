@@ -96,6 +96,29 @@
   </form>
 </section>
 
+<section class="card" id="model">
+  <h2 class="card-title">Writing model</h2>
+  <p class="muted">
+    {% if ai_gateway %}Using Vercel AI Gateway (<code>AI_GATEWAY_API_KEY</code> set). All models below are available.
+    {% elif ai_ready %}Using OpenAI direct (<code>OPENAI_API_KEY</code> set). Set <code>AI_GATEWAY_API_KEY</code> to also use Gemini and Claude.
+    {% else %}Set <code>AI_GATEWAY_API_KEY</code> (recommended) or <code>OPENAI_API_KEY</code> in your environment variables.{% endif %}
+  </p>
+  <form method="post" action="{{ url_for('model_save') }}" class="stack">
+    <label>
+      Model (active: <code>{{ ai_active }}</code>)
+      <select name="ai_model">
+        {% for key, label in ai_models.items() %}
+        <option value="{{ key }}" {% if settings.ai_model == key %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <div class="button-row">
+      <button type="submit">Save model</button>
+      <button type="submit" class="quiet" name="test" value="1">Test model</button>
+    </div>
+  </form>
+</section>
+
 <section class="card" id="cleanup">
   <h2 class="card-title">Inbox cleanup</h2>
   <p class="muted">One-click cleanup follows the rules you save here. Matching letters are deleted to Trash. Keep-list mail is never touched, even if a clean rule would match.</p>

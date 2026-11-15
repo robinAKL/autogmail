@@ -11,8 +11,9 @@ from markupsafe import Markup
 from gmail_auto import approvals, knowledge, microsoft, sharepoint, stats, whatsapp
 from gmail_auto.console import say
 from gmail_auto.accounts import finish_verification, gmail_status, mark_gmail_authorized, start_verification
-from gmail_auto.envfile import has_openai_key, openai_model
-from gmail_auto.errors import ConfigError, NotConnected, named_error
+from gmail_auto.envfile import has_openai_key, using_gateway
+from gmail_auto.errors import ConfigError, NotConnected, ReplyError, named_error
+from gmail_auto.llm import active_model, complete
 from gmail_auto.extractors import SUPPORTED, extract_text
 from gmail_auto.filters import Skip, classify
 from gmail_auto.gmail_client import SCOPES, web_client_config
@@ -22,7 +23,7 @@ from gmail_auto.mailview import FRAME_POLICY, document
 from gmail_auto.paths import CODE_ROOT, atomic_write, data_dir, root
 from gmail_auto.profile_store import load_profile, profile_from_form, profile_is_placeholder, save_profile
 from gmail_auto.runner import check_interval_seconds, format_report, run_once, switch_live
-from gmail_auto.settings import APPROVALS, LANGUAGES, load_settings, save_settings
+from gmail_auto.settings import AI_MODELS, APPROVALS, LANGUAGES, load_settings, save_settings
 from gmail_auto.importance import QUIET as PING_QUIET, RULES as PING_RULES
 from gmail_auto.storage import persistent
 from gmail_auto.token_store import storage_hint, storage_kind, storage_ready
@@ -876,6 +877,24 @@ def configure_app(app: Flask) -> None:
             flash(str(exc), "error")
         return redirect(url_for("profile_page") + "#replies")
 
+    @app.post("/settings/model")
+    def model_save():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        try:
+            save_settings({"ai_model": request.form.get("ai_model", "")})
+            if request.form.get("test") == "1":
+                reply = complete("Reply with OK.", "Say OK.", max_tokens=16, temperature=0.2)
+                if not reply.strip():
+                    raise ReplyError("The model returned an empty reply. Try another model or retry.")
+                flash(f"Model {active_model()} responded: {reply.strip()[:80]}")
+            else:
+                flash("Model saved.")
+        except (ConfigError, ReplyError) as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("profile_page") + "#model")
+
     @app.post("/settings/cleanup-rules")
     def cleanup_rules_save():
         blocked = _login_required()
@@ -1596,7 +1615,7 @@ def _connections_context() -> dict:
             "last_webhook": get_state("wa_webhook_last", {}),
         },
         "storage": {"persistent": persistent(), "kind": storage_kind() or "This computer (data folder)", "hint": "" if storage_ready() else storage_hint()},
-        "ai": {"ready": has_openai_key(), "model": openai_model()},
+        "ai": {"ready": has_openai_key(), "model": active_model(), "gateway": using_gateway()},
         "local": local,
     }
 
@@ -1678,6 +1697,10 @@ def _profile_context(form=None) -> dict:
         "cleanup_limit": LIMIT,
         "ping_rules": PING_RULES,
         "ping_quiet": PING_QUIET,
+        "ai_models": AI_MODELS,
+        "ai_active": active_model(),
+        "ai_gateway": using_gateway(),
+        "ai_ready": has_openai_key(),
     }
     if form is not None:
         return {**shared, "profile": _profile_view(form=form), "placeholder": False, "error": ""}

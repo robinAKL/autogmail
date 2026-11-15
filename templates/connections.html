@@ -165,7 +165,7 @@
         <span class="logo ai" aria-hidden="true">AI</span>
         <div><h3>Writing model</h3>{{ state(ai.ready, 'Key set', 'Key missing') }}</div>
       </div>
-      <p class="muted">{% if ai.ready %}Replies and summaries are written with <code>{{ ai.model }}</code>.{% else %}Set <code>OPENAI_API_KEY</code> in <code>.env</code>. Without it nothing can be drafted.{% endif %}</p>
+      <p class="muted">{% if ai.ready %}Replies and summaries are written with <code>{{ ai.model }}</code>{% if ai.gateway %} (via Vercel AI Gateway){% endif %}.{% else %}Set <code>AI_GATEWAY_API_KEY</code> or <code>OPENAI_API_KEY</code> in <code>.env</code>. Without it nothing can be drafted.{% endif %}</p>
     </article>
     <article class="card conn">
       <div class="conn-head">

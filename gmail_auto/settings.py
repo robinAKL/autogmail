@@ -18,9 +18,19 @@ APPROVALS = {
     "always": "Ask every time",
     "never": "Send automatically",
 }
+AI_MODELS = {
+    "": "Default (from environment: OPENAI_MODEL / gpt-4o-mini)",
+    "openai/gpt-5-mini": "OpenAI GPT-5 mini ($0.25 / $2.00 per 1M tokens)",
+    "openai/gpt-5-nano": "OpenAI GPT-5 nano ($0.05 / $0.40 per 1M tokens)",
+    "openai/gpt-4o-mini": "OpenAI GPT-4o mini ($0.15 / $0.60 per 1M tokens)",
+    "google/gemini-2.5-flash": "Google Gemini 2.5 Flash ($0.30 / $2.50 per 1M tokens)",
+    "google/gemini-2.5-flash-lite": "Google Gemini 2.5 Flash-Lite ($0.10 / $0.40 per 1M tokens)",
+    "anthropic/claude-haiku-5.5": "Anthropic Claude Haiku 5.5 ($0.10 / $0.50 per 1M tokens)",
+}
 DEFAULTS = {
     "reply_language": "en",
     "approval_mode": "smart",
+    "ai_model": "",
     "whatsapp_to": "",
     "notify_auto_replies": True,
     "notify_important": True,
@@ -66,6 +76,9 @@ def _clean(data: dict, strict: bool = False) -> dict:
     approval = data.get("approval_mode")
     if approval not in APPROVALS:
         approval = DEFAULTS["approval_mode"]
+    ai_model = str(data.get("ai_model") or "").strip()
+    if ai_model not in AI_MODELS:
+        ai_model = DEFAULTS["ai_model"]
     phone = normalize_phone(str(data.get("whatsapp_to") or ""))
     if phone and not 8 <= len(phone) <= 15:
         if strict:
@@ -91,6 +104,7 @@ def _clean(data: dict, strict: bool = False) -> dict:
     return {
         "reply_language": language,
         "approval_mode": approval,
+        "ai_model": ai_model,
         "whatsapp_to": phone,
         "notify_auto_replies": bool(data.get("notify_auto_replies")),
         "notify_important": bool(data.get("notify_important")),

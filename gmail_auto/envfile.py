@@ -14,16 +14,31 @@ def load_env() -> None:
         load_dotenv(root() / ".env", override=True)
 
 
+VERCEL_GATEWAY_URL = "https://ai-gateway.vercel.sh/v1"
+
+
+def ai_gateway_key() -> str:
+    return os.getenv("AI_GATEWAY_API_KEY", "").strip()
+
+
+def using_gateway() -> bool:
+    return bool(ai_gateway_key()) and not os.getenv("OPENAI_BASE_URL", "").strip()
+
+
 def require_openai_key() -> str:
     load_env()
-    key = os.getenv("OPENAI_API_KEY", "").strip()
+    explicit_url = os.getenv("OPENAI_BASE_URL", "").strip()
+    if explicit_url:
+        key = os.getenv("OPENAI_API_KEY", "").strip() or ai_gateway_key()
+    else:
+        key = ai_gateway_key() or os.getenv("OPENAI_API_KEY", "").strip()
     if not key:
-        raise ConfigError("OPENAI_API_KEY was not found. Copy .env.example to .env and add your own key.")
+        raise ConfigError("Set AI_GATEWAY_API_KEY or OPENAI_API_KEY in .env.")
     return key
 
 
 def has_openai_key() -> bool:
-    return bool(os.getenv("OPENAI_API_KEY", "").strip())
+    return bool(ai_gateway_key() or os.getenv("OPENAI_API_KEY", "").strip())
 
 
 def openai_model() -> str:
@@ -31,4 +46,9 @@ def openai_model() -> str:
 
 
 def openai_base_url() -> str:
-    return os.getenv("OPENAI_BASE_URL", "").strip()
+    explicit = os.getenv("OPENAI_BASE_URL", "").strip()
+    if explicit:
+        return explicit
+    if ai_gateway_key():
+        return VERCEL_GATEWAY_URL
+    return ""

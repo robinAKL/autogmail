@@ -694,3 +694,177 @@ class OnceModeTests(unittest.TestCase):
         code = main.main(["--once"])
         self.assertEqual(code, 1)
         self.assertEqual((CODE_ROOT / "profile.json").read_text(encoding="utf-8"), before)
+
+
+class ModelSettingsTests(WebCase):
+    def setUp(self):
+        super().setUp()
+        self.env_saved = {
+            k: os.environ.pop(k, None)
+            for k in ("AI_GATEWAY_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL")
+        }
+
+    def tearDown(self):
+        for k, v in self.env_saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        super().tearDown()
+
+    def test_gateway_key_uses_vercel_base_url_and_selected_model(self):
+        from gmail_auto.llm import complete
+
+        os.environ["AI_GATEWAY_API_KEY"] = "gw-test-key"
+        save_settings({"ai_model": "google/gemini-2.5-flash"})
+
+        captured = {}
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                captured["create"] = kwargs
+                msg = type("Msg", (), {"content": "OK"})()
+                choice = type("Choice", (), {"message": msg})()
+                return type("Resp", (), {"choices": [choice]})()
+
+        class _FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured["init"] = kwargs
+                self.chat = type("Chat", (), {"completions": _FakeCompletions()})()
+
+        with patch("openai.OpenAI", _FakeOpenAI):
+            out = complete("sys", "usr", max_tokens=16, temperature=0.2)
+
+        self.assertEqual(out, "OK")
+        self.assertEqual(captured["init"]["api_key"], "gw-test-key")
+        self.assertEqual(captured["init"]["base_url"], "https://ai-gateway.vercel.sh/v1")
+        self.assertEqual(captured["create"]["model"], "google/gemini-2.5-flash")
+
+        _, conn_text = self.page("/connections")
+        self.assertIn("google/gemini-2.5-flash", conn_text)
+        self.assertIn("via Vercel AI Gateway", conn_text)
+
+    def test_direct_openai_strips_openai_prefix_and_rejects_other_vendors(self):
+        from gmail_auto.errors import ReplyError
+        from gmail_auto.llm import complete
+
+        os.environ["OPENAI_API_KEY"] = "sk-test-direct"
+        save_settings({"ai_model": "openai/gpt-4o-mini"})
+
+        captured = {}
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                captured["create"] = kwargs
+                msg = type("Msg", (), {"content": "OK"})()
+                choice = type("Choice", (), {"message": msg})()
+                return type("Resp", (), {"choices": [choice]})()
+
+        class _FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured["init"] = kwargs
+                self.chat = type("Chat", (), {"completions": _FakeCompletions()})()
+
+        with patch("openai.OpenAI", _FakeOpenAI):
+            complete("sys", "usr")
+
+        self.assertNotIn("base_url", captured["init"])
+        self.assertEqual(captured["create"]["model"], "gpt-4o-mini")
+
+        save_settings({"ai_model": "anthropic/claude-haiku-5.5"})
+        with self.assertRaises(ReplyError) as ctx:
+            complete("sys", "usr")
+        self.assertIn("AI_GATEWAY_API_KEY", str(ctx.exception))
+
+    def test_invalid_ai_model_is_dropped_and_test_model_button_works(self):
+        saved = save_settings({"ai_model": "not-a-real/model"})
+        self.assertEqual(saved["ai_model"], "")
+
+        os.environ["AI_GATEWAY_API_KEY"] = "gw-test-key"
+        with patch("gmail_auto.web.complete", return_value="OK") as mocked:
+            resp = self.client.post(
+                "/settings/model",
+                data={"ai_model": "anthropic/claude-haiku-5.5", "test": "1"},
+                follow_redirects=True,
+            )
+        text = resp.get_data(as_text=True)
+        self.assertEqual(resp.status_code, 200)
+        mocked.assert_called_once()
+        self.assertIn("Model anthropic/claude-haiku-5.5 responded: OK", text)
+        self.assertEqual(load_settings()["ai_model"], "anthropic/claude-haiku-5.5")
+
+    def test_gateway_default_model_reasoning_params_and_explicit_base_url(self):
+        from gmail_auto.llm import complete
+
+        captured = []
+
+        class _FakeCompletions:
+            def create(self, **kwargs):
+                captured[-1]["create"] = kwargs
+                msg = type("Msg", (), {"content": "OK"})()
+                choice = type("Choice", (), {"message": msg})()
+                return type("Resp", (), {"choices": [choice]})()
+
+        class _FakeOpenAI:
+            def __init__(self, **kwargs):
+                captured.append({"init": kwargs})
+                self.chat = type("Chat", (), {"completions": _FakeCompletions()})()
+
+        os.environ["AI_GATEWAY_API_KEY"] = "gw-test-key"
+        save_settings({"ai_model": ""})
+        with patch("openai.OpenAI", _FakeOpenAI):
+            complete("sys", "usr", max_tokens=16, temperature=0.2)
+        self.assertEqual(captured[-1]["init"]["base_url"], "https://ai-gateway.vercel.sh/v1")
+        self.assertEqual(captured[-1]["create"]["model"], "openai/gpt-4o-mini")
+        self.assertEqual(captured[-1]["create"]["max_tokens"], 16)
+        self.assertEqual(captured[-1]["create"]["temperature"], 0.2)
+
+        save_settings({"ai_model": "openai/gpt-5-mini"})
+        with patch("openai.OpenAI", _FakeOpenAI):
+            complete("sys", "usr", max_tokens=16, temperature=0.2)
+        self.assertEqual(captured[-1]["create"]["model"], "openai/gpt-5-mini")
+        self.assertEqual(captured[-1]["create"]["reasoning_effort"], "low")
+        self.assertEqual(captured[-1]["create"]["max_completion_tokens"], 2000)
+        self.assertNotIn("max_tokens", captured[-1]["create"])
+        self.assertNotIn("temperature", captured[-1]["create"])
+
+        os.environ["OPENAI_API_KEY"] = "sk-custom"
+        os.environ["OPENAI_BASE_URL"] = "https://custom.example/v1"
+        save_settings({"ai_model": ""})
+        with patch("openai.OpenAI", _FakeOpenAI):
+            complete("sys", "usr", max_tokens=16, temperature=0.2)
+        self.assertEqual(captured[-1]["init"]["api_key"], "sk-custom")
+        self.assertEqual(captured[-1]["init"]["base_url"], "https://custom.example/v1")
+        self.assertEqual(captured[-1]["create"]["model"], "gpt-4o-mini")
+
+    def test_empty_reply_raises_and_test_model_reports_failure(self):
+        from gmail_auto.errors import ReplyError
+        from gmail_auto.llm import complete
+
+        class _EmptyCompletions:
+            def create(self, **kwargs):
+                msg = type("Msg", (), {"content": "   "})()
+                choice = type("Choice", (), {"message": msg})()
+                return type("Resp", (), {"choices": [choice]})()
+
+        class _EmptyOpenAI:
+            def __init__(self, **kwargs):
+                self.chat = type("Chat", (), {"completions": _EmptyCompletions()})()
+
+        os.environ["AI_GATEWAY_API_KEY"] = "gw-test-key"
+        save_settings({"ai_model": "openai/gpt-5-mini"})
+        with patch("openai.OpenAI", _EmptyOpenAI):
+            with self.assertRaises(ReplyError) as ctx:
+                complete("sys", "usr")
+        self.assertIn("empty reply", str(ctx.exception))
+
+        with patch("openai.OpenAI", _EmptyOpenAI):
+            resp = self.client.post(
+                "/settings/model",
+                data={"ai_model": "openai/gpt-5-mini", "test": "1"},
+                follow_redirects=True,
+            )
+        text = resp.get_data(as_text=True)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("empty reply", text)
+        self.assertNotIn("responded:", text)
