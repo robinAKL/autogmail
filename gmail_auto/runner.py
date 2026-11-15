@@ -108,8 +108,61 @@ def format_report(report: RunReport) -> str:
     return text
 
 
-def send_daily_digest(now: datetime | None = None) -> bool:
-    """Once a day, after the chosen hour, tell the owner on WhatsApp how yesterday went."""
+_DIGEST_UNREAD_LIMIT = 100
+_DIGEST_LINE_LIMIT = 15
+
+
+def _one_line(text: str, limit: int = 110) -> str:
+    cleaned = " ".join((text or "").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3].rstrip() + "..."
+
+
+def _digest_summary(mail: Mail) -> str:
+    record = get_processed(mail.key) or {}
+    saved = (record.get("summary") or "").strip()
+    if saved:
+        return _one_line(saved)
+    subject = short_subject(mail.subject or "")
+    snippet = _one_line(mail.snippet or mail.body or "", limit=80)
+    if subject and snippet and snippet.lower() not in subject.lower():
+        return _one_line(f"{subject} — {snippet}")
+    return _one_line(subject or snippet or "Needs your attention")
+
+
+def _collect_digest_items(clients: list) -> list[str]:
+    from gmail_auto.importance import assess
+
+    unread: list[Mail] = []
+    for client in clients:
+        try:
+            unread.extend(client.list_unread(_DIGEST_UNREAD_LIMIT))
+        except ConfigError:
+            continue
+    unread.sort(key=lambda m: float(getattr(m, "received_ts", 0) or 0), reverse=True)
+    items: list[str] = []
+    for mail in unread[:_DIGEST_UNREAD_LIMIT]:
+        if not assess(mail).get("important"):
+            continue
+        sender = (mail.from_name or mail.from_email or "Unknown").strip()
+        items.append(f"- {sender}: {_digest_summary(mail)}")
+    return items
+
+
+def _digest_message(clients: list) -> str:
+    items = _collect_digest_items(clients)
+    if not items:
+        return "Good morning. No important unread emails need your attention today."
+    shown = items[:_DIGEST_LINE_LIMIT]
+    body = "Good morning. Important unread emails:\n" + "\n".join(shown)
+    if len(items) > len(shown):
+        body += f"\n...and {len(items) - len(shown)} more."
+    return body
+
+
+def send_daily_digest(now: datetime | None = None, clients: list | None = None) -> bool:
+    """Once a day, after the chosen hour, send a WhatsApp digest of important unread mail."""
     from gmail_auto import whatsapp
 
     now = now or datetime.now()
@@ -119,9 +172,16 @@ def send_daily_digest(now: datetime | None = None) -> bool:
     today = date.today().isoformat()
     if get_state("digest_day") == today:
         return False
+    if clients is None:
+        try:
+            from gmail_auto.mailboxes import connected_clients
+
+            clients, _ = connected_clients()
+        except (ConfigError, NotConnected):
+            clients = []
     set_state("digest_day", today)
     try:
-        whatsapp.send_text("Good morning. " + stats.digest_text())
+        whatsapp.send_text(_digest_message(clients))
     except ConfigError:
         return False
     return True
@@ -203,7 +263,7 @@ def _run_locked(gmail=None, generate=None) -> RunReport:
         pass
     report.lines = report.lines[:40]
     try:
-        send_daily_digest()
+        send_daily_digest(clients=clients)
     except ConfigError:
         pass
     return report
@@ -331,6 +391,8 @@ def _maybe_notice(mail: Mail, decision, settings: dict, report: RunReport) -> st
         return ""
     tag = _tag(mail)
     if not tag.get("important"):
+        return ""
+    if tag.get("kind") not in settings.get("notify_kinds", []):
         return ""
     from gmail_auto import whatsapp
 

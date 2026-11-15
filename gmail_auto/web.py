@@ -23,9 +23,10 @@ from gmail_auto.paths import CODE_ROOT, atomic_write, data_dir, root
 from gmail_auto.profile_store import load_profile, profile_from_form, profile_is_placeholder, save_profile
 from gmail_auto.runner import check_interval_seconds, format_report, run_once, switch_live
 from gmail_auto.settings import APPROVALS, LANGUAGES, load_settings, save_settings
+from gmail_auto.importance import QUIET as PING_QUIET, RULES as PING_RULES
 from gmail_auto.storage import persistent
 from gmail_auto.token_store import storage_hint, storage_kind, storage_ready
-from gmail_auto.store import is_live, list_processed, load_last_run, load_processed
+from gmail_auto.store import get_state, is_live, list_processed, load_last_run, load_processed, now_text, set_state
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -329,7 +330,29 @@ def configure_app(app: Flask) -> None:
             errors=errors,
             need_reconnect=need_reconnect,
             auto_calendar=load_settings().get("auto_calendar", True),
+            added_from_mail=calendars.added_from_mail(),
         )
+
+    @app.post("/calendar/remove-added")
+    def calendar_remove_added():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import calendars
+
+        try:
+            result = calendars.remove_added_from_mail()
+        except ConfigError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("calendar_page") + "#auto")
+        if result["removed"]:
+            more = f" {result['left']} still to go — press the button again." if result["left"] else ""
+            flash(f"Removed {result['removed']} calendar items that were added from email.{more}")
+        if result["failed"]:
+            flash(f"{result['failed']} could not be removed: {result['error']}", "error")
+        if not result["removed"] and not result["failed"]:
+            flash("Nothing added from email is left to remove.")
+        return redirect(url_for("calendar_page") + "#auto")
 
     @app.post("/calendar/settings")
     def calendar_settings_save():
@@ -760,14 +783,17 @@ def configure_app(app: Flask) -> None:
         if request.method == "GET":
             if request.args.get("hub.mode") == "subscribe" and whatsapp.verify_token_ok(request.args.get("hub.verify_token", "")):
                 return Response(request.args.get("hub.challenge", ""), mimetype="text/plain")
+            set_state("wa_webhook_last", {"status": "verify_failed", "detail": "hub.verify_token mismatch or WHATSAPP_VERIFY_TOKEN unset", "at": now_text()})
             abort(403)
         twilio = bool(request.headers.get("X-Twilio-Signature"))
         if twilio:
             if not whatsapp.twilio_signature_ok(_external_url(), request.form, request.headers.get("X-Twilio-Signature", "")):
+                set_state("wa_webhook_last", {"status": "signature_failed", "detail": "Twilio signature mismatch", "at": now_text()})
                 abort(403)
             messages = whatsapp.parse_twilio(request.form)
         else:
             if not whatsapp.meta_signature_ok(request.get_data(), request.headers.get("X-Hub-Signature-256", "")):
+                set_state("wa_webhook_last", {"status": "signature_failed", "detail": "Meta X-Hub-Signature-256 mismatch or WHATSAPP_APP_SECRET unset", "at": now_text()})
                 abort(403)
             payload = request.get_json(silent=True)
             messages = whatsapp.parse_meta(payload if isinstance(payload, dict) else {})
@@ -775,6 +801,7 @@ def configure_app(app: Flask) -> None:
 
         for incoming in messages:
             if not whatsapp.is_owner(incoming.sender):
+                set_state("wa_webhook_last", {"status": "ignored_non_owner", "detail": "Sender did not match configured whatsapp_to / WHATSAPP_TO", "at": now_text()})
                 continue
             try:
                 if assistant.seen_before(incoming.message_id):
@@ -782,7 +809,9 @@ def configure_app(app: Flask) -> None:
                 answer = assistant.handle(incoming)
                 if answer:
                     whatsapp.send_text(answer)
-            except ConfigError:
+                set_state("wa_webhook_last", {"status": "ok", "detail": "", "at": now_text()})
+            except ConfigError as exc:
+                set_state("wa_webhook_last", {"status": "send_failed", "detail": str(exc), "at": now_text()})
                 continue
         _forget_inbox()
         if twilio:
@@ -834,6 +863,7 @@ def configure_app(app: Flask) -> None:
                     "reply_language": request.form.get("reply_language", ""),
                     "notify_auto_replies": request.form.get("notify_auto_replies") == "1",
                     "notify_important": request.form.get("notify_important") == "1",
+                    "notify_kinds": request.form.getlist("notify_kinds"),
                     "notify_calendar": request.form.get("notify_calendar") == "1",
                     "daily_digest": request.form.get("daily_digest") == "1",
                     "digest_hour": request.form.get("digest_hour", "8"),
@@ -1516,6 +1546,7 @@ def _connections_context() -> dict:
             "needs_tunnel": local,
             "verify_set": bool(os.getenv("WHATSAPP_VERIFY_TOKEN", "").strip()),
             "secret_set": bool(os.getenv("WHATSAPP_APP_SECRET", "").strip()),
+            "last_webhook": get_state("wa_webhook_last", {}),
         },
         "storage": {"persistent": persistent(), "kind": storage_kind() or "This computer (data folder)", "hint": "" if storage_ready() else storage_hint()},
         "ai": {"ready": has_openai_key(), "model": openai_model()},
@@ -1598,6 +1629,8 @@ def _profile_context(form=None) -> dict:
         "mode": _current_mode(),
         "whatsapp_ready": whatsapp.ready(),
         "cleanup_limit": LIMIT,
+        "ping_rules": PING_RULES,
+        "ping_quiet": PING_QUIET,
     }
     if form is not None:
         return {**shared, "profile": _profile_view(form=form), "placeholder": False, "error": ""}

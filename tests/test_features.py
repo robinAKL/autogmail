@@ -233,6 +233,32 @@ class CalendarTests(TempHome):
         )
         self.assertIsNone(suggest_event(alert, "me@example.com"))
 
+    def test_automatic_events_need_a_real_future_date_from_a_person(self):
+        from datetime import datetime, timedelta
+        from gmail_auto.calendars import ZONE, suggest_event
+
+        soon = (datetime.now(ZONE) + timedelta(days=10)).strftime("%d %B %Y")
+        real = sample(subject=f"Catch-up {soon} 15:00", body=f"Can we meet on {soon} 15:00?", from_email="lee@example.com")
+        no_date = sample(subject="Meeting notes", body="Thanks for the meeting today.", from_email="lee@example.com")
+        past = sample(subject="Meeting 14 November 2020 15:00", body="Meeting 14 November 2020 15:00.", from_email="lee@example.com")
+        newsletter = sample(
+            subject=f"Webinar invite {soon} 15:00",
+            body="Join our Zoom webinar. Unsubscribe.",
+            from_email="news@saas.example",
+        )
+        far_date = sample(
+            subject="Project notes",
+            body="Invoice dated " + soon + ". " + ("Lots of unrelated text. " * 20) + "Join us on Teams.",
+            from_email="lee@example.com",
+        )
+        self.assertIsNotNone(suggest_event(real, "me@example.com", strict=True))
+        self.assertIsNone(suggest_event(no_date, "me@example.com", strict=True))
+        self.assertIsNone(suggest_event(past, "me@example.com", strict=True))
+        self.assertIsNone(suggest_event(newsletter, "me@example.com", strict=True))
+        self.assertIsNone(suggest_event(far_date, "me@example.com", strict=True))
+        # By hand the owner still gets a draft to move, even without a date.
+        self.assertIsNotNone(suggest_event(no_date, "me@example.com"))
+
     def test_month_board_is_a_monday_week_grid(self):
         from datetime import datetime
         from gmail_auto.calendars import ZONE, _item, month_board
@@ -255,6 +281,50 @@ class CalendarTests(TempHome):
         self.assertEqual(found["events"][0]["title"], "Parent interview")
         self.assertEqual(board["selected_label"], "Friday 13 November")
         self.assertEqual(len(board["selected_events"]), 1)
+
+    def test_items_added_from_mail_can_be_removed_and_hand_made_ones_stay(self):
+        from gmail_auto import calendars
+        from gmail_auto.storage import load_doc, save_doc
+
+        save_doc(
+            "calendar_mail",
+            {
+                "old1": {"event_id": "ev-old1", "at": "2026-11-14 09:00"},
+                "outlook:old2": {"event_id": "ev-old2", "at": "2026-11-14 10:00"},
+                "auto3": {"event_id": "ev-auto3", "at": "2026-11-15 08:00", "auto": True, "provider": "gmail"},
+                "hand4": {"event_id": "ev-hand4", "at": "2026-11-15 08:30", "auto": False, "provider": "gmail"},
+                "broken5": {"event_id": "ev-broken5", "at": "2026-11-15 09:00", "auto": True, "provider": "gmail"},
+            },
+        )
+        self.assertEqual(calendars.added_from_mail(), 4)
+        deleted = []
+
+        def fake_delete(provider, event_id):
+            if event_id == "ev-broken5":
+                raise ConfigError("Gmail calendar did not remove the item.")
+            deleted.append((provider, event_id))
+
+        with patch("gmail_auto.calendars._delete_event", fake_delete):
+            result = calendars.remove_added_from_mail()
+        self.assertEqual(sorted(deleted), [("gmail", "ev-auto3"), ("gmail", "ev-old1"), ("outlook", "ev-old2")])
+        self.assertEqual((result["removed"], result["failed"], result["left"]), (3, 1, 1))
+        saved = load_doc("calendar_mail", {})
+        self.assertEqual(saved["hand4"]["event_id"], "ev-hand4")
+        self.assertTrue(saved["old1"]["removed"])
+        # A removed letter stays on record so it is not added again; the failed one can be retried.
+        self.assertTrue(calendars.already_created("old1"))
+        self.assertEqual(calendars.added_from_mail(), 1)
+
+    def test_removal_works_in_batches(self):
+        from gmail_auto import calendars
+        from gmail_auto.storage import save_doc
+
+        save_doc("calendar_mail", {f"m{n}": {"event_id": f"ev{n}", "at": "2026-11-14 09:00"} for n in range(5)})
+        with patch("gmail_auto.calendars._delete_event", lambda provider, event_id: None):
+            first = calendars.remove_added_from_mail(limit=3)
+            second = calendars.remove_added_from_mail(limit=3)
+        self.assertEqual((first["removed"], first["left"]), (3, 2))
+        self.assertEqual((second["removed"], second["left"]), (2, 0))
 
     def test_whatsapp_pings_events_about_to_start_without_changing_calendar_reminders(self):
         from datetime import datetime, timedelta
@@ -293,6 +363,70 @@ class ImportanceTests(TempHome):
         self.assertEqual(assess(enquiry)["kind"], "enquiry")
         self.assertEqual(assess(school)["kind"], "school")
         self.assertFalse(assess(junk)["important"])
+
+    def test_notifications_receipts_and_marketing_do_not_ping(self):
+        from gmail_auto.importance import assess
+
+        quiet = [
+            sample(from_email="no-reply@apple.com", subject="Your receipt from Apple", body="Receipt for your payment. Thank you for your payment."),
+            sample(from_email="news@shop.example", subject="Big sale ends tonight", body="50% off everything. Unsubscribe here."),
+            sample(from_email="notifications@github.com", subject="Reminder: meeting digest", body="Your weekly update. Invite your team."),
+            sample(from_email="alerts@bank.example", subject="New sign-in to your account", body="We noticed a new login."),
+            sample(
+                from_email="lee@shop.example",
+                subject="Your order has shipped",
+                body="Tracking number 123.",
+                headers={"list-unsubscribe": "<mailto:x@shop.example>"},
+            ),
+            sample(from_email="hello@saas.example", subject="Join our webinar on 20 December 2026", body="Zoom webinar invite."),
+        ]
+        for mail in quiet:
+            self.assertFalse(assess(mail)["important"], mail.subject)
+
+    def test_people_bills_fines_institutions_and_appointments_do_ping(self):
+        from datetime import datetime, timedelta
+        from gmail_auto.calendars import ZONE
+        from gmail_auto.importance import assess
+
+        soon = (datetime.now(ZONE) + timedelta(days=12)).strftime("%d %B %Y")
+        bill = sample(from_email="noreply@mercury.co.nz", subject="Your power bill is ready", body="Amount due $182 by 30 November.")
+        fine = sample(from_email="noreply@at.govt.nz", subject="Infringement notice", body="Parking fine of $40.")
+        ird = sample(from_email="donotreply@ird.govt.nz", subject="Your tax account", body="You have a new letter in myIR.")
+        appointment = sample(
+            from_email="jane@dentist.example",
+            subject=f"Appointment {soon} 10:30",
+            body=f"See you for your appointment on {soon} 10:30.",
+        )
+        enquiry = sample(from_email="lee@client.example", subject="Quote for the workshop", body="How much for two days?")
+        self.assertEqual(assess(bill)["kind"], "invoice")
+        self.assertEqual(assess(fine)["kind"], "fine")
+        self.assertEqual(assess(ird)["kind"], "institution")
+        self.assertEqual(assess(appointment)["kind"], "meeting")
+        self.assertEqual(assess(enquiry)["kind"], "enquiry")
+
+    def test_more_kinds_beyond_the_examples(self):
+        from gmail_auto.importance import KINDS, assess
+
+        sign = sample(from_email="dse@docusign.net", subject="Please sign: Lease agreement", body="Review and sign the document.")
+        declined = sample(from_email="noreply@spark.co.nz", subject="Payment declined", body="Your card was declined. Update your card.")
+        health = sample(from_email="noreply@citymed.example", subject="Your test results are ready", body="Log in to see your lab results.")
+        rent = sample(from_email="pm@homes.example", subject="Rent increase from January", body="Your landlord has reviewed the rent.")
+        promo = sample(from_email="noreply@shop.example", subject="Final notice: 50% off ends tonight", body="Shop now. Unsubscribe.")
+        self.assertEqual(assess(sign)["kind"], "action")
+        self.assertEqual(assess(declined)["kind"], "action")
+        self.assertEqual(assess(health)["kind"], "health")
+        self.assertEqual(assess(rent)["kind"], "housing")
+        self.assertFalse(assess(promo)["important"])
+        self.assertEqual(set(KINDS), {"fine", "invoice", "action", "school", "institution", "health", "housing", "enquiry", "meeting", "person", "company"})
+
+    def test_settings_keep_only_known_kinds_and_default_to_all(self):
+        from gmail_auto.importance import KINDS
+
+        self.assertEqual(load_settings()["notify_kinds"], KINDS)
+        save_settings({"notify_kinds": ["invoice", "nonsense", "fine"]})
+        self.assertEqual(load_settings()["notify_kinds"], ["fine", "invoice"])
+        save_settings({"notify_kinds": []})
+        self.assertEqual(load_settings()["notify_kinds"], [])
 
 
 class CleanupTests(TempHome):
@@ -510,6 +644,15 @@ class WhatsAppTests(TempHome):
         self.assertEqual(approvals.pending(), [])
         self.assertEqual(get_processed("w1")["action"], "rejected")
 
+    def test_a_kind_switched_off_on_settings_is_not_pinged(self):
+        save_settings({"notify_kinds": ["fine", "school"]})
+        fake = FakeGmail(
+            [sample(id="inv2", from_email="noreply@xero.com", subject="Invoice 1043 is due", body="Please pay invoice 1043.")]
+        )
+        run_once(gmail=fake, generate=lambda *_: Draft(action="skip", reason="Notification."))
+        self.assertEqual(approvals.open_items(), [])
+        self.assertEqual(self.sent, [])
+
     def test_important_invoice_is_pinged_and_a_numbered_whatsapp_reply_drafts_it(self):
         fake = FakeGmail(
             [sample(id="inv1", from_email="noreply@xero.com", subject="Invoice 1042 is due", body="Please pay invoice 1042.")]
@@ -565,7 +708,134 @@ class WhatsAppTests(TempHome):
         self.assertTrue(send_daily_digest(late))
         self.assertFalse(send_daily_digest(late))
         self.assertEqual(len(self.sent), 1)
-        self.assertIn("Yesterday", self.sent[0][1]["text"]["body"])
+        body = self.sent[0][1]["text"]["body"]
+        self.assertIn("Good morning.", body)
+        self.assertNotIn("new emails checked", body)
+
+    def test_morning_summary_caps_at_100_unread_and_lists_important_only(self):
+        from datetime import datetime
+        from gmail_auto.models import Mail
+
+        save_settings({"daily_digest": True})
+        self.sent.clear()
+        letters = []
+        for idx in range(130):
+            # 120 newest are automated notifications; 10 oldest (beyond top 100) are real bills
+            # so only the single important letter placed inside the newest 100 should appear.
+            is_old_bill = idx < 10
+            letters.append(
+                Mail(
+                    id=f"m{idx}",
+                    thread_id=f"t{idx}",
+                    from_name="Billing" if is_old_bill else "Newsletter",
+                    from_email="billing@vendor.co.nz" if is_old_bill else "noreply@news.example.com",
+                    reply_email="",
+                    subject="Invoice due" if is_old_bill else f"Daily digest {idx}",
+                    date="2026-11-14",
+                    body="Please pay invoice #99" if is_old_bill else "Unsubscribe anytime",
+                    snippet="Please pay invoice #99" if is_old_bill else "Unsubscribe anytime",
+                    received_ts=1000.0 + idx,
+                )
+            )
+        letters.append(
+            Mail(
+                id="imp1",
+                thread_id="timp1",
+                from_name="Sarah Chen",
+                from_email="sarah@client.co.nz",
+                reply_email="",
+                subject="Quote for kitchen renovation",
+                date="2026-11-15",
+                body="Could you send a quote for next Tuesday?",
+                snippet="Could you send a quote for next Tuesday?",
+                received_ts=5000.0,
+            )
+        )
+
+        class _Client:
+            def list_unread(self, limit=20):
+                ordered = sorted(letters, key=lambda m: m.received_ts, reverse=True)
+                return ordered[:limit]
+
+        late = datetime.now().replace(hour=9, minute=0)
+        self.assertTrue(send_daily_digest(late, clients=[_Client()]))
+        body = self.sent[0][1]["text"]["body"]
+        self.assertIn("Sarah Chen:", body)
+        self.assertIn("Quote for kitchen renovation", body)
+        self.assertNotIn("Daily digest", body)
+        self.assertNotIn("Invoice due", body)
+        self.assertNotIn("new emails checked", body)
+
+    def test_whatsapp_can_summarize_unread_search_reply_and_archive_by_number(self):
+        from gmail_auto.models import Mail
+
+        unread_mail = Mail(
+            id="u1",
+            thread_id="tu1",
+            from_name="Alice Wong",
+            from_email="alice@client.co.nz",
+            reply_email="",
+            subject="Invoice #42 question",
+            date="2026-11-15",
+            body="Can you send the updated invoice?",
+            snippet="Can you send the updated invoice?",
+            received_ts=2000.0,
+        )
+        recent_mail = Mail(
+            id="r1",
+            thread_id="tr1",
+            from_name="Auckland Council",
+            from_email="notices@aucklandcouncil.govt.nz",
+            reply_email="",
+            subject="Rates reminder",
+            date="2026-11-14",
+            body="Rates installment due next week.",
+            snippet="Rates installment due next week.",
+            received_ts=1500.0,
+        )
+        archived_ids = []
+
+        class _Client:
+            provider = "gmail"
+
+            def list_unread(self, limit=20):
+                return [unread_mail][:limit]
+
+            def list_recent(self, limit=25, full=False):
+                return [unread_mail, recent_mail][:limit]
+
+            def get_message(self, message_id):
+                return unread_mail if message_id == "u1" else recent_mail
+
+            def archive(self, message_id):
+                archived_ids.append(message_id)
+
+        client = _Client()
+        unread_reply = assistant.handle(whatsapp.Incoming(sender="64210000001", text="总结未读"), clients=[client])
+        self.assertIn("1. Alice Wong", unread_reply)
+        self.assertIn("Invoice #42 question", unread_reply)
+
+        search_reply = assistant.handle(whatsapp.Incoming(sender="64210000001", text="搜索 Rates"), clients=[client])
+        self.assertIn("1. Auckland Council", search_reply)
+        self.assertIn("Rates reminder", search_reply)
+
+        with patch("gmail_auto.approvals.revise", side_effect=ConfigError("The OpenAI key was rejected.")):
+            failed_reply = assistant.handle(whatsapp.Incoming(sender="64210000001", text="回复 1 收到"), clients=[client])
+        self.assertIn("could not draft a reply", failed_reply)
+        self.assertEqual(approvals.open_items(), [])
+
+        with patch("gmail_auto.approvals.revise", side_effect=lambda item_id, _inst, _prof: {"id": item_id, "draft": "We will handle this tomorrow."}):
+            draft_reply = assistant.handle(whatsapp.Incoming(sender="64210000001", text="回复 1 收到，明天处理"), clients=[client])
+        self.assertIn("Drafted reply #", draft_reply)
+        self.assertIn("We will handle this tomorrow.", draft_reply)
+
+        not_delete = assistant.handle(whatsapp.Incoming(sender="64210000001", text="删除 1"), clients=[client])
+        self.assertNotIn("Archived #1", not_delete)
+        self.assertEqual(archived_ids, [])
+
+        archive_reply = assistant.handle(whatsapp.Incoming(sender="64210000001", text="归档 1"), clients=[client])
+        self.assertIn("Archived #1", archive_reply)
+        self.assertEqual(archived_ids, ["r1"])
 
 
 class OutlookAndViewTests(TempHome):

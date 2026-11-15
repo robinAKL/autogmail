@@ -117,6 +117,51 @@ class PageTests(WebCase):
         _, deployed = self.page("/", base_url="https://autogmail.vercel.app", follow_redirects=True)
         self.assertIn("Email me a code to sign in", deployed)
 
+    def test_calendar_day_agenda_shows_count_and_compact_rows_for_many_events(self):
+        events = [
+            {
+                "date": "2026-11-15",
+                "when": "09:00–10:00",
+                "hour": "09:00",
+                "title": f"Fake meeting #{i}",
+                "provider": "gmail",
+                "provider_label": "Gmail",
+                "link": f"https://calendar.google.com/event?eid={i}",
+                "location": "Ponsonby Dental, 12 Example Rd" if i == 1 else "",
+                "attendees": ["a@b.com"] if i == 1 else [],
+            }
+            for i in range(1, 29)
+        ]
+        board = {
+            "year": 2026,
+            "month": 11,
+            "title": "November 2026",
+            "weekdays": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+            "weeks": [],
+            "accounts": [],
+            "errors": [],
+            "today": "2026-11-15",
+            "selected": "2026-11-15",
+            "selected_label": "Sunday 15 November",
+            "selected_events": events,
+            "prev": {"year": 2026, "month": 10},
+            "next": {"year": 2026, "month": 12},
+            "this": {"year": 2026, "month": 11, "day": "2026-11-15"},
+            "count": 28,
+        }
+        with patch("gmail_auto.calendars.month_board", return_value=board):
+            response, text = self.page("/calendar?year=2026&month=11&day=2026-11-15")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('<span class="chip tiny">28</span>', text)
+        self.assertIn('class="cal-agenda"', text)
+        self.assertIn('class="cal-dot gmail"', text)
+        self.assertIn('>09:00<', text)
+        self.assertIn('class="cal-item-title"', text)
+        self.assertIn('<a href="https://calendar.google.com/event?eid=28"', text)
+        self.assertIn("Fake meeting #28", text)
+        self.assertIn("Ponsonby Dental, 12 Example Rd", text)
+        self.assertIn("1 invited", text)
+
     def test_inbox_lists_mail_and_serves_the_letter_as_safe_formatted_html(self):
         html_mail = sample(
             id="h1",
@@ -198,6 +243,23 @@ class PageTests(WebCase):
         self.assertIn("Privacy policy", text)
         self.assertIn("mailto:owner@example.com", text)
         self.assertNotIn("Sign out", text)
+
+    def test_calendar_offers_to_remove_items_added_from_email(self):
+        from gmail_auto.storage import load_doc, save_doc
+
+        _, text = self.page("/calendar")
+        self.assertNotIn("Remove items added from email", text)
+        save_doc("calendar_mail", {"m1": {"event_id": "ev1", "at": "2026-11-14 09:00"}, "m2": {"event_id": "ev2", "at": "2026-11-14 09:00", "auto": False}})
+        _, text = self.page("/calendar")
+        self.assertIn("Remove items added from email", text)
+        self.assertIn("1 calendar items were added from email", text)
+        removed = []
+        with patch("gmail_auto.calendars._delete_event", lambda provider, event_id: removed.append(event_id)):
+            response = self.client.post("/calendar/remove-added", follow_redirects=True)
+        self.assertEqual(removed, ["ev1"])
+        self.assertIn("Removed 1 calendar items", response.get_data(as_text=True))
+        self.assertEqual(load_doc("calendar_mail", {})["m2"]["event_id"], "ev2")
+        self.assertNotIn("Remove items added from email", self.page("/calendar")[1])
 
     def test_run_button_calls_one_round(self):
         with patch("gmail_auto.web.run_once") as run:

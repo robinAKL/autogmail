@@ -68,8 +68,22 @@
     </label>
     <label class="check span-2">
       <input type="checkbox" name="notify_important" value="1" {% if settings.notify_important %}checked{% endif %}>
-      <span>WhatsApp me important mail (company, enquiry, invoice, school, people) even when no draft is ready</span>
+      <span>WhatsApp me important mail even when no draft is ready</span>
     </label>
+    <fieldset class="span-2 ping-rules">
+      <legend>What counts as important</legend>
+      <p class="hint">Checked from top to bottom. Untick a kind to stop it reaching WhatsApp. It still shows in the inbox.</p>
+      {% for key, title, detail in ping_rules %}
+      <label class="check">
+        <input type="checkbox" name="notify_kinds" value="{{ key }}" {% if key in settings.notify_kinds %}checked{% endif %}>
+        <span><strong>{{ title }}</strong> — {{ detail }}</span>
+      </label>
+      {% endfor %}
+      <p class="hint"><strong>Never sent to WhatsApp:</strong></p>
+      <ul class="hint">
+        {% for line in ping_quiet %}<li>{{ line }}</li>{% endfor %}
+      </ul>
+    </fieldset>
     <label class="check span-2">
       <input type="checkbox" name="notify_calendar" value="1" {% if settings.notify_calendar %}checked{% endif %}>
       <span>WhatsApp me about calendar events 15 minutes before they start</span>

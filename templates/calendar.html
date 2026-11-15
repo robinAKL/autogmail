@@ -59,19 +59,26 @@
 
   <aside class="cal-side">
     <section class="card">
-      <h2 class="card-title">{{ board.selected_label or 'This day' }}</h2>
+      <div class="cal-day-head">
+        <h2 class="card-title">{{ board.selected_label or 'This day' }}</h2>
+        {% if board.selected_events %}
+        <span class="chip tiny">{{ board.selected_events|length }}</span>
+        {% endif %}
+      </div>
       {% if board.selected_events %}
       <div class="cal-agenda">
         {% for event in board.selected_events %}
         <article class="cal-item">
-          <span class="cal-item-when">{{ event.when }}</span>
-          <strong>{{ event.title }}</strong>
-          <span class="muted">{% if event.location %}{{ event.location }}{% else %}{{ event.kind }}{% endif %}</span>
-          <span class="row-foot">
-            <span class="chip tiny {{ event.provider }}">{{ event.provider_label }}</span>
-            {% if event.attendees %}<span class="muted">{{ event.attendees|length }} invited</span>{% endif %}
-            {% if event.link %}<a href="{{ event.link }}" target="_blank" rel="noopener noreferrer">Open</a>{% endif %}
-          </span>
+          <span class="cal-item-when" title="{{ event.when }}">{{ event.hour or event.when }}</span>
+          <span class="cal-dot {{ event.provider }}" title="{{ event.provider_label }}" aria-label="{{ event.provider_label }}"></span>
+          <span class="cal-item-title" title="{{ event.title }}">{% if event.link %}<a href="{{ event.link }}" target="_blank" rel="noopener noreferrer">{{ event.title }}</a>{% else %}{{ event.title }}{% endif %}</span>
+          {% if event.location or event.attendees %}
+          <div class="cal-item-sub">
+            {% if event.location %}<span>{{ event.location }}</span>{% endif %}
+            {% if event.location and event.attendees %} · {% endif %}
+            {% if event.attendees %}<span>{{ event.attendees|length }} invited</span>{% endif %}
+          </div>
+          {% endif %}
         </article>
         {% endfor %}
       </div>
@@ -82,14 +89,20 @@
 
     <section class="card" id="auto">
       <h2 class="card-title">From email</h2>
-      <p class="muted">Meeting invitations, interviews and reminders in mail can be added automatically. You can also add the opened letter from the inbox.</p>
+      <p class="muted">A letter from a real person that names a meeting or appointment with a date still ahead can be added automatically. Notifications, newsletters and letters without a date are never added. You can also add the opened letter from the inbox.</p>
       <form method="post" action="{{ url_for('calendar_settings_save') }}" class="stack">
         <label class="check">
           <input type="checkbox" name="auto_calendar" value="1" {% if auto_calendar %}checked{% endif %}>
-          <span>When a letter is a meeting, invitation or reminder, add it to this calendar</span>
+          <span>Add dated meetings and appointments from mail to this calendar</span>
         </label>
         <div class="button-row"><button type="submit">Save</button></div>
       </form>
+      {% if added_from_mail %}
+      <form method="post" action="{{ url_for('calendar_remove_added') }}" class="stack" data-busy="Removing…" data-confirm="Remove {{ added_from_mail }} calendar items that were added from email automatically? They are deleted from your Gmail or Outlook calendar. Events you made yourself and invitations from other people stay.">
+        <p class="muted">{{ added_from_mail }} calendar items were added from email automatically. If they are not real meetings, remove them here. Nothing else in your calendar is touched.</p>
+        <div class="button-row"><button type="submit" class="quiet">Remove items added from email</button></div>
+      </form>
+      {% endif %}
     </section>
   </aside>
 </div>

@@ -41,6 +41,15 @@ _MONTHS = {
     "december": 12,
 }
 _EMAIL = re.compile(r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}")
+_AHEAD_DAYS = 180
+_NEAR = 160
+
+
+def _hint_near_date(text: str) -> bool:
+    """The meeting word sits close to the date, so a date elsewhere in a long letter does not count."""
+    spans = [m.span() for m in _ISO.finditer(text)] + [m.span() for m in _DMY.finditer(text)]
+    hints = [m.start() for m in _HINT.finditer(text)]
+    return any(start - _NEAR <= spot <= end + _NEAR for start, end in spans for spot in hints)
 
 
 def list_upcoming(days: int = _DAYS) -> dict:
@@ -165,8 +174,14 @@ def month_board(year: int | None = None, month: int | None = None, day: str = ""
     }
 
 
-def suggest_event(mail: Mail, user_email: str = "") -> dict | None:
-    """Turn a meeting or reminder letter into a calendar draft, or None if it is not that kind of mail."""
+def suggest_event(mail: Mail, user_email: str = "", strict: bool = False) -> dict | None:
+    """Turn a meeting or reminder letter into a calendar draft, or None if it is not that kind of mail.
+
+    strict is for anything automatic (creating events while checking mail, WhatsApp pings): the letter
+    must come from a person rather than a notification system, name the meeting in its subject or next to
+    the date, and give a real date that is still ahead. Without strict, the owner asked for it by hand, so
+    a letter without a date still gets a draft for tomorrow 09:00 that they can move.
+    """
     if user_email:
         decision = classify(mail, user_email)
         if isinstance(decision, Skip) and decision.code in {"system", "promotions", "social", "list", "forums", "auto", "sensitive"}:
@@ -174,7 +189,18 @@ def suggest_event(mail: Mail, user_email: str = "") -> dict | None:
     text = f"{mail.subject or ''}\n{mail.body or mail.snippet or ''}"
     if not _HINT.search(text):
         return None
-    start = _when(text) or (datetime.now(ZONE) + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
+    found = _when(text)
+    if strict:
+        from gmail_auto.importance import is_notification
+
+        if found is None or is_notification(mail):
+            return None
+        now = datetime.now(ZONE)
+        if found < now or found > now + timedelta(days=_AHEAD_DAYS):
+            return None
+        if not _HINT.search(mail.subject or "") and not _hint_near_date(text):
+            return None
+    start = found or (datetime.now(ZONE) + timedelta(days=1)).replace(hour=9, minute=0, second=0, microsecond=0)
     end = start + timedelta(hours=1)
     attendees = []
     for address in _EMAIL.findall(text):
@@ -203,7 +229,7 @@ def create_from_mail(mail: Mail, user_email: str = "") -> dict:
     if already_created(mail.key):
         raise ConfigError("A calendar item was already created from this letter.")
     event = create_event(mail.provider or "gmail", draft)
-    _remember(mail.key, event.get("id") or "")
+    _remember(mail.key, event.get("id") or "", auto=False, provider=mail.provider or "gmail")
     return event
 
 
@@ -214,11 +240,11 @@ def maybe_create_from_mail(mail: Mail, user_email: str) -> str:
             return ""
         if already_created(mail.key):
             return ""
-        draft = suggest_event(mail, user_email)
+        draft = suggest_event(mail, user_email, strict=True)
         if draft is None:
             return ""
         event = create_event(mail.provider or "gmail", draft)
-        _remember(mail.key, event.get("id") or "")
+        _remember(mail.key, event.get("id") or "", auto=True, provider=mail.provider or "gmail")
         return event.get("title") or draft["title"]
     except ConfigError:
         return ""
@@ -271,11 +297,87 @@ def already_created(mail_key: str) -> bool:
     return bool(isinstance(saved, dict) and saved.get(mail_key))
 
 
-def _remember(mail_key: str, event_id: str) -> None:
+def added_from_mail() -> int:
+    """How many calendar items this app added while checking mail and that are still there to remove."""
+    return len(_removable(_saved_mail_events()))
+
+
+def remove_added_from_mail(limit: int = 40) -> dict:
+    """Delete the calendar items this app added while checking mail. Nothing else in the calendar is touched.
+
+    Only event ids this app wrote down when it created them are deleted. Items the owner added by hand with
+    the button on a letter are kept. A removed letter stays on record, so it is never added again.
+    """
+    saved = _saved_mail_events()
+    todo = _removable(saved)
+    removed = 0
+    failed = 0
+    error = ""
+    for mail_key, record in todo[: max(1, int(limit))]:
+        provider = record.get("provider") or ("outlook" if mail_key.startswith("outlook:") else "gmail")
+        try:
+            _delete_event(provider, record["event_id"])
+        except ConfigError as exc:
+            failed += 1
+            error = error or str(exc)
+            continue
+        saved[mail_key] = {**record, "event_id": "", "removed": True}
+        removed += 1
+    if removed:
+        save_doc("calendar_mail", saved)
+    return {"removed": removed, "failed": failed, "left": len(todo) - removed, "error": error}
+
+
+def _saved_mail_events() -> dict:
+    saved = load_doc("calendar_mail", {}) or {}
+    return saved if isinstance(saved, dict) else {}
+
+
+def _removable(saved: dict) -> list[tuple[str, dict]]:
+    found = []
+    for mail_key, record in saved.items():
+        if not isinstance(record, dict) or not record.get("event_id") or record.get("removed"):
+            continue
+        if record.get("auto") is False:
+            continue
+        found.append((mail_key, record))
+    return found
+
+
+def _delete_event(provider: str, event_id: str) -> None:
+    """Delete one event. One that is already gone counts as deleted."""
+    if provider == "outlook":
+        from gmail_auto import microsoft
+
+        try:
+            microsoft.graph("outlook", "DELETE", f"/me/events/{event_id}", timeout=15, attempts=1)
+        except microsoft.GraphError as exc:
+            if exc.status in (404, 410):
+                return
+            raise
+        return
+    service = _google_calendar()
+    try:
+        service.events().delete(calendarId="primary", eventId=event_id, sendUpdates="none").execute()
+    except Exception as exc:
+        status = getattr(getattr(exc, "resp", None), "status", None)
+        if str(status) in ("404", "410"):
+            return
+        if isinstance(exc, ConfigError):
+            raise
+        raise ConfigError("Gmail calendar did not remove the item. Reconnect Gmail on Connections and try again.") from exc
+
+
+def _remember(mail_key: str, event_id: str, auto: bool = True, provider: str = "") -> None:
     saved = load_doc("calendar_mail", {}) or {}
     if not isinstance(saved, dict):
         saved = {}
-    saved[mail_key] = {"event_id": event_id, "at": datetime.now(ZONE).strftime("%Y-%m-%d %H:%M")}
+    saved[mail_key] = {
+        "event_id": event_id,
+        "at": datetime.now(ZONE).strftime("%Y-%m-%d %H:%M"),
+        "auto": bool(auto),
+        "provider": provider or ("outlook" if mail_key.startswith("outlook:") else "gmail"),
+    }
     if len(saved) > 400:
         ordered = sorted(saved.items(), key=lambda pair: str((pair[1] or {}).get("at") if isinstance(pair[1], dict) else ""))
         saved = dict(ordered[-400:])

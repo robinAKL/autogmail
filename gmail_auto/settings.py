@@ -24,6 +24,7 @@ DEFAULTS = {
     "whatsapp_to": "",
     "notify_auto_replies": True,
     "notify_important": True,
+    "notify_kinds": None,
     "notify_calendar": True,
     "daily_digest": True,
     "digest_hour": 8,
@@ -93,6 +94,7 @@ def _clean(data: dict, strict: bool = False) -> dict:
         "whatsapp_to": phone,
         "notify_auto_replies": bool(data.get("notify_auto_replies")),
         "notify_important": bool(data.get("notify_important")),
+        "notify_kinds": _kinds(data.get("notify_kinds")),
         "notify_calendar": bool(data.get("notify_calendar")),
         "daily_digest": bool(data.get("daily_digest")),
         "digest_hour": min(23, max(0, hour)),
@@ -102,6 +104,20 @@ def _clean(data: dict, strict: bool = False) -> dict:
         "cleanup_pack": pack,
         "auto_calendar": bool(data.get("auto_calendar")),
     }
+
+
+def _kinds(value) -> list[str]:
+    """Which kinds of important mail go to WhatsApp. Unset means all of them."""
+    from gmail_auto.importance import KINDS
+
+    if value is None:
+        return list(KINDS)
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, (list, tuple, set)):
+        return list(KINDS)
+    chosen = {str(item) for item in value}
+    return [kind for kind in KINDS if kind in chosen]
 
 
 def _lines(value, fallback: list[str], strict: bool) -> list[str]:
