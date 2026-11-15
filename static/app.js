@@ -166,4 +166,44 @@
       mark.addEventListener("mouseleave", function () { tip.hidden = true; });
     });
   }
+
+  // Settings page tabs driven by URL hash so post-save redirects stay on the active tab.
+  var settingsTabs = document.querySelector("[data-settings-tabs]");
+  if (settingsTabs) {
+    var tabs = Array.prototype.slice.call(settingsTabs.querySelectorAll("[data-tab]"));
+    var panels = Array.prototype.slice.call(document.querySelectorAll("[data-panel]"));
+    var hashToTab = function (hash) {
+      var key = (hash || "").replace(/^#/, "").toLowerCase();
+      if (key === "replies" || key === "notifications") { return "notifications"; }
+      if (key === "cleanup") { return "cleanup"; }
+      if (key === "profile") { return "profile"; }
+      return "general";
+    };
+    var activateTab = function (name) {
+      tabs.forEach(function (tab) {
+        var on = tab.getAttribute("data-tab") === name;
+        tab.classList.toggle("on", on);
+        tab.setAttribute("aria-selected", on ? "true" : "false");
+      });
+      panels.forEach(function (panel) {
+        panel.hidden = panel.getAttribute("data-panel") !== name;
+      });
+    };
+    tabs.forEach(function (tab) {
+      tab.addEventListener("click", function (event) {
+        event.preventDefault();
+        var href = tab.getAttribute("href");
+        if (window.history && window.history.replaceState && href) {
+          window.history.replaceState(null, "", href);
+        } else if (href) {
+          window.location.hash = href;
+        }
+        activateTab(tab.getAttribute("data-tab"));
+      });
+    });
+    window.addEventListener("hashchange", function () {
+      activateTab(hashToTab(window.location.hash));
+    });
+    activateTab(hashToTab(window.location.hash));
+  }
 })();

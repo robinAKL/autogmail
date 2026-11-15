@@ -623,6 +623,25 @@ class WhatsAppTests(TempHome):
         os.environ.pop("WHATSAPP_APP_SECRET", None)
         super().tearDown()
 
+    def test_a_trunk_zero_after_the_country_code_is_dropped(self):
+        from gmail_auto.settings import normalize_phone
+        from gmail_auto.storage import load_doc, save_doc
+
+        save_settings({"whatsapp_to": "+64 021 123 4567"})
+        self.assertEqual(load_settings()["whatsapp_to"], "64211234567")
+        self.assertTrue(whatsapp.is_owner("whatsapp:+64211234567"))
+
+        # A number saved before this rule still matches the sender WhatsApp reports.
+        saved = load_doc("settings", {})
+        save_doc("settings", {**saved, "whatsapp_to": "640211234567"})
+        self.assertEqual(whatsapp.recipient(), "64211234567")
+        self.assertTrue(whatsapp.is_owner("+64 21 123 4567"))
+
+        self.assertEqual(normalize_phone("+44 07700 900123"), "447700900123")
+        self.assertEqual(normalize_phone("+39 06 1234 5678"), "390612345678")  # Italy keeps its 0
+        self.assertEqual(normalize_phone("+1 650 555 0100"), "16505550100")
+        self.assertEqual(normalize_phone("+64 21 123 4567"), "64211234567")
+
     def ask(self, mail_id="w1", subject="Can we meet Friday?"):
         fake = FakeGmail([sample(id=mail_id, subject=subject)])
         run_once(gmail=fake, generate=lambda *_: Draft(action="ask", reply="Friday at 2pm works.", reason="Commits to a time.", summary="Wants to meet."))
@@ -1084,3 +1103,146 @@ class StorageVariableTests(TempHome):
         self.assertEqual(token_store.storage_kind(), "Redis")
         os.environ["AUTOMAIL_REDIS_URL"] = "not-an-address"
         self.assertFalse(token_store.storage_ready())
+
+
+class RealtimeScanTests(TempHome):
+    def setUp(self):
+        super().setUp()
+        from gmail_auto.profile_store import save_profile
+
+        save_profile(
+            {
+                "name": "Robin",
+                "role": "Owner",
+                "introduction": "Consultant",
+                "tone": "Brief",
+                "cannot_promise": ["Discounts"],
+                "sample_phrases": ["Happy to help."],
+            }
+        )
+
+    def test_scan_since_ts_skips_historical_mail_and_advances_watermark(self):
+        import time
+        from gmail_auto.runner import run_once
+        from gmail_auto.store import get_state, set_state
+
+        now = int(time.time())
+        set_state("scan_since_ts", now - 300)
+        old_mail = sample(id="old-1", subject="Old backlog", received_ts=now - 3600)
+        new_mail = sample(id="new-1", subject="Fresh email", received_ts=now - 30)
+
+        seen_since = []
+
+        class _FakeClient(FakeGmail):
+            def list_unread(self, limit=20, since_ts=None):
+                seen_since.append(since_ts)
+                return [old_mail, new_mail]
+
+        fake = _FakeClient([old_mail, new_mail])
+        report = run_once(gmail=fake, generate=lambda *_: Draft(action="skip", reason="ok"))
+        self.assertEqual(seen_since, [now - 300])
+        self.assertEqual(report.checked, 1)
+        self.assertGreaterEqual(int(get_state("scan_since_ts", 0)), now - 60)
+
+    def test_realtime_important_notice_uses_llm_summary_and_knowledge(self):
+        import time
+        from gmail_auto import whatsapp
+        from gmail_auto.knowledge import add_document
+        from gmail_auto.runner import run_once
+        from gmail_auto.settings import save_settings
+        from gmail_auto.store import set_state
+
+        now = int(time.time())
+        set_state("scan_since_ts", now - 300)
+        save_settings({"notify_important": True, "whatsapp_to": "+64 21 123 4567"})
+        add_document("Pricing", "Standard consultation is $200/hr.", "note", summarize=False)
+
+        mail = sample(
+            id="notice-1",
+            subject="Consultation invoice due Friday",
+            from_email="billing@client.co.nz",
+            body="Please confirm your $200/hr consultation invoice before Friday.",
+            received_ts=now - 10,
+        )
+        sent_notices = []
+        os.environ["OPENAI_API_KEY"] = "sk-test"
+        try:
+            with patch("gmail_auto.llm.complete", return_value="Client asks to confirm $200/hr consultation invoice by Friday.") as mocked_llm, \
+                 patch.object(whatsapp, "ready", return_value=True), \
+                 patch.object(whatsapp, "send_notice", side_effect=lambda item: sent_notices.append(item) or "wa-1"):
+                run_once(gmail=FakeGmail([mail]), generate=lambda *_: Draft(action="skip", reason="no reply needed"))
+        finally:
+            os.environ.pop("OPENAI_API_KEY", None)
+
+        self.assertEqual(len(sent_notices), 1)
+        self.assertIn("Client asks to confirm $200/hr consultation invoice by Friday.", sent_notices[0]["summary"])
+        mocked_llm.assert_called_once()
+        self.assertIn("$200/hr", mocked_llm.call_args[0][1])
+
+
+class ConversationalAgentTests(TempHome):
+    def setUp(self):
+        super().setUp()
+        from gmail_auto.knowledge import add_document
+        from gmail_auto.profile_store import save_profile
+
+        save_profile(
+            {
+                "name": "Robin",
+                "role": "Founder",
+                "introduction": "Runs consulting practice.",
+                "tone": "Warm and concise",
+                "cannot_promise": ["Free work"],
+                "sample_phrases": ["Happy to help."],
+            }
+        )
+        add_document("Rates", "Standard rate is $200/hr.", "note", summarize=False)
+
+    def test_kb_injected_and_compose_requires_confirmation_before_sending(self):
+        from gmail_auto import assistant, whatsapp
+
+        sent_emails = []
+
+        class _Client(FakeGmail):
+            def send_notice(self, to, subject, body):
+                sent_emails.append((to, subject, body))
+
+        client = _Client([])
+        compose_json = (
+            '{"intent":"compose","to":"lee@example.com","subject":"Consulting rate",'
+            '"body":"Hi Lee, our standard rate is $200/hr.","number":"","query":"","instruction":"","reply":""}'
+        )
+        with patch("gmail_auto.assistant.complete", return_value=compose_json) as mocked_llm:
+            preview = assistant.handle(whatsapp.Incoming(sender="64211234567", text="帮我给 lee@example.com 发封邮件说明报价"), clients=[client])
+
+        self.assertIn("$200/hr", mocked_llm.call_args[0][1])
+        self.assertIn("Ready to send:", preview)
+        self.assertIn("lee@example.com", preview)
+        self.assertEqual(sent_emails, [])
+
+        confirmed = assistant.handle(whatsapp.Incoming(sender="64211234567", text="YES"), clients=[client])
+        self.assertIn("Sent email to lee@example.com", confirmed)
+        self.assertEqual(sent_emails, [("lee@example.com", "Consulting rate", "Hi Lee, our standard rate is $200/hr.")])
+
+    def test_natural_language_read_and_archive_with_confirmation(self):
+        from gmail_auto import assistant, whatsapp
+
+        mail = sample(id="m9", from_name="Alice", from_email="alice@example.com", subject="Contract update", body="Please review v2.")
+        client = FakeGmail([mail])
+        assistant.handle(whatsapp.Incoming(sender="64211234567", text="UNREAD"), clients=[client])
+
+        read_json = '{"intent":"read","number":"1","query":"","to":"","subject":"","body":"","instruction":"","reply":""}'
+        with patch("gmail_auto.assistant.complete", return_value=read_json):
+            details = assistant.handle(whatsapp.Incoming(sender="64211234567", text="第一封邮件写了什么？"), clients=[client])
+        self.assertIn("Contract update", details)
+        self.assertIn("Please review v2.", details)
+
+        archive_json = '{"intent":"archive","number":"1","query":"","to":"","subject":"","body":"","instruction":"","reply":""}'
+        with patch("gmail_auto.assistant.complete", return_value=archive_json):
+            ask = assistant.handle(whatsapp.Incoming(sender="64211234567", text="把第一封删掉"), clients=[client])
+        self.assertIn("Reply YES to confirm", ask)
+        self.assertEqual(client.archived, [])
+
+        done = assistant.handle(whatsapp.Incoming(sender="64211234567", text="确认"), clients=[client])
+        self.assertIn("Archived:", done)
+        self.assertEqual(client.archived, ["m9"])

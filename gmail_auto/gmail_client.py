@@ -47,8 +47,11 @@ class GmailClient:
             raise ConfigError("Could not read the address of this Gmail account.")
         return self._email
 
-    def list_unread(self, limit: int = 20) -> list[Mail]:
-        return self._list(UNREAD_QUERY, limit, full=True)
+    def list_unread(self, limit: int = 20, since_ts: int | None = None) -> list[Mail]:
+        query = UNREAD_QUERY
+        if since_ts and int(since_ts) > 0:
+            query = f"{UNREAD_QUERY} after:{int(since_ts)}"
+        return self._list(query, limit, full=True)
 
     def list_recent(self, limit: int = 25, full: bool = False) -> list[Mail]:
         return self._list(RECENT_QUERY, limit, full=full)

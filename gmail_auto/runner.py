@@ -244,13 +244,20 @@ def _run_locked(gmail=None, generate=None) -> RunReport:
         pass
 
     already = 0
+    scanned_any = False
     for client in clients:
         try:
             already += _run_mailbox(client, generate, profile, settings, live, report)
+            scanned_any = True
         except ConfigError as exc:
             if len(clients) == 1:
                 raise
             report.lines.append(named_error(getattr(client, "provider", "mailbox").title(), exc))
+    if scanned_any:
+        try:
+            set_state("scan_since_ts", max(_scan_since_ts(), int(time.time()) - 60))
+        except ConfigError:
+            pass
     if already and report.checked == 0:
         report.lines.append(f"{already} unread letters were already handled and were not answered again.")
     try:
@@ -269,10 +276,30 @@ def _run_locked(gmail=None, generate=None) -> RunReport:
     return report
 
 
+def _scan_since_ts() -> int:
+    """High-water mark for real-time scanning; first run defaults to the last 24 hours."""
+    try:
+        saved = int(get_state("scan_since_ts", 0) or 0)
+    except (ConfigError, TypeError, ValueError):
+        saved = 0
+    if saved > 0:
+        return saved
+    return int(time.time()) - 86400
+
+
+def _list_unread(client, since_ts: int) -> list[Mail]:
+    try:
+        mails = client.list_unread(20, since_ts=since_ts)
+    except TypeError:
+        mails = client.list_unread(20)
+    return [mail for mail in mails if not mail.received_ts or mail.received_ts >= since_ts]
+
+
 def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, report: RunReport) -> int:
     user = client.get_user_email()
+    since_ts = _scan_since_ts()
     already = 0
-    for mail in client.list_unread(20):
+    for mail in _list_unread(client, since_ts):
         if not mail.account:
             mail.account = user
         if get_processed(mail.key):
@@ -303,7 +330,7 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
         subject = short_subject(mail.subject)
         if draft.action == "skip":
             reason = draft.reason or "no reply needed"
-            notice_id = _maybe_notice(mail, None, settings, report)
+            notice_id = _maybe_notice(mail, None, settings, report, summary=draft.summary)
             mark_processed(_record(mail, "skipped", reason, "", decision.language, False, skip_code="no_reply_needed", summary=draft.summary, approval_id=notice_id))
             _remember(client, mail.id, done=True)
             stats.note_outcome("skipped", mail, skip_code="no_reply_needed")
@@ -382,7 +409,38 @@ def _tag(mail: Mail) -> dict:
     return assess(mail)
 
 
-def _maybe_notice(mail: Mail, decision, settings: dict, report: RunReport) -> str:
+def _summarize_notice(mail: Mail, tag: dict) -> str:
+    """Produce a concise real-time summary grounded in the knowledge base when an LLM key is configured."""
+    from gmail_auto.envfile import has_openai_key
+
+    if not has_openai_key():
+        return tag["why"]
+    try:
+        from gmail_auto.knowledge import context_for, render_context
+        from gmail_auto.llm import complete
+
+        kb = render_context(context_for(mail))
+        sender = f"{mail.from_name} <{mail.from_email}>" if mail.from_name else mail.from_email
+        prompt = (
+            f"From: {sender}\n"
+            f"Subject: {mail.subject}\n"
+            f"Category: {tag.get('label', 'important')}\n"
+            f"Body:\n{mail.body[:1200]}"
+        )
+        if kb:
+            prompt = f"Knowledge base:\n{kb[:1500]}\n\n{prompt}"
+        summary = complete(
+            "Summarize this incoming email in 1-2 short sentences for a WhatsApp alert, noting any action or deadline.",
+            prompt,
+            max_tokens=120,
+            temperature=0.2,
+        ).strip()
+        return summary or tag["why"]
+    except ConfigError:
+        return tag["why"]
+
+
+def _maybe_notice(mail: Mail, decision, settings: dict, report: RunReport, summary: str = "") -> str:
     from gmail_auto.importance import PING_SKIPS
 
     if not settings.get("notify_important"):
@@ -396,7 +454,8 @@ def _maybe_notice(mail: Mail, decision, settings: dict, report: RunReport) -> st
         return ""
     from gmail_auto import whatsapp
 
-    item = approvals.create(mail, Draft(action="skip", summary=tag["why"], reason=tag["why"]), "en", role="notice", kind=tag["kind"])
+    summary_text = (summary or "").strip() or _summarize_notice(mail, tag)
+    item = approvals.create(mail, Draft(action="skip", summary=summary_text, reason=tag["why"]), "en", role="notice", kind=tag["kind"])
     if whatsapp.ready():
         try:
             approvals.remember_whatsapp(item["id"], [whatsapp.send_notice(item)])

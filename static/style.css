@@ -469,6 +469,24 @@ details.card[open] > summary { margin-bottom: 10px; padding-bottom: 10px; border
 .legal h2 { font-size: 18px; margin-top: 14px; }
 .legal ul { margin: 0; padding-left: 22px; display: grid; gap: 6px; }
 
+/* ---- settings tabs & compact controls ---- */
+.settings-tabs { display: flex; gap: 8px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; max-width: 100%; }
+.settings-tabs::-webkit-scrollbar { display: none; }
+.settings-tabs .tab { flex: none; white-space: nowrap; }
+.settings-panel { display: flex; flex-direction: column; gap: 16px; }
+.settings-panel[hidden] { display: none; }
+.model-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.model-select { flex: 1 1 280px; min-width: 0; }
+.ping-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; margin-top: 6px; }
+.ping-item { display: flex; align-items: flex-start; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.ping-item .check { flex: 0 1 auto; }
+.ping-info { display: inline-block; }
+.ping-info summary { list-style: none; cursor: pointer; color: var(--muted); font-size: 13px; line-height: 1.5; user-select: none; padding: 0 4px; }
+.ping-info summary::-webkit-details-marker { display: none; }
+.ping-info[open] { flex-basis: 100%; }
+.ping-info[open] summary { color: var(--accent); }
+.ping-info p { margin-top: 4px; }
+
 /* ---- small screens ---- */
 @media (max-width: 1180px) {
   .tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -486,7 +504,7 @@ details.card[open] > summary { margin-bottom: 10px; padding-bottom: 10px; border
   .nav a.on span { display: inline; }
   .side-foot { margin: 0 0 0 auto; padding: 0; }
   .content { padding: 20px 16px 56px; }
-  .split, .grid-2, .grid-2.wide-left, .approval-grid, .doc-list, .auth-shell, .form-grid, .kb-steps, .kb-cards, .kb-tiles, .cal-layout { grid-template-columns: 1fr; }
+  .split, .grid-2, .grid-2.wide-left, .approval-grid, .doc-list, .auth-shell, .form-grid, .kb-steps, .kb-cards, .kb-tiles, .cal-layout, .ping-grid { grid-template-columns: 1fr; }
   .cal-cell { min-height: 84px; }
   .list { position: static; max-height: 46vh; }
   .auth-shell { gap: 28px; min-height: auto; }

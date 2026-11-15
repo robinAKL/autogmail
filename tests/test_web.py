@@ -868,3 +868,15 @@ class ModelSettingsTests(WebCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("empty reply", text)
         self.assertNotIn("responded:", text)
+
+    def test_settings_page_uses_compact_tabs_and_preserves_section_anchors(self):
+        _, text = self.page("/profile")
+        for label in ("General", "Notifications", "Cleanup", "Profile"):
+            self.assertIn(label, text)
+        for panel in ('data-panel="general"', 'data-panel="notifications"', 'data-panel="cleanup"', 'data-panel="profile"'):
+            self.assertIn(panel, text)
+        for anchor in ('id="mode"', 'id="model"', 'id="replies"', 'id="cleanup"', 'id="profile"'):
+            self.assertIn(anchor, text)
+        self.assertIn('class="model-row"', text)
+        self.assertIn('class="ping-grid"', text)
+        self.assertIn('class="ping-info"', text)

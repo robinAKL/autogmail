@@ -4,7 +4,7 @@ import re
 
 from gmail_auto import approvals, stats, whatsapp
 from gmail_auto.errors import ConfigError
-from gmail_auto.llm import complete
+from gmail_auto.llm import complete, parse_json
 from gmail_auto.profile_store import load_profile
 from gmail_auto.store import get_state, is_live, list_processed, set_live, set_state
 
@@ -31,9 +31,18 @@ _HELP = (
     "- Anything else — ask me about your mail"
 )
 _CHAT_SYSTEM = """You are the owner's email assistant, chatting with the owner on WhatsApp.
-Answer the owner's question in a few short lines of plain text, in the language the owner wrote in.
-Use only the information given below. If it does not contain the answer, say so plainly.
-Never invent emails, senders, numbers or dates."""
+Reply in the language the owner wrote in (Chinese or English).
+Use ONLY the knowledge base, profile, and email context given below. Never invent emails, senders, prices, or dates.
+Return ONE JSON object with these fields:
+- intent: one of "answer", "summarize", "read", "draft_reply", "compose", "archive", "mark_read"
+- number: listed email number as string (e.g. "1") if referring to a listed email, else ""
+- query: search keyword or sender name if looking up an email, else ""
+- to: recipient email address for "compose", else ""
+- subject: email subject for "compose", else ""
+- body: full email body for "compose" (written in the owner's tone and grounded in the knowledge base), else ""
+- instruction: editing/reply instruction for "draft_reply", else ""
+- reply: concise plain-text answer for "answer" (or short summary for "read"), else ""
+"""
 
 
 def handle(incoming: whatsapp.Incoming, clients: list | None = None) -> str:
@@ -56,8 +65,17 @@ def handle(incoming: whatsapp.Incoming, clients: list | None = None) -> str:
     word = _word(text)
 
     if action == "approve" or (not action and word in _YES):
+        if item is None and not target and not number:
+            pending = get_state("wa_pending_action")
+            if isinstance(pending, dict) and pending.get("kind"):
+                return _execute_pending(pending, clients)
         return _approve(_pick(item, waiting), waiting)
     if action == "reject" or (not action and word in _NO):
+        if item is None and not target and not number:
+            pending = get_state("wa_pending_action")
+            if isinstance(pending, dict) and pending.get("kind"):
+                set_state("wa_pending_action", None)
+                return "Cancelled. Nothing was sent or deleted."
         return _reject(_pick(item, waiting), waiting)
     if word in {"help", "?", "帮助", "menu"}:
         return _HELP
@@ -105,7 +123,7 @@ def handle(incoming: whatsapp.Incoming, clients: list | None = None) -> str:
         return _revise(chosen, instruction)
     if len(waiting) > 1:
         return "Several letters are waiting. Start with the number, for example: 12 make it shorter\n\n" + _list(waiting)
-    return _answer(text)
+    return _answer(text, clients)
 
 
 def seen_before(message_id: str) -> bool:
@@ -191,28 +209,214 @@ def _pause() -> str:
     return "Paused. I will only save drafts until you turn sending back on in the web page."
 
 
-def _answer(question: str) -> str:
-    from gmail_auto.knowledge import load_index
+def _kb_and_profile_context(query: str) -> str:
+    from gmail_auto.knowledge import get_document, list_documents, load_index, search as kb_search
 
+    parts = []
+    try:
+        profile = load_profile()
+        parts.append(
+            f"OWNER PROFILE:\nName: {profile.get('name', '')}\nRole: {profile.get('role', '')}\n"
+            f"Tone: {profile.get('tone', '')}\n"
+            f"Cannot promise: {'; '.join(profile.get('cannot_promise', []))}"
+        )
+    except ConfigError:
+        pass
+    brief = (load_index().get("brief") or {}).get("text") or ""
+    if brief:
+        parts.append("KNOWLEDGE BRIEF:\n" + brief)
+    hits = kb_search(query, limit=4)
+    if hits:
+        snippets = "\n".join(f"- [{h.get('title', 'Note')}] {h.get('snippet', '')}" for h in hits)
+        parts.append("RELEVANT KNOWLEDGE:\n" + snippets)
+    else:
+        doc_lines = []
+        for doc in list_documents()[:4]:
+            full = get_document(doc["id"]) if doc.get("id") else None
+            text = (full or {}).get("summary") or (full or {}).get("text") or ""
+            if text:
+                doc_lines.append(f"- [{doc.get('title', 'Note')}] {text[:300]}")
+        if doc_lines:
+            parts.append("KNOWLEDGE NOTES:\n" + "\n".join(doc_lines))
+    return "\n\n".join(parts)
+
+
+def _resolve_mail_entry(number: str, query: str, clients: list | None) -> dict | None:
+    if number:
+        entry = _listed_entry(number)
+        if entry is not None:
+            return entry
+    saved = get_state("wa_mail_list", [])
+    if isinstance(saved, list) and saved:
+        if query:
+            needle = query.lower()
+            for entry in saved:
+                blob = " ".join(str(entry.get(k) or "") for k in ("from_name", "from_email", "subject", "snippet")).lower()
+                if needle in blob:
+                    return entry
+        if not query and not number:
+            return saved[0]
+    if query:
+        _search_mail(query, clients)
+        refreshed = get_state("wa_mail_list", [])
+        if isinstance(refreshed, list) and refreshed:
+            return refreshed[0]
+    return None
+
+
+def _read_entry(entry: dict, clients: list | None) -> str:
+    provider = entry.get("provider") or "gmail"
+    mail_id = entry.get("mail_id") or ""
+    client = _client_for(provider, clients)
+    body = entry.get("snippet") or ""
+    who = entry.get("from_name") or entry.get("from_email") or "Unknown"
+    subject = entry.get("subject") or "(no subject)"
+    when = entry.get("date") or ""
+    if client is not None and mail_id:
+        get_msg = getattr(client, "get_message", None)
+        if get_msg is not None:
+            try:
+                mail = get_msg(mail_id)
+                body = (mail.body or mail.snippet or "")[:1000]
+                when = mail.date or when
+            except ConfigError:
+                pass
+        else:
+            for fn_name in ("list_unread", "list_recent"):
+                fn = getattr(client, fn_name, None)
+                if fn is None:
+                    continue
+                try:
+                    candidates = fn(50)
+                except ConfigError:
+                    continue
+                found = next((item for item in candidates if getattr(item, "id", "") == mail_id), None)
+                if found is not None:
+                    body = (found.body or found.snippet or "")[:1000]
+                    when = found.date or when
+                    break
+    num = entry.get("num") or ""
+    prefix = f"#{num} " if num else ""
+    return (
+        f"{prefix}From: {who}\nSubject: {subject}"
+        + (f"\nDate: {when}" if when else "")
+        + (f"\n\n{body.strip()}" if body.strip() else "")
+        + (f"\n\nReply: REPLY {num} <what to say> | Archive: ARCHIVE {num}" if num else "")
+    )
+
+
+def _execute_pending(pending: dict, clients: list | None) -> str:
+    kind = pending.get("kind")
+    provider = pending.get("provider") or ""
+    found = _mail_clients(clients)
+    client = _client_for(provider, clients) if provider else (found[0] if found else None)
+    if client is None:
+        return "Could not run that action: no mailbox is connected."
+    try:
+        if kind == "send_new":
+            client.send_notice(pending["to"], pending["subject"], pending["body"])
+            set_state("wa_pending_action", None)
+            return f"Sent email to {pending['to']} — \"{pending['subject']}\"."
+        if kind == "archive":
+            client.archive(pending["mail_id"])
+            set_state("wa_pending_action", None)
+            return f"Archived: {pending.get('label') or pending['mail_id']}."
+    except ConfigError as exc:
+        return f"Action failed: {exc}"
+    set_state("wa_pending_action", None)
+    return _HELP
+
+
+def _answer(question: str, clients: list | None = None) -> str:
     recent = []
-    for record in list_processed(15):
+    for record in list_processed(12):
         if record.get("sensitive"):
             continue
         recent.append(
             f"- {record.get('processed_at', '')[:16]} | {record.get('from_name') or record.get('from_email') or 'unknown'} | "
             f"{_short(record.get('subject'))} | {record.get('action')}"
         )
+    listed = get_state("wa_mail_list", [])
+    listed_lines = []
+    if isinstance(listed, list):
+        for entry in listed[:10]:
+            listed_lines.append(f"#{entry.get('num')} {entry.get('from_name') or entry.get('from_email')} — {_short(entry.get('subject'))}")
+
     context = (
-        "BRIEFING ABOUT THE OWNER:\n" + (load_index()["brief"]["text"] or "(none yet)") + "\n\n"
+        _kb_and_profile_context(question) + "\n\n"
+        "LISTED EMAILS (numbered for quick actions):\n" + ("\n".join(listed_lines) or "(none)") + "\n\n"
         "RECENTLY HANDLED EMAIL (time | sender | subject | outcome):\n" + ("\n".join(recent) or "(none)") + "\n\n"
         "NUMBERS:\n" + stats.digest_text() + "\n\n"
-        f"OWNER'S QUESTION:\n{question}"
+        f"OWNER'S MESSAGE:\n{question}"
     )
     try:
-        reply = complete(_CHAT_SYSTEM, context, max_tokens=350).strip()
+        raw = complete(_CHAT_SYSTEM, context, max_tokens=600).strip()
     except ConfigError as exc:
         return f"I could not answer that right now: {exc}\n\n{_HELP}"
-    return reply or _HELP
+    if not raw:
+        return _HELP
+
+    data = parse_json(raw)
+    if not isinstance(data, dict):
+        return raw
+
+    intent = str(data.get("intent") or "answer").strip().lower()
+    number = str(data.get("number") or "").strip().lstrip("#")
+    query = str(data.get("query") or "").strip()
+
+    if intent == "summarize":
+        if query:
+            return _search_mail(query, clients)
+        return _summarize_unread(clients)
+
+    if intent == "read":
+        entry = _resolve_mail_entry(number, query, clients)
+        if entry is None:
+            return str(data.get("reply") or "Could not find that email. Send UNREAD or SEARCH <keyword> first.")
+        return _read_entry(entry, clients)
+
+    if intent == "draft_reply":
+        entry = _resolve_mail_entry(number, query, clients)
+        if entry is None:
+            return "Which email should I reply to? Send UNREAD or SEARCH <keyword> first."
+        instruction = str(data.get("instruction") or question).strip()
+        return _reply_listed(str(entry.get("num") or "1"), entry, instruction, clients)
+
+    if intent == "compose":
+        to_addr = str(data.get("to") or "").strip()
+        subject = str(data.get("subject") or "").strip() or "Hello"
+        body = str(data.get("body") or "").strip()
+        if not to_addr or not body:
+            return str(data.get("reply") or "Please tell me the recipient email address and what you want to say.")
+        set_state("wa_pending_action", {"kind": "send_new", "to": to_addr, "subject": subject, "body": body})
+        return f"Ready to send:\nTo: {to_addr}\nSubject: {subject}\n\n{body}\n\nReply YES to send, or NO to cancel."
+
+    if intent == "archive":
+        entry = _resolve_mail_entry(number, query, clients)
+        if entry is None or not entry.get("mail_id"):
+            return "Could not find which email to archive. Send UNREAD or SEARCH <keyword> first."
+        who = entry.get("from_name") or entry.get("from_email") or "Unknown"
+        label = f"{who} — {_short(entry.get('subject'))}"
+        set_state(
+            "wa_pending_action",
+            {"kind": "archive", "mail_id": entry["mail_id"], "provider": entry.get("provider") or "gmail", "label": label},
+        )
+        return f"Archive/delete \"{label}\"? Reply YES to confirm, or NO to cancel."
+
+    if intent == "mark_read":
+        entry = _resolve_mail_entry(number, query, clients)
+        if entry is None or not entry.get("mail_id"):
+            return "Could not find which email to mark as read."
+        client = _client_for(entry.get("provider") or "gmail", clients)
+        if client is None:
+            return "Mailbox is not connected."
+        try:
+            client.mark_read(entry["mail_id"])
+        except ConfigError as exc:
+            return f"Could not mark as read: {exc}"
+        return f"Marked as read: {_short(entry.get('subject'))}."
+
+    return str(data.get("reply") or "").strip() or raw
 
 
 def _pick(item, waiting):

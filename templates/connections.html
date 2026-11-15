@@ -82,7 +82,7 @@
             <input id="wa" name="whatsapp_to" inputmode="tel" placeholder="+64 21 123 4567" value="{% if whatsapp.to %}+{{ whatsapp.to }}{% endif %}">
             <button class="quiet" type="submit">Save</button>
           </div>
-          <p class="hint">Only this number is written to, and only messages from it are obeyed.</p>
+          <p class="hint">Only this number is written to, and only messages from it are obeyed. Leave out the 0 after the country code (+64 21..., not +64 021...); it is removed for you if you type it.</p>
         </form>
         {% if whatsapp.ready %}
         <form method="post" action="{{ url_for('whatsapp_save') }}" data-busy="Sending…">

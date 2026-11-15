@@ -36,12 +36,12 @@ class OutlookClient:
             raise ConfigError("Could not read the address of this Outlook account.")
         return self._email
 
-    def list_unread(self, limit: int = 20) -> list[Mail]:
+    def list_unread(self, limit: int = 20, since_ts: int | None = None) -> list[Mail]:
         mails = self._list(
             "inbox",
             limit + 10,
             {
-                "$filter": f"receivedDateTime ge {_since()} and isRead eq false",
+                "$filter": f"receivedDateTime ge {_since(since_ts)} and isRead eq false",
                 "$orderby": "receivedDateTime desc",
             },
         )
@@ -77,6 +77,20 @@ class OutlookClient:
         )
         microsoft.graph("outlook", "POST", f"/me/messages/{draft_id}/send")
         return draft_id
+
+    def send_notice(self, to: str, subject: str, body: str) -> None:
+        microsoft.graph(
+            "outlook",
+            "POST",
+            "/me/sendMail",
+            body={
+                "message": {
+                    "subject": subject,
+                    "body": {"contentType": "Text", "content": body},
+                    "toRecipients": [{"emailAddress": {"address": to}}],
+                }
+            },
+        )
 
     def mark_read(self, message_id: str) -> None:
         microsoft.graph("outlook", "PATCH", f"/me/messages/{message_id}", body={"isRead": True})
@@ -218,7 +232,9 @@ def parse_message(raw: dict) -> Mail:
     )
 
 
-def _since() -> str:
+def _since(since_ts: int | None = None) -> str:
+    if since_ts and int(since_ts) > 0:
+        return datetime.fromtimestamp(int(since_ts), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     return (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 

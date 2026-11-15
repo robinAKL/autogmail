@@ -64,9 +64,19 @@ def save_settings(changes: dict) -> dict:
     return cleaned
 
 
+# Countries whose local numbers start with a trunk 0 that is dropped after the
+# country code (+64 021... is really +64 21...). Country codes are prefix-free,
+# so matching the start of the digits is unambiguous. Italy (39) keeps its 0.
+_TRUNK_ZERO = ("353", "27", "31", "32", "33", "41", "43", "44", "46", "49", "60", "61", "62", "63", "64", "66", "81", "82", "86", "91")
+
+
 def normalize_phone(value: str) -> str:
-    """Digits only, the way WhatsApp reports a sender."""
-    return re.sub(r"\D", "", value or "")
+    """Digits only, the way WhatsApp reports a sender, without a trunk 0 after the country code."""
+    digits = re.sub(r"\D", "", value or "")
+    for code in _TRUNK_ZERO:
+        if digits.startswith(code + "0"):
+            return code + digits[len(code) + 1 :]
+    return digits
 
 
 def _clean(data: dict, strict: bool = False) -> dict:
