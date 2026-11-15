@@ -113,7 +113,7 @@ class PageTests(WebCase):
             self.assertIsNone(re.search(r"[一-鿿]", text), path)
             self.assertIn('lang="en"', text)
             if path != "/login":
-                self.assertIn('class="topbar"', text, path)
+                self.assertIn('class="side"', text, path)
                 self.assertIn(">Inbox</span>", text, path)
         remote = self.client.get("/", base_url="http://evil.example")
         self.assertEqual(remote.status_code, 403)

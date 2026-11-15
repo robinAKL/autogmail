@@ -10,10 +10,10 @@
 <body>
 {% block layout %}
 <div class="app">
-  <header class="topbar">
+  <aside class="side">
     <a class="brand" href="{{ url_for('home') }}">
       <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l9 6 9-6"/><rect x="3" y="5" width="18" height="14" rx="2.5"/></svg>
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l9 6 9-6"/><rect x="3" y="5" width="18" height="14" rx="2.5"/></svg>
       </span>
       <span>Mail Autopilot</span>
     </a>
@@ -49,7 +49,7 @@
         <span>Settings</span>
       </a>
     </nav>
-    <div class="top-foot">
+    <div class="side-foot">
       <a class="mode-pill {{ nav_mode }}" href="{{ url_for('profile_page') }}#send" title="Change how far replies can go">
         <i aria-hidden="true"></i>{{ nav_mode_label }}
       </a>
@@ -60,7 +60,7 @@
       <p class="who">This computer</p>
       {% endif %}
     </div>
-  </header>
+  </aside>
   <main class="content">
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
