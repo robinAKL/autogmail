@@ -18,6 +18,10 @@ _NO = {
     "ignore", "junk", "spam",
     "不同意", "不", "不用", "不发", "不要发", "拒绝", "取消", "跳过", "不行", "丢掉", "丢弃", "忽略", "删除草稿",
 }
+_NEW_TASK = re.compile(
+    r"(?i)\b(search|unread|archive|pause|summar|meeting|invite|email|tomorrow|monday|tuesday|"
+    r"找|搜索|未读|删|会议|邮件|日程)\b"
+)
 _HELP = (
     "Tell me what you want in ordinary language, for example:\n"
     "- Search / summarise unread / show details / is this spam\n"
@@ -65,6 +69,8 @@ Return ONE JSON object:
 Examples:
 - "Drop 145 139 138" or "这三封不用回" with those ids → reject, numbers ["145","139","138"]
 - "NO" while several wait and last_focus is set → reject those last_focus ids
+- Bare YES / OK / 确认 while PENDING CONFIRM is set → approve with empty numbers (confirm that pending action only; do not invent waiting-draft ids)
+- Never copy WAITING APPROVALS ids into numbers unless the owner typed those ids or clearly said the first/second letter
 - "帮我看看第一封是不是广告" → analyze, number "1"
 - "明天下午3点和 lee@x.com 开会" → invite
 - "给 lee@x.com 发邮件说明报价" → compose
@@ -82,8 +88,48 @@ def handle(incoming: whatsapp.Incoming, clients: list | None = None) -> str:
         return _apply_many("reject", [target] if target else [], waiting, clients)
     if not text:
         return _HELP
+    pending = get_state("wa_pending_action")
+    if isinstance(pending, dict) and pending.get("kind"):
+        stance = _confirm_stance(text)
+        if stance == "yes":
+            return _execute_pending(pending, clients)
+        if stance == "no":
+            set_state("wa_pending_action", None)
+            return "Cancelled. Nothing was sent or deleted."
     parsed = _interpret(text, waiting, incoming.context_id, clients)
     return _dispatch(parsed, text, waiting, clients)
+
+
+def _confirm_stance(text: str) -> str:
+    """yes/no when the owner is answering the last confirm prompt — not starting a new task."""
+    word = _word(text)
+    if word in _YES:
+        return "yes"
+    if word in _NO:
+        return "no"
+    if _numbers(text) or _NEW_TASK.search(text or ""):
+        return ""
+    folded = word or (text or "").strip().lower()
+    if len(folded) > 40:
+        return ""
+    if folded.startswith(("yes", "yep", "yeah", "ok", "okay", "sure", "confirm", "please do", "add it", "create it", "do it", "go ahead")):
+        return "yes"
+    if folded.startswith(("好", "可以", "行", "确认", "是", "同意", "加", "就这样")):
+        return "yes"
+    if folded.startswith(("no", "cancel", "stop", "don't", "dont", "不用", "不要", "取消", "算了", "先别")):
+        return "no"
+    return ""
+
+
+def _ground_ids(text: str, numbers: list[str]) -> list[str]:
+    """Only keep ids the owner actually pointed at. Never approve a pile the model invented."""
+    typed = _numbers(text)
+    clean = [str(item).strip().lstrip("#") for item in (numbers or []) if str(item).strip()]
+    if typed:
+        return [item for item in clean if item in typed] or typed
+    if len(clean) > 1:
+        return []
+    return clean
 
 
 def _interpret(text: str, waiting: list, context_id: str, clients: list | None) -> dict:
@@ -96,7 +142,13 @@ def _interpret(text: str, waiting: list, context_id: str, clients: list | None) 
     if llm_data and llm_data.get("intent") in _INTENTS:
         if not llm_data.get("numbers") and fallback.get("numbers"):
             llm_data["numbers"] = fallback["numbers"]
+        llm_data["numbers"] = _ground_ids(text, llm_data.get("numbers") or [])
+        if llm_data["numbers"]:
+            llm_data["number"] = llm_data["numbers"][0]
+        else:
+            llm_data["number"] = ""
         return llm_data
+    fallback["numbers"] = _ground_ids(text, fallback.get("numbers") or [])
     return fallback
 
 
@@ -255,8 +307,14 @@ def _dispatch(parsed: dict, text: str, waiting: list, clients: list | None) -> s
     if intent == "pause":
         return _pause()
     if intent == "approve":
+        pending_reply = _confirm_pending(text, "approve", clients)
+        if pending_reply is not None:
+            return pending_reply
         return _apply_many("approve", numbers, waiting, clients)
     if intent == "reject":
+        pending_reply = _confirm_pending(text, "reject", clients)
+        if pending_reply is not None:
+            return pending_reply
         return _apply_many("reject", numbers, waiting, clients)
     if intent == "revise":
         item = parsed.get("approval") or _item_from_numbers(numbers, waiting)
@@ -313,6 +371,19 @@ def _dispatch(parsed: dict, text: str, waiting: list, clients: list | None) -> s
     if reply:
         return reply
     return _answer(text, clients)
+
+
+def _confirm_pending(text: str, verb: str, clients: list | None) -> str | None:
+    """A bare YES/NO confirms the last calendar/send/archive preview, not a pile of waiting notices."""
+    pending = get_state("wa_pending_action")
+    if not (isinstance(pending, dict) and pending.get("kind")):
+        return None
+    if _numbers(text):
+        return None
+    if verb == "reject":
+        set_state("wa_pending_action", None)
+        return "Cancelled. Nothing was sent or deleted."
+    return _execute_pending(pending, clients)
 
 
 def _apply_many(verb: str, numbers: list[str], waiting: list, clients: list | None) -> str:
@@ -460,7 +531,7 @@ def _ask_calendar(parsed: dict, invite: bool) -> str:
         "kind": "invite" if attendees else "meeting",
     }
     set_state("wa_pending_action", {"kind": "create_event", "provider": "", "draft": _event_draft_payload(draft)})
-    when = start.strftime("%a %d %b %Y %H:%M")
+    when = start.strftime("%a %d %b %Y %H:%M") + "–" + end.strftime("%H:%M")
     who = (", ".join(attendees) if attendees else "just you")
     return f"Add to calendar:\n{title}\n{when}\nWho: {who}\n\nReply YES to create, or NO to cancel."
 
@@ -746,17 +817,7 @@ def _execute_pending(pending: dict, clients: list | None) -> str:
     provider = pending.get("provider") or ""
     found = _mail_clients(clients)
     client = _client_for(provider, clients) if provider else (found[0] if found else None)
-    if client is None:
-        return "Could not run that action: no mailbox is connected."
     try:
-        if kind == "send_new":
-            client.send_notice(pending["to"], pending["subject"], pending["body"])
-            set_state("wa_pending_action", None)
-            return f"Sent email to {pending['to']} — \"{pending['subject']}\"."
-        if kind == "archive":
-            client.archive(pending["mail_id"])
-            set_state("wa_pending_action", None)
-            return f"Archived: {pending.get('label') or pending['mail_id']}."
         if kind == "create_event":
             from gmail_auto.calendars import create_event
 
@@ -766,9 +827,22 @@ def _execute_pending(pending: dict, clients: list | None) -> str:
             if raw_draft["start"] is None or raw_draft["end"] is None:
                 set_state("wa_pending_action", None)
                 return "That calendar draft had no valid time, so I cancelled it."
-            event = create_event(provider or getattr(client, "provider", "gmail") or "gmail", raw_draft)
+            event = create_event(
+                provider or getattr(client, "provider", None) or "gmail",
+                raw_draft,
+            )
             set_state("wa_pending_action", None)
             return f"Added to calendar: {event.get('title') or raw_draft.get('title')} — {event.get('when') or ''}."
+        if client is None:
+            return "Could not run that action: no mailbox is connected."
+        if kind == "send_new":
+            client.send_notice(pending["to"], pending["subject"], pending["body"])
+            set_state("wa_pending_action", None)
+            return f"Sent email to {pending['to']} — \"{pending['subject']}\"."
+        if kind == "archive":
+            client.archive(pending["mail_id"])
+            set_state("wa_pending_action", None)
+            return f"Archived: {pending.get('label') or pending['mail_id']}."
     except ConfigError as exc:
         return f"Action failed: {exc}"
     set_state("wa_pending_action", None)

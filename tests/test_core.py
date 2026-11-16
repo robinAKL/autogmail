@@ -131,6 +131,7 @@ class FilterTests(unittest.TestCase):
         self.assertFalse(is_system_address("mina@example.com"))
         self.assertTrue(is_system_address("jobalerts-noreply@linkedin.com"))
         self.assertTrue(is_system_address("alerts.do-not-reply@bank.example.com"))
+        self.assertTrue(is_system_address("ats-notifications@atsmail.employmenthero.com"))
         self.assertFalse(is_system_address("norene.plyer@example.com"))
         self.assertEqual(classify(sample(from_email="noreply@news.example.com"), "me@example.com").code, "system")
         listed = sample(headers={"list-id": "<news.example.com>"})
@@ -375,6 +376,31 @@ class RunnerTests(TempHome):
             report = run_once(gmail=fake2, generate=lambda *_: Draft(action="reply", reply="Friday works.", reason="Routine."))
         self.assertEqual(report.asked, 1)
         self.assertEqual(fake2.sent, [])
+
+    def test_automated_sender_is_not_auto_replied_even_if_the_model_drafts(self):
+        from unittest.mock import patch
+
+        write_test_profile()
+        set_live(True)
+        mail = sample(
+            id="ats1",
+            from_email="hello@jobs.example",
+            subject="Generate KiwiSaver [EH-6716276]",
+            body="Thank you for your interest. We have decided not to proceed. Unsubscribe here.",
+        )
+        fake = FakeGmail([mail])
+        with patch("gmail_auto.runner.screen_mail", return_value=None):
+            report = run_once(
+                gmail=fake,
+                generate=lambda *_: Draft(
+                    action="reply",
+                    reply="Thanks, I hope we work together in the future.",
+                    reason="Routine.",
+                ),
+            )
+        self.assertEqual(report.sent, 0)
+        self.assertEqual(fake.sent, [])
+        self.assertEqual(get_processed("ats1")["action"], "skipped")
 
     def test_iqa_status_notice_is_skipped_without_drafting(self):
         from gmail_auto.screen import screen_mail

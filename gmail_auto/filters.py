@@ -208,7 +208,7 @@ def is_system_address(address: str) -> bool:
         return True
     # Senders such as jobalerts-noreply@ or alerts.donotreply@ put the marker at the end.
     squashed = re.sub(r"[^a-z]", "", local)
-    return "noreply" in squashed or "donotreply" in squashed
+    return "noreply" in squashed or "donotreply" in squashed or "notification" in squashed
 
 
 def is_sensitive(text: str) -> bool:

@@ -340,6 +340,7 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
         if verdict is not None and verdict.disposition == "ask" and draft.action == "reply":
             draft.action = "ask"
             draft.reason = draft.reason or verdict.reason
+        draft = _restrain_auto_reply(mail, draft)
         if draft.action in {"reply", "ask"} and not draft.summary and brief.get("summary"):
             draft.summary = brief["summary"]
         subject = short_subject(mail.subject)
@@ -416,6 +417,31 @@ def _as_draft(result) -> Draft:
     if isinstance(result, Draft):
         return result
     return Draft(action="reply", reply=str(result or ""))
+
+
+def _restrain_auto_reply(mail: Mail, draft: Draft) -> Draft:
+    """Do not send a drafted reply back to an automated notice, even if the model was confident."""
+    if draft.action != "reply":
+        return draft
+    from gmail_auto.filters import is_status_notice, is_system_address
+    from gmail_auto.importance import assess, is_notification
+
+    automated = (
+        is_status_notice(mail)
+        or is_system_address(mail.from_email or "")
+        or is_system_address(mail.reply_email or "")
+        or is_notification(mail)
+    )
+    if not automated:
+        return draft
+    if assess(mail).get("important"):
+        draft.action = "ask"
+        draft.reason = draft.reason or "Automated sender — check before this goes out."
+        return draft
+    draft.action = "skip"
+    draft.reason = draft.reason or "Automated notice, no reply needed."
+    draft.reply = ""
+    return draft
 
 
 def _tag(mail: Mail) -> dict:

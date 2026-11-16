@@ -1301,3 +1301,76 @@ class ConversationalAgentTests(TempHome):
         self.assertIn("lee@example.com", preview)
         pending = get_state("wa_pending_action")
         self.assertEqual(pending["kind"], "create_event")
+        self.assertIn("15:00", preview)
+        self.assertIn("16:00", preview)
+
+    def test_yes_after_calendar_preview_does_not_approve_waiting_notices(self):
+        from gmail_auto.store import get_state, set_state
+
+        for n in range(3):
+            approvals.create(
+                sample(id=f"n{n}", from_email="billing@x.com", subject=f"Notice {n}", body="Please see attached."),
+                Draft(action="skip", reply="", reason="FYI", summary="A notice."),
+                "en",
+                role="notice",
+                kind="invoice",
+            )
+        ids = [item["id"] for item in approvals.open_items()]
+        self.assertGreaterEqual(len(ids), 3)
+        set_state(
+            "wa_pending_action",
+            {
+                "kind": "create_event",
+                "provider": "gmail",
+                "draft": {
+                    "title": "Meeting",
+                    "start": "2026-11-17T14:00:00",
+                    "end": "2026-11-17T15:00:00",
+                    "location": "",
+                    "attendees": [],
+                    "description": "",
+                    "kind": "meeting",
+                },
+            },
+        )
+        stuffed = (
+            '{"intent":"approve","numbers":'
+            + str(ids).replace("'", '"')
+            + ',"number":"","query":"","to":"","subject":"","body":"","instruction":"","reply":""}'
+        )
+        created = []
+
+        def fake_create(provider, draft):
+            created.append((provider, draft))
+            return {"title": draft["title"], "when": "Tue 17 Nov 2026 14:00"}
+
+        with patch("gmail_auto.assistant.complete", return_value=stuffed), patch(
+            "gmail_auto.calendars.create_event", side_effect=fake_create
+        ):
+            result = assistant.handle(whatsapp.Incoming(sender="64211234567", text="Yes"), clients=[FakeGmail([])])
+        self.assertIn("Added to calendar", result)
+        self.assertNotIn("has no draft yet", result)
+        self.assertEqual(len(created), 1)
+        self.assertIsNone(get_state("wa_pending_action"))
+        self.assertEqual(len(approvals.open_items()), len(ids))
+
+        set_state(
+            "wa_pending_action",
+            {
+                "kind": "create_event",
+                "provider": "gmail",
+                "draft": {
+                    "title": "Meeting",
+                    "start": "2026-11-17T14:00:00",
+                    "end": "2026-11-17T15:00:00",
+                    "location": "",
+                    "attendees": [],
+                    "description": "",
+                    "kind": "meeting",
+                },
+            },
+        )
+        with patch("gmail_auto.calendars.create_event", side_effect=fake_create):
+            again = assistant.handle(whatsapp.Incoming(sender="64211234567", text="好的加上"), clients=[FakeGmail([])])
+        self.assertIn("Added to calendar", again)
+        self.assertNotIn("has no draft yet", again)
