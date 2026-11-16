@@ -1,6 +1,7 @@
 """What the owner can say over WhatsApp, and what happens when they do."""
 
 import re
+from datetime import datetime
 
 from gmail_auto import approvals, stats, whatsapp
 from gmail_auto import llm as llm_mod
@@ -1020,31 +1021,83 @@ def _search_mail(query: str, clients: list | None = None) -> str:
     found_clients = _mail_clients(clients)
     if not found_clients:
         return "No mailbox is connected yet."
-    needle = query.lower()
+    words = _search_words(query)
     seen_keys: set[str] = set()
     matches = []
+
+    def consider(mail) -> None:
+        if mail.key in seen_keys:
+            return
+        blob = " ".join(
+            [mail.from_name or "", mail.from_email or "", mail.subject or "", mail.snippet or "", mail.body or ""]
+        ).lower()
+        if all(word in blob for word in words):
+            seen_keys.add(mail.key)
+            matches.append(mail)
+
     for client in found_clients:
         candidates = []
-        for method_name, arg in (("list_unread", 50), ("list_recent", 50)):
+        # The mailbox's own search reaches older and archived letters, not just the newest page of the inbox.
+        lookups = [("search", (query, 25)), ("list_unread", (50,)), ("list_recent", (50,))]
+        for method_name, args in lookups:
             fn = getattr(client, method_name, None)
             if fn is None:
                 continue
             try:
-                candidates.extend(fn(arg))
+                candidates.extend(fn(*args))
             except ConfigError:
                 continue
         for mail in candidates:
-            if mail.key in seen_keys:
-                continue
-            seen_keys.add(mail.key)
-            blob = " ".join([mail.from_name or "", mail.from_email or "", mail.subject or "", mail.snippet or "", mail.body or ""]).lower()
-            if needle in blob:
-                matches.append(mail)
+            consider(mail)
+    # Letters the app already handled, as listed on the dashboard, even after they left the inbox.
+    for mail in _processed_as_mail():
+        consider(mail)
     if not matches:
         return f"No recent emails matching \"{query}\"."
     matches.sort(key=lambda m: float(getattr(m, "received_ts", 0) or 0), reverse=True)
     entries = _save_mail_list(matches)
     return _format_mail_list(f"Search \"{query}\" ({len(entries)}):", entries)
+
+
+def _search_words(query: str) -> list[str]:
+    cleaned = query.strip().strip("\"'“”‘’").lower()
+    words = [word.strip("\"'“”‘’,.;:!?") for word in cleaned.split()]
+    return [word for word in words if word] or [cleaned]
+
+
+def _processed_as_mail() -> list:
+    from types import SimpleNamespace
+
+    try:
+        records = list_processed(3000)
+    except ConfigError:
+        return []
+    out = []
+    for record in records:
+        if record.get("sensitive") or not record.get("mail_id"):
+            continue
+        provider = record.get("provider") or "gmail"
+        try:
+            stamp = datetime.strptime(str(record.get("processed_at") or ""), "%Y-%m-%d %H:%M:%S").timestamp()
+        except ValueError:
+            stamp = 0.0
+        out.append(
+            SimpleNamespace(
+                key=record.get("id") or record["mail_id"],
+                id=record["mail_id"],
+                provider=provider,
+                thread_id=record.get("thread_id") or "",
+                from_name=record.get("from_name") or "",
+                from_email=record.get("from_email") or "",
+                reply_email=record.get("from_email") or "",
+                subject=record.get("subject") or "",
+                date=record.get("date") or "",
+                snippet=record.get("summary") or "",
+                body="",
+                received_ts=stamp,
+            )
+        )
+    return out
 
 
 def _archive_number(text: str) -> str:

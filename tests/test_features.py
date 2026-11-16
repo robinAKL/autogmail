@@ -750,6 +750,11 @@ class WhatsAppTests(TempHome):
         self.assertEqual([(m.text, m.button, m.context_id) for m in messages], [("yes", "", "wamid.0"), ("Send", "approve:7", "")])
         self.assertTrue(whatsapp.is_owner("+64 21 123 4567"))
         self.assertFalse(whatsapp.is_owner("64219999999"))
+        voice = whatsapp.parse_twilio(
+            {"From": "whatsapp:+64211234567", "Body": "", "MessageSid": "SM2", "NumMedia": "1", "MediaContentType0": "audio/ogg", "MediaUrl0": "https://api.twilio.com/media/1"}
+        )
+        self.assertEqual(voice[0].audio_url, "https://api.twilio.com/media/1")
+        self.assertTrue(whatsapp.has_voice(voice[0]))
         twilio = whatsapp.parse_twilio({"From": "whatsapp:+64211234567", "Body": "ok", "MessageSid": "SM1"})
         self.assertEqual((twilio[0].sender, twilio[0].text), ("+64211234567", "ok"))
 
@@ -829,6 +834,40 @@ class WhatsAppTests(TempHome):
         self.assertNotIn("Daily digest", body)
         self.assertNotIn("Invoice due", body)
         self.assertNotIn("new emails checked", body)
+
+    def test_whatsapp_search_finds_handled_letters_that_left_the_recent_inbox(self):
+        from gmail_auto import store
+
+        store.mark_processed(
+            {
+                "id": "g7",
+                "mail_id": "g7",
+                "provider": "gmail",
+                "thread_id": "tg7",
+                "from_name": "Georgie Hutchison",
+                "from_email": "g.hutchison@example.co.nz",
+                "subject": "Your enquiry for 1/7 Hastings Road, Mairangi Bay",
+                "date": "2026-11-14",
+                "action": "skipped",
+                "summary": "No viewing times are available for the property.",
+                "processed_at": "2026-11-14 06:01:00",
+                "sensitive": False,
+            }
+        )
+
+        class _Client:
+            provider = "gmail"
+
+            def list_unread(self, limit=20):
+                return []
+
+            def list_recent(self, limit=25, full=False):
+                return []
+
+        for text in ('搜索 "1/7', "find Georgie Hutchison"):
+            reply = assistant.handle(whatsapp.Incoming(sender="64210000001", text=text), clients=[_Client()])
+            self.assertIn("1. Georgie Hutchison", reply)
+            self.assertIn("1/7 Hastings Road", reply)
 
     def test_whatsapp_can_summarize_unread_search_reply_and_archive_by_number(self):
         from gmail_auto.models import Mail

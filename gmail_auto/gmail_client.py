@@ -56,6 +56,13 @@ class GmailClient:
     def list_recent(self, limit: int = 25, full: bool = False) -> list[Mail]:
         return self._list(RECENT_QUERY, limit, full=full)
 
+    def search(self, text: str, limit: int = 25) -> list[Mail]:
+        """Gmail's own search over the whole mailbox, so older or archived letters are found too."""
+        cleaned = re.sub(r"[\"“”]", " ", text or "").strip()
+        if not cleaned:
+            return []
+        return self._list(f'"{cleaned}" -in:chats -in:spam', limit, full=True)
+
     def list_ids(self, query: str, limit: int = 500) -> list[str]:
         """Message ids only, so cleanup can search the inbox without loading each letter."""
         want = max(1, min(int(limit), 1000))
