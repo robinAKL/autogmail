@@ -101,6 +101,49 @@ def complete(system: str, user: str, max_tokens: int = 900, temperature: float =
     return text
 
 
+TRANSCRIBE_MODELS = ("gpt-4o-mini-transcribe", "whisper-1")
+
+
+def transcribe(audio: bytes, filename: str = "voice.ogg", mime: str = "audio/ogg") -> str:
+    """Turn a voice note into text. Prefers a direct OpenAI key, since gateways may not carry audio."""
+    try:
+        from openai import APIConnectionError, APIStatusError, AuthenticationError, OpenAI
+    except ImportError as exc:
+        raise ReplyError("The openai library is not installed. Run: pip install -r requirements.txt") from exc
+    if not audio:
+        raise ReplyError("The voice message was empty.")
+
+    direct = (os.getenv("OPENAI_API_KEY") or "").strip()
+    explicit_url = (os.getenv("OPENAI_BASE_URL") or "").strip()
+    if direct:
+        kwargs = {"api_key": direct}
+        if explicit_url:
+            kwargs["base_url"] = explicit_url
+    else:
+        kwargs = {"api_key": require_openai_key()}
+        base_url = openai_base_url()
+        if base_url:
+            kwargs["base_url"] = base_url
+    client = OpenAI(timeout=60.0, max_retries=0, **kwargs)
+    last: Exception | None = None
+    for model in TRANSCRIBE_MODELS:
+        try:
+            result = client.audio.transcriptions.create(model=model, file=(filename, audio, mime))
+        except AuthenticationError as exc:
+            raise ReplyError("The AI API key was rejected while reading the voice message.") from exc
+        except APIConnectionError as exc:
+            raise ReplyError("Could not reach the AI provider to read the voice message.") from exc
+        except APIStatusError as exc:
+            last = exc
+            continue
+        text = (getattr(result, "text", "") or "").strip()
+        if text:
+            return text
+    if last is not None:
+        raise ReplyError(f"Could not read the voice message ({getattr(last, 'status_code', '')}).") from last
+    raise ReplyError("Could not hear any words in the voice message.")
+
+
 def parse_json(text: str) -> dict | None:
     """Models wrap JSON in fences or prose often enough that it is worth digging for."""
     cleaned = (text or "").strip()

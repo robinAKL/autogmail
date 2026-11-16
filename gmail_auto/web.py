@@ -829,7 +829,19 @@ def configure_app(app: Flask) -> None:
             try:
                 if assistant.seen_before(incoming.message_id):
                     continue
+                if whatsapp.has_voice(incoming):
+                    try:
+                        whatsapp.hear(incoming)
+                    except ConfigError as exc:
+                        whatsapp.send_text(f"Sorry, I couldn't make out that voice message. {exc} Please type it instead.")
+                        set_state("wa_webhook_last", {"status": "voice_failed", "detail": str(exc), "at": now_text()})
+                        continue
+                    if not incoming.text:
+                        whatsapp.send_text("I couldn't hear any words in that voice message. Please try again or type it.")
+                        continue
                 answer = assistant.handle(incoming)
+                if answer and incoming.heard:
+                    answer = f"🎤 I heard: \"{incoming.heard}\"\n\n{answer}"
                 if answer:
                     whatsapp.send_text(answer)
                 set_state("wa_webhook_last", {"status": "ok", "detail": "", "at": now_text()})

@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from gmail_auto import approvals, knowledge
+from gmail_auto.errors import ConfigError
 from gmail_auto.models import Draft
 from gmail_auto.paths import CODE_ROOT
 from gmail_auto.profile_store import load_profile, save_profile
@@ -616,6 +617,34 @@ class WhatsAppWebhookTests(WebCase):
             headers={"X-Hub-Signature-256": signature if sign else "sha256=bad"},
             base_url="https://tunnel.example",
         )
+
+    def deliver_payload(self, message):
+        payload = {"entry": [{"changes": [{"value": {"messages": [message]}}]}]}
+        raw = json.dumps(payload).encode("utf-8")
+        signature = "sha256=" + hmac.new(b"app-secret-for-tests", raw, hashlib.sha256).hexdigest()
+        return self.client.post(
+            "/whatsapp/webhook",
+            data=raw,
+            content_type="application/json",
+            headers={"X-Hub-Signature-256": signature},
+            base_url="https://tunnel.example",
+        )
+
+    def test_voice_note_is_transcribed_and_handled_like_text(self):
+        voice = {"from": "64211234567", "id": "wamid.voice1", "type": "audio", "audio": {"id": "media-1", "mime_type": "audio/ogg; codecs=opus"}}
+        with patch("gmail_auto.whatsapp._download_audio", return_value=b"OggS-fake") as download, patch(
+            "gmail_auto.llm.transcribe", return_value="help"
+        ) as heard:
+            self.assertEqual(self.deliver_payload(voice).status_code, 200)
+        download.assert_called_once()
+        self.assertEqual(heard.call_args.args[2], "audio/ogg")
+        body = self.out[-1]["text"]["body"]
+        self.assertIn('I heard: "help"', body)
+
+        self.out.clear()
+        with patch("gmail_auto.whatsapp._download_audio", side_effect=ConfigError("Could not download the voice message.")):
+            self.deliver_payload({**voice, "id": "wamid.voice2"})
+        self.assertIn("couldn't make out that voice message", self.out[-1]["text"]["body"])
 
     def test_owner_says_yes_on_whatsapp_and_the_reply_goes_out(self):
         check = self.client.get("/whatsapp/webhook?hub.mode=subscribe&hub.verify_token=verify-token-for-tests&hub.challenge=42", base_url="https://tunnel.example")

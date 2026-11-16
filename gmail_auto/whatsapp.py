@@ -25,6 +25,10 @@ class Incoming:
     button: str = ""
     context_id: str = ""
     message_id: str = ""
+    audio_id: str = ""
+    audio_url: str = ""
+    audio_type: str = ""
+    heard: str = ""
 
 
 def provider() -> str:
@@ -133,7 +137,12 @@ def parse_meta(payload: dict) -> list[Incoming]:
                 kind = message.get("type")
                 text = ""
                 button = ""
-                if kind == "text":
+                audio = {}
+                if kind == "audio":
+                    audio = message.get("audio") or {}
+                    if not audio.get("id"):
+                        continue
+                elif kind == "text":
                     text = (message.get("text") or {}).get("body") or ""
                 elif kind == "interactive":
                     reply = (message.get("interactive") or {}).get("button_reply") or {}
@@ -152,6 +161,8 @@ def parse_meta(payload: dict) -> list[Incoming]:
                         button=button.strip(),
                         context_id=str((message.get("context") or {}).get("id") or ""),
                         message_id=str(message.get("id") or ""),
+                        audio_id=str(audio.get("id") or ""),
+                        audio_type=str(audio.get("mime_type") or ""),
                     )
                 )
     return found
@@ -160,7 +171,19 @@ def parse_meta(payload: dict) -> list[Incoming]:
 def parse_twilio(form) -> list[Incoming]:
     sender = str(form.get("From") or "").replace("whatsapp:", "")
     body = str(form.get("Body") or "").strip()
-    if not sender or not body:
+    audio_url = ""
+    audio_type = ""
+    try:
+        media_count = int(form.get("NumMedia") or 0)
+    except (TypeError, ValueError):
+        media_count = 0
+    for index in range(media_count):
+        kind = str(form.get(f"MediaContentType{index}") or "")
+        if kind.startswith("audio/"):
+            audio_url = str(form.get(f"MediaUrl{index}") or "")
+            audio_type = kind
+            break
+    if not sender or not (body or audio_url):
         return []
     return [
         Incoming(
@@ -169,8 +192,51 @@ def parse_twilio(form) -> list[Incoming]:
             button=str(form.get("ButtonPayload") or ""),
             context_id=str(form.get("OriginalRepliedMessageSid") or ""),
             message_id=str(form.get("MessageSid") or ""),
+            audio_url=audio_url,
+            audio_type=audio_type,
         )
     ]
+
+
+def has_voice(incoming: Incoming) -> bool:
+    return bool(incoming.audio_id or incoming.audio_url) and not incoming.text
+
+
+def hear(incoming: Incoming) -> Incoming:
+    """Fill in the text of a voice note so it can be handled like a typed message."""
+    if not has_voice(incoming):
+        return incoming
+    from gmail_auto.llm import transcribe
+
+    mime = (incoming.audio_type or "audio/ogg").split(";", 1)[0].strip() or "audio/ogg"
+    audio = _download_audio(incoming)
+    ext = {"audio/ogg": "ogg", "audio/mpeg": "mp3", "audio/mp4": "m4a", "audio/aac": "m4a", "audio/amr": "amr", "audio/wav": "wav"}.get(mime, "ogg")
+    text = transcribe(audio, f"voice.{ext}", mime)
+    incoming.text = text.strip()
+    incoming.heard = incoming.text
+    return incoming
+
+
+def _download_audio(incoming: Incoming) -> bytes:
+    import requests
+
+    try:
+        if incoming.audio_id:
+            version = os.getenv("WHATSAPP_API_VERSION", "").strip() or "v25.0"
+            headers = {"Authorization": f"Bearer {os.getenv('WHATSAPP_TOKEN', '').strip()}"}
+            meta = requests.get(f"https://graph.facebook.com/{version}/{incoming.audio_id}", headers=headers, timeout=20)
+            url = _json(meta).get("url") if meta.status_code < 400 else ""
+            if not url:
+                raise ConfigError("WhatsApp would not hand over the voice message.")
+            response = requests.get(url, headers=headers, timeout=30)
+        else:
+            auth = (os.getenv("TWILIO_ACCOUNT_SID", "").strip(), os.getenv("TWILIO_AUTH_TOKEN", "").strip())
+            response = requests.get(incoming.audio_url, auth=auth, timeout=30)
+    except requests.RequestException as exc:
+        raise ConfigError("Could not download the voice message.") from exc
+    if response.status_code >= 400 or not response.content:
+        raise ConfigError("Could not download the voice message.")
+    return response.content
 
 
 def meta_signature_ok(raw: bytes, header: str) -> bool:
