@@ -103,7 +103,7 @@ that invites you to).
 
 Set the variables from `.env.example` in Vercel, connect **Vercel KV (Upstash)** — without it the
 knowledge base, approvals, WhatsApp and dashboard cannot keep anything — and set `CRON_SECRET`.
-`vercel.json` calls `/cron` on a schedule. Uploads are limited to about 4 MB per request there.
+`vercel.json` calls `/cron` every 5 minutes (needs a Vercel Pro plan; Hobby only allows a daily cron). Uploads are limited to about 4 MB per request there.
 
 ## Your data
 

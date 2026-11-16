@@ -1597,7 +1597,7 @@ def _short_date(value: str) -> str:
 
 def _interval_text() -> str:
     if os.environ.get("VERCEL"):
-        return "on the schedule in vercel.json"
+        return "every 5 minutes"
     minutes = check_interval_seconds() // 60
     return f"every {minutes} minute{'s' if minutes != 1 else ''} while the program is running"
 
