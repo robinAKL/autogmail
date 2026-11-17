@@ -335,13 +335,13 @@ def _dispatch(parsed: dict, text: str, waiting: list, clients: list | None) -> s
         return _revise(item, parsed.get("instruction") or text)
     if intent == "summarize":
         if parsed.get("query"):
-            return _search_mail(parsed["query"], clients)
+            return _search_mail(parsed["query"], clients, request=text)
         return _summarize_unread(clients)
     if intent == "search":
         query = (parsed.get("query") or _search_query(text) or text).strip()
         if query.lower() in {"search", "find", "搜索", "查找", "找"}:
             return "What should I search for?"
-        return _search_mail(query, clients)
+        return _search_mail(query, clients, request=text)
     if intent == "read":
         shown = _shown_mail_entry(numbers)
         if shown is not None:
@@ -1097,46 +1097,142 @@ def _search_query(text: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
-def _search_mail(query: str, clients: list | None = None) -> str:
+def _search_mail(query: str, clients: list | None = None, request: str = "") -> str:
+    """Find letters by meaning, not just by the words typed.
+
+    With a model, the request ("find the insurance form I need to sign") becomes several mailbox searches in
+    both languages, and the model then reads the candidates and keeps the ones that fit. Without one, or if
+    the model fails, every typed word must appear in the letter.
+    """
     found_clients = _mail_clients(clients)
     if not found_clients:
         return "No mailbox is connected yet."
+    request = (request or query).strip()
     words = _search_words(query)
-    seen_keys: set[str] = set()
-    matches = []
+    pool: dict[str, object] = {}
+    literal = []
 
-    def consider(mail) -> None:
-        if mail.key in seen_keys:
+    def gather(mail) -> None:
+        if mail.key in pool:
             return
-        blob = " ".join(
-            [mail.from_name or "", mail.from_email or "", mail.subject or "", mail.snippet or "", mail.body or ""]
-        ).lower()
+        pool[mail.key] = mail
+        blob = _mail_blob(mail)
         if all(word in blob for word in words):
-            seen_keys.add(mail.key)
-            matches.append(mail)
+            literal.append(mail)
+
+    def run(client, method_name: str, *args) -> None:
+        fn = getattr(client, method_name, None)
+        if fn is None:
+            return
+        try:
+            for mail in fn(*args):
+                gather(mail)
+        except (ConfigError, TypeError):
+            return
 
     for client in found_clients:
-        candidates = []
         # The mailbox's own search reaches older and archived letters, not just the newest page of the inbox.
-        lookups = [("search", (query, 25)), ("list_unread", (50,)), ("list_recent", (50,))]
-        for method_name, args in lookups:
-            fn = getattr(client, method_name, None)
-            if fn is None:
-                continue
-            try:
-                candidates.extend(fn(*args))
-            except ConfigError:
-                continue
-        for mail in candidates:
-            consider(mail)
+        run(client, "search", query, 25)
+        run(client, "list_unread", 50)
+        run(client, "list_recent", 50)
     # Letters the app already handled, as listed on the dashboard, even after they left the inbox.
-    for mail in _processed_as_mail():
-        consider(mail)
+    handled = _processed_as_mail()
+    for mail in handled:
+        if mail.key not in pool and all(word in _mail_blob(mail) for word in words):
+            gather(mail)
+
+    matches = None
+    if _can_think():
+        matches = _search_by_meaning(request, query, found_clients, pool, handled, run)
+    if matches is None:
+        matches = sorted(literal, key=lambda m: float(getattr(m, "received_ts", 0) or 0), reverse=True)
     if not matches:
-        return f"No recent emails matching \"{query}\"."
-    matches.sort(key=lambda m: float(getattr(m, "received_ts", 0) or 0), reverse=True)
+        return f"No emails found for \"{query}\"."
     entries = _save_mail_list(matches)
     return _format_mail_list(f"Search \"{query}\" ({len(entries)}):", entries)
+
+
+_SEARCH_PLAN = """You turn an owner's request for an email into mailbox searches.
+The owner may write in Chinese while the email is in English, or the other way round, and may describe it
+loosely ("the insurance thing I have to sign"). Think about how such an email is actually worded: its
+subject, the kind of sender (e.g. DocuSign, DocHub, Adobe Sign for signatures; the insurer or adviser for
+insurance), and words in both English and Chinese.
+
+Return JSON only:
+{"searches": ["3 to 6 Gmail search queries, each short, using OR between synonyms, e.g. (insurance OR policy OR 保险) (sign OR signature OR signed OR docusign OR dochub)"],
+ "keywords": ["8 to 20 single words or short phrases in English and Chinese that such an email would contain"],
+ "meaning": "one short English line saying what email is wanted"}"""
+
+_SEARCH_PICK = """You pick which emails match what the owner is looking for. Judge by meaning, across
+languages: a Chinese request can match an English email. Only pick emails that really fit; if none do,
+return an empty list. Return JSON only: {"picks": [candidate numbers, best match first]}"""
+
+
+def _can_think() -> bool:
+    from gmail_auto.llm import model_ready
+
+    return complete is not llm_mod.complete or model_ready()
+
+
+def _mail_blob(mail) -> str:
+    return " ".join(
+        [mail.from_name or "", mail.from_email or "", mail.subject or "", mail.snippet or "", getattr(mail, "body", "") or ""]
+    ).lower()
+
+
+def _search_by_meaning(request: str, query: str, found_clients: list, pool: dict, handled: list, run) -> list | None:
+    """Return the letters the model judged to match, best first, or None when the model could not help."""
+    try:
+        plan = parse_json(complete(_SEARCH_PLAN, f"Owner's request: {request}\nShort query: {query}", max_tokens=500, temperature=0, role="super"))
+    except ReplyError:
+        return None
+    if not plan:
+        return None
+    searches = [str(item).strip() for item in plan.get("searches") or [] if str(item).strip()][:6]
+    keywords = [str(item).strip().lower() for item in plan.get("keywords") or [] if len(str(item).strip()) > 1][:20]
+    for client in found_clients:
+        for search in searches:
+            run(client, "search", search, 12, True)
+    if keywords:
+        for mail in handled:
+            if mail.key not in pool and any(word in _mail_blob(mail) for word in keywords):
+                pool[mail.key] = mail
+    candidates = list(pool.values())
+    if keywords:
+        # Letters sharing more of the expected words go first, so the best ones fit in what the model reads.
+        candidates.sort(
+            key=lambda m: (sum(word in _mail_blob(m) for word in keywords), float(getattr(m, "received_ts", 0) or 0)),
+            reverse=True,
+        )
+    else:
+        candidates.sort(key=lambda m: float(getattr(m, "received_ts", 0) or 0), reverse=True)
+    candidates = candidates[:60]
+    if not candidates:
+        return []
+    lines = []
+    for index, mail in enumerate(candidates, 1):
+        snippet = " ".join((mail.snippet or getattr(mail, "body", "") or "").split())[:220]
+        lines.append(
+            f"{index}. From: {mail.from_name or ''} <{mail.from_email or ''}> | Date: {mail.date or ''} | "
+            f"Subject: {mail.subject or '(no subject)'} | {snippet}"
+        )
+    meaning = str(plan.get("meaning") or "").strip()
+    prompt = f"Owner's request: {request}\n" + (f"Meaning: {meaning}\n" if meaning else "") + "\nCandidates:\n" + "\n".join(lines)
+    try:
+        picked = parse_json(complete(_SEARCH_PICK, prompt, max_tokens=400, temperature=0, role="super"))
+    except ReplyError:
+        return None
+    if picked is None:
+        return None
+    out = []
+    for value in picked.get("picks") or []:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= number <= len(candidates) and candidates[number - 1] not in out:
+            out.append(candidates[number - 1])
+    return out[:10]
 
 
 def _search_words(query: str) -> list[str]:

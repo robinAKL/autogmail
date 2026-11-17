@@ -2,6 +2,7 @@
 
 import base64
 import html
+import re
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 
@@ -53,6 +54,23 @@ class OutlookClient:
         # Newest page only. A date filter on a large folder makes Graph scan and time out.
         mails = self._list_newest("inbox", limit, "receivedDateTime")
         return self._hydrate(mails) if full else mails
+
+    def search(self, text: str, limit: int = 25, raw: bool = False) -> list[Mail]:
+        """Outlook's own search over every folder. Graph takes plain words; Gmail operators are dropped."""
+        words = re.sub(r"\b(?:subject|from|to|newer_than|older_than|after|before|in|label|has):\S*", " ", text or "")
+        words = re.sub(r"[\"“”()]|\bOR\b", " ", words)
+        words = " ".join(words.split())[:200]
+        if not words:
+            return []
+        data = microsoft.graph(
+            "outlook",
+            "GET",
+            "/me/messages",
+            params={"$search": f'"{words}"', "$top": max(1, min(int(limit), 50)), "$select": _SELECT_LIST},
+            timeout=10,
+            attempts=1,
+        )
+        return [self._stamp(parse_message(item)) for item in data.get("value") or []]
 
     def list_sent(self, limit: int = 25, full: bool = False) -> list[Mail]:
         mails = self._list_newest("sentitems", limit, "sentDateTime")

@@ -56,8 +56,17 @@ class GmailClient:
     def list_recent(self, limit: int = 25, full: bool = False) -> list[Mail]:
         return self._list(RECENT_QUERY, limit, full=full)
 
-    def search(self, text: str, limit: int = 25) -> list[Mail]:
-        """Gmail's own search over the whole mailbox, so older or archived letters are found too."""
+    def search(self, text: str, limit: int = 25, raw: bool = False) -> list[Mail]:
+        """Gmail's own search over the whole mailbox, so older or archived letters are found too.
+
+        raw=True passes Gmail search syntax through (OR, subject:, from:, newer_than:); otherwise the text is
+        searched as one phrase.
+        """
+        if raw:
+            query = (text or "").strip()
+            if not query:
+                return []
+            return self._list(f"({query}) -in:chats -in:spam", limit, full=False)
         cleaned = re.sub(r"[\"“”]", " ", text or "").strip()
         if not cleaned:
             return []

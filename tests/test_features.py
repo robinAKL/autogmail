@@ -908,6 +908,61 @@ class WhatsAppTests(TempHome):
             self.assertIn("1. Georgie Hutchison", reply)
             self.assertIn("1/7 Hastings Road", reply)
 
+    def test_search_understands_a_chinese_request_for_an_english_letter(self):
+        import json
+
+        from gmail_auto.models import Mail
+
+        sign = Mail(
+            id="ins1", thread_id="t1", from_name="Sandeep Sharma via DocHub", from_email="no-reply@dochub.com", reply_email="",
+            subject="REMINDER: ACTION NEEDED: Bin PL QFA 151026_Signed Alteration Quotation_.pdf", date="2026-11-17 11:09",
+            body="", snippet="Partners Life alteration quotation is waiting for your signature.", received_ts=1794900000.0,
+        )
+        noise = Mail(
+            id="n1", thread_id="t2", from_name="Caffeine", from_email="news@caffeine.example", reply_email="",
+            subject="Daily Shot", date="2026-11-17 10:00", body="", snippet="Court news today.", received_ts=1794950000.0,
+        )
+        searched = []
+
+        class _Client:
+            provider = "gmail"
+
+            def search(self, text, limit=25, raw=False):
+                searched.append((text, raw))
+                return [sign] if raw and "dochub" in text.lower() else []
+
+            def list_unread(self, limit=20):
+                return [noise]
+
+            def list_recent(self, limit=25, full=False):
+                return [noise]
+
+        prompts = []
+
+        def fake_complete(system, user, **_):
+            prompts.append(user)
+            if "intent" in system.lower() and "searches" not in system:
+                return json.dumps({"intent": "search", "numbers": [], "query": "保险 单 签字", "instruction": "", "reply": ""})
+            if "searches" in system:
+                return json.dumps(
+                    {
+                        "searches": ["(insurance OR policy OR 保险) (sign OR signature OR dochub OR docusign)"],
+                        "keywords": ["insurance", "signature", "dochub", "保险", "签字"],
+                        "meaning": "An insurance document waiting for the owner's signature.",
+                    }
+                )
+            picks = [int(line.split(".")[0]) for line in user.splitlines() if "dochub" in line.lower()]
+            return json.dumps({"picks": picks})
+
+        with patch("gmail_auto.assistant.complete", side_effect=fake_complete):
+            reply = assistant.handle(
+                whatsapp.Incoming(sender="64210000001", text="帮我找下需要我签字的有一个保险单的邮件"), clients=[_Client()]
+            )
+        self.assertIn("Sandeep Sharma via DocHub", reply)
+        self.assertNotIn("Caffeine", reply)
+        self.assertIn(("(insurance OR policy OR 保险) (sign OR signature OR dochub OR docusign)", True), searched)
+        self.assertTrue(any("帮我找下需要我签字的有一个保险单的邮件" in prompt for prompt in prompts[1:]))
+
     def test_voice_goes_through_gateway_chat_when_only_a_gateway_key_is_set(self):
         from types import SimpleNamespace
 
