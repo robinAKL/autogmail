@@ -869,6 +869,52 @@ class WhatsAppTests(TempHome):
             self.assertIn("1. Georgie Hutchison", reply)
             self.assertIn("1/7 Hastings Road", reply)
 
+    def test_number_after_a_search_opens_that_letter_not_an_older_approval(self):
+        from gmail_auto import store
+
+        notice = approvals.create(
+            sample(id="old1", from_email="rates@council.govt.nz", subject="Rates notice", body="Rates due."),
+            Draft(action="skip", reply="", reason="FYI", summary="A notice."),
+            "en",
+            role="notice",
+            kind="invoice",
+        )
+        self.assertEqual(notice["id"], "1")
+        store.mark_processed(
+            {
+                "id": "g7",
+                "mail_id": "g7",
+                "provider": "gmail",
+                "from_name": "Georgie Hutchison",
+                "from_email": "g.hutchison@example.co.nz",
+                "subject": "More viewing times available - Register to view 1/7 Hastings Road",
+                "date": "2026-11-15",
+                "summary": "New viewing times are open.",
+                "processed_at": "2026-11-15 09:00:00",
+                "sensitive": False,
+            }
+        )
+
+        class _Client:
+            provider = "gmail"
+
+            def list_unread(self, limit=20):
+                return []
+
+            def list_recent(self, limit=25, full=False):
+                return []
+
+        client = _Client()
+        assistant.handle(whatsapp.Incoming(sender="64210000001", text="find Georgie Hutchison"), clients=[client])
+        reply = assistant.handle(whatsapp.Incoming(sender="64210000001", text="Tell me #1 details"), clients=[client])
+        self.assertNotIn("no draft yet", reply)
+        self.assertIn("Subject: More viewing times available", reply)
+
+        listed = assistant.handle(whatsapp.Incoming(sender="64210000001", text="list"), clients=[client])
+        self.assertIn("Rates notice", listed)
+        again = assistant.handle(whatsapp.Incoming(sender="64210000001", text="Tell me #1 details"), clients=[client])
+        self.assertNotIn("More viewing times", again)
+
     def test_whatsapp_can_summarize_unread_search_reply_and_archive_by_number(self):
         from gmail_auto.models import Mail
 

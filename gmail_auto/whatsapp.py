@@ -66,7 +66,9 @@ def send_text(body: str) -> str:
 
 def send_notice(item: dict) -> str:
     """Tell the owner an important letter arrived, with the number to reply against."""
-    return send_text(notice_text(item))
+    sent = send_text(notice_text(item))
+    _numbers_mean_approvals()
+    return sent
 
 
 def notice_text(item: dict) -> str:
@@ -90,7 +92,9 @@ def send_approval(item: dict) -> list[str]:
     kind, to = _target()
     detail = approval_text(item)
     if kind == "twilio":
-        return [_twilio_send(to, _clip(detail + "\n\nReply YES to send, NO to skip, or tell me what to change.", _TWILIO_LIMIT))]
+        ids = [_twilio_send(to, _clip(detail + "\n\nReply YES to send, NO to skip, or tell me what to change.", _TWILIO_LIMIT))]
+        _numbers_mean_approvals()
+        return ids
     first = _meta_send(to, {"type": "text", "text": {"preview_url": False, "body": _clip(detail, _META_LIMIT)}})
     buttons = {
         "type": "interactive",
@@ -105,7 +109,19 @@ def send_approval(item: dict) -> list[str]:
             },
         },
     }
-    return [first, _meta_send(to, buttons)]
+    ids = [first, _meta_send(to, buttons)]
+    _numbers_mean_approvals()
+    return ids
+
+
+def _numbers_mean_approvals() -> None:
+    """After an approval message, a bare number refers to approvals again, not an earlier search list."""
+    from gmail_auto.store import set_state
+
+    try:
+        set_state("wa_last_list", "approvals")
+    except ConfigError:
+        pass
 
 
 def approval_text(item: dict) -> str:

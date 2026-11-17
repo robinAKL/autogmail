@@ -244,11 +244,13 @@ def _fallback_intent(text: str, waiting: list, context_id: str) -> dict:
         return {"intent": "archive", "numbers": [archive_num], "instruction": "", "query": "", "reply": "", "immediate": True}
 
     number = numbers[0] if numbers else ""
+    if _shown_mail_entry(numbers) is not None:
+        item = None
     if item is None and number:
         listed = _listed_entry(number)
         if listed is not None:
             instruction = _instruction(text)
-            if not instruction:
+            if _wants_reading(instruction):
                 return {"intent": "read", "numbers": [number], "instruction": "", "query": "", "reply": ""}
             return {"intent": "draft_reply", "numbers": [number], "instruction": instruction, "query": "", "reply": ""}
 
@@ -292,6 +294,8 @@ def _dispatch(parsed: dict, text: str, waiting: list, clients: list | None) -> s
         numbers = [str(parsed["number"]).lstrip("#")]
     if numbers:
         _remember_focus(numbers)
+    if intent == "revise" and _shown_mail_entry(numbers) is not None:
+        intent = "read" if _wants_reading(parsed.get("instruction") or "") else "draft_reply"
 
     if intent == "help":
         return _HELP
@@ -332,6 +336,9 @@ def _dispatch(parsed: dict, text: str, waiting: list, clients: list | None) -> s
             return "What should I search for?"
         return _search_mail(query, clients)
     if intent == "read":
+        shown = _shown_mail_entry(numbers)
+        if shown is not None:
+            return _read_entry(shown, clients)
         approval = parsed.get("approval") or _item_from_numbers(numbers, waiting)
         if approval is not None and approval.get("draft"):
             return (
@@ -687,6 +694,7 @@ def _revise(item, instruction: str) -> str:
 
 
 def _list(waiting) -> str:
+    set_state("wa_last_list", "approvals")
     if not waiting:
         return "Nothing is waiting for you."
     lines = [f"{len(waiting)} waiting for you:"]
@@ -772,6 +780,24 @@ def _resolve_mail_entry(number: str, query: str, clients: list | None) -> dict |
     return None
 
 
+def _explain_mail(who: str, subject: str, body: str) -> str:
+    """Two or three plain sentences on what the letter says and whether anything needs doing."""
+    from gmail_auto.llm import model_ready
+
+    if not body.strip() or (complete is llm_mod.complete and not model_ready()):
+        return ""
+    try:
+        text = complete(
+            "Explain this email to its owner in two or three short, plain sentences: what it says, "
+            "and whether they need to do anything (and by when). No greeting, no lists.",
+            f"From: {who}\nSubject: {subject}\n\n{body[:3000]}",
+            max_tokens=220,
+        )
+    except ConfigError:
+        return ""
+    return " ".join(text.split())[:600]
+
+
 def _read_entry(entry: dict, clients: list | None) -> str:
     provider = entry.get("provider") or "gmail"
     mail_id = entry.get("mail_id") or ""
@@ -805,9 +831,11 @@ def _read_entry(entry: dict, clients: list | None) -> str:
                     break
     num = entry.get("num") or ""
     prefix = f"#{num} " if num else ""
+    meaning = _explain_mail(who, subject, body)
     return (
         f"{prefix}From: {who}\nSubject: {subject}"
         + (f"\nDate: {when}" if when else "")
+        + (f"\n\nWhat it means: {meaning}" if meaning else "")
         + (f"\n\n{body.strip()}" if body.strip() else "")
         + (f"\n\nReply: REPLY {num} <what to say> | Archive: ARCHIVE {num}" if num else "")
     )
@@ -913,6 +941,23 @@ def _instruction(text: str) -> str:
     return cleaned
 
 
+_READ_WORDS = re.compile(
+    r"\b(details?|tell me|what(?:'s| is| does)?|mean(?:ing|s)?|read|show|open|explain|summar(?:y|ise|ize)|about)\b"
+    r"|详情|详细|什么意思|啥意思|看看|看一下|说说|讲讲|内容|解释",
+    re.IGNORECASE,
+)
+
+
+def _wants_reading(instruction: str) -> bool:
+    """'Tell me #1 details' asks to see the letter; 'reply 1 thanks' asks to answer it."""
+    cleaned = (instruction or "").strip()
+    if not cleaned:
+        return True
+    if re.match(r"^\s*(?:reply|re|回[复覆]?)\b", cleaned, flags=re.IGNORECASE):
+        return False
+    return bool(_READ_WORDS.search(cleaned)) and len(cleaned) <= 80
+
+
 def _word(text: str) -> str:
     cleaned = re.sub(r"#?\s*\d{1,6}", " ", text.lower())
     cleaned = re.sub(r"[.!?。！？,，'’]", "", cleaned)
@@ -967,7 +1012,15 @@ def _save_mail_list(mails: list) -> list[dict]:
             }
         )
     set_state("wa_mail_list", entries)
+    set_state("wa_last_list", "mail")
     return entries
+
+
+def _shown_mail_entry(numbers: list[str]) -> dict | None:
+    """A number right after a search or unread list means that list, not an older approval with the same number."""
+    if not numbers or get_state("wa_last_list") != "mail":
+        return None
+    return _listed_entry(str(numbers[0]).lstrip("#"))
 
 
 def _listed_entry(number: str) -> dict | None:
