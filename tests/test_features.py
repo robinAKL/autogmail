@@ -942,7 +942,8 @@ class WhatsAppTests(TempHome):
         def fake_complete(system, user, **_):
             prompts.append(user)
             if "intent" in system.lower() and "searches" not in system:
-                return json.dumps({"intent": "search", "numbers": [], "query": "保险 单 签字", "instruction": "", "reply": ""})
+                # The model answered from the short lists it was shown instead of searching, as it once did live.
+                return json.dumps({"intent": "answer", "numbers": [], "query": "", "instruction": "", "reply": "我没有找到有关的邮件。"})
             if "searches" in system:
                 return json.dumps(
                     {
@@ -960,6 +961,10 @@ class WhatsAppTests(TempHome):
             )
         self.assertIn("Sandeep Sharma via DocHub", reply)
         self.assertNotIn("Caffeine", reply)
+        self.assertNotIn("没有找到", reply)
+        self.assertTrue(assistant._asks_to_find_mail("where is the email from the insurer?"))
+        self.assertFalse(assistant._asks_to_find_mail("what time is it in London?"))
+        self.assertFalse(assistant._asks_to_find_mail("找一下 #3 的邮件"))
         self.assertIn(("(insurance OR policy OR 保险) (sign OR signature OR dochub OR docusign)", True), searched)
         self.assertTrue(any("帮我找下需要我签字的有一个保险单的邮件" in prompt for prompt in prompts[1:]))
 

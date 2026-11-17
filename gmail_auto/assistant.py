@@ -48,7 +48,10 @@ Return ONE JSON object:
   revise (rewrite a waiting draft using instruction),
   list, status, pause, help,
   summarize (unread / important mail),
-  search (query is the keyword),
+  search (find or look for a letter in the mailbox: "帮我找…的邮件", "where is the email about…", "find the
+    insurance form I need to sign". query = what the letter is about, in a few words. The mailbox search
+    understands meaning and both languages. Always choose search for these; never answer that it cannot be
+    found, because the lists below are only a small part of the mailbox),
   read (full details of a letter),
   analyze (what it is, spam/phishing/ad vs real, what they want, whether to reply),
   draft_reply (write a reply to a listed or waiting letter),
@@ -57,7 +60,7 @@ Return ONE JSON object:
   create_event (personal reminder/meeting),
   invite (meeting with attendees),
   calendar (what's on the calendar),
-  answer (a question; put the answer in reply)
+  answer (a general question that is not asking to find, read or act on a letter; put the answer in reply)
 - numbers: array of waiting-item or listed-email ids mentioned (e.g. ["145","139","138"]). Empty if none.
 - number: first number as a string, or ""
 - query: search keyword, sender, or calendar range, else ""
@@ -75,7 +78,12 @@ Examples:
 - "帮我看看第一封是不是广告" → analyze, number "1"
 - "明天下午3点和 lee@x.com 开会" → invite
 - "给 lee@x.com 发邮件说明报价" → compose
+- "帮我找下需要我签字的保险单的邮件" → search, query "insurance document to sign"
 """
+# "Find me the email about…" in either language. The model sometimes answers these from the short lists it
+# is shown instead of searching the mailbox, so they are sent to search whatever it decided.
+_FIND_WORDS = re.compile(r"(?i)(找|查|搜|\bfind\b|\blook(?:ing)? for\b|\bwhere(?:'s| is| are)\b|\blocate\b|\bdig up\b|\bsearch\b)")
+_MAIL_WORDS = re.compile(r"(?i)(邮件|来信|信件|\bemails?\b|\bmails?\b|\bletters?\b|\bmessages?\b)")
 
 
 def handle(incoming: whatsapp.Incoming, clients: list | None = None) -> str:
@@ -141,6 +149,9 @@ def _interpret(text: str, waiting: list, context_id: str, clients: list | None) 
     except (ConfigError, ReplyError):
         llm_data = None
     if llm_data and llm_data.get("intent") in _INTENTS:
+        if _asks_to_find_mail(text) and llm_data["intent"] in ("answer", "help", "summarize", "status"):
+            llm_data["intent"] = "search"
+            llm_data["query"] = (llm_data.get("query") or "").strip() or text
         if not llm_data.get("numbers") and fallback.get("numbers"):
             llm_data["numbers"] = fallback["numbers"]
         llm_data["numbers"] = _ground_ids(text, llm_data.get("numbers") or [])
@@ -151,6 +162,11 @@ def _interpret(text: str, waiting: list, context_id: str, clients: list | None) 
         return llm_data
     fallback["numbers"] = _ground_ids(text, fallback.get("numbers") or [])
     return fallback
+
+
+def _asks_to_find_mail(text: str) -> bool:
+    text = text or ""
+    return bool(_FIND_WORDS.search(text) and _MAIL_WORDS.search(text)) and not _numbers(text)
 
 
 def _llm_intent(text: str, waiting: list, clients: list | None) -> dict | None:
