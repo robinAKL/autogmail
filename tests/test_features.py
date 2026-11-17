@@ -964,6 +964,38 @@ class WhatsAppTests(TempHome):
         )
         self.assertEqual(text, "Hello there.\n Bold stays. Code {ABC} stays.")
 
+    def test_spoken_numbers_open_the_letter_from_the_last_search(self):
+        import json
+
+        from gmail_auto import store
+
+        assistant._save_mail_list(
+            [
+                sample(id="p1", from_name="Partners Life", subject="Policy alteration to sign"),
+                sample(id="p2", from_name="Provident", subject="Motor insurance"),
+            ]
+        )
+        self.assertEqual(store.get_state("wa_last_list"), "mail")
+        self.assertEqual(assistant._spoken_numbers("Show me number one, more detail."), "Show me number 1, more detail.")
+        self.assertEqual(assistant._spoken_numbers("tell me about the second one"), "tell me about #2")
+        self.assertEqual(assistant._spoken_numbers("看看第二封邮件"), "看看#2邮件")
+        self.assertEqual(assistant._spoken_numbers("我第一次用这个"), "我第一次用这个")
+        self.assertEqual(assistant._as_numbers("one"), ["1"])
+        self.assertEqual(assistant._as_numbers(["#two"]), ["2"])
+
+        class _Client:
+            provider = "gmail"
+
+            def get_message(self, message_id):
+                return sample(id=message_id, from_name="Partners Life", subject="Policy alteration to sign", body="Please sign.")
+
+        # The model wrote the number as a word and left numbers empty, as it did live.
+        said = json.dumps({"intent": "read", "numbers": [], "number": "one", "query": "number one", "instruction": "", "reply": ""})
+        with patch("gmail_auto.assistant.complete", return_value=said):
+            reply = assistant.handle(whatsapp.Incoming(sender="64210000001", text="Show me number one. More detail."), clients=[_Client()])
+        self.assertIn("#1 From: Partners Life", reply)
+        self.assertIn("Policy alteration to sign", reply)
+
     def test_state_keys_do_not_undo_each_other(self):
         from gmail_auto.storage import save_doc
         from gmail_auto.store import get_state, set_state

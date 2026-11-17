@@ -105,6 +105,7 @@ def handle(incoming: whatsapp.Incoming, clients: list | None = None) -> str:
         if stance == "no":
             set_state("wa_pending_action", None)
             return "Cancelled. Nothing was sent or deleted."
+    text = _spoken_numbers(text)
     parsed = _interpret(text, waiting, incoming.context_id, clients)
     return _dispatch(parsed, text, waiting, clients)
 
@@ -645,11 +646,57 @@ def _as_numbers(value) -> list[str]:
     if value is None or value == "":
         return []
     if isinstance(value, (list, tuple)):
-        return [str(item).strip().lstrip("#") for item in value if str(item).strip()]
-    text = str(value).strip()
+        out = [_digit(str(item)) for item in value if str(item).strip()]
+        return [item for item in out if item]
+    text = _spoken_numbers(str(value).strip())
     if "," in text or " " in text:
         return _numbers(text)
-    return [text.lstrip("#")] if text else []
+    return [_digit(text)] if _digit(text) else []
+
+
+_WORD_NUMBERS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+    "eighteen": 18, "nineteen": 19, "twenty": 20,
+}
+_ORDINALS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9,
+    "tenth": 10, "last": 0,
+}
+_CN_DIGITS = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+_SPOKEN = re.compile(
+    r"(?i)\b(number|no\.?|item|email|letter|mail|message)\s+(" + "|".join(_WORD_NUMBERS) + r")\b"
+)
+_ORDINAL = re.compile(r"(?i)\bthe\s+(" + "|".join(k for k in _ORDINALS if k != "last") + r")\s+(one|email|letter|mail|message)\b")
+_CN_ORDINAL = re.compile(r"第\s*([一二两三四五六七八九十]{1,3})\s*(封|个|条|项|号)")
+
+
+def _spoken_numbers(text: str) -> str:
+    """Voice notes come back as "number one" or "第一封"; turn them into digits the rest of the code reads."""
+    text = _SPOKEN.sub(lambda m: f"{m.group(1)} {_WORD_NUMBERS[m.group(2).lower()]}", text or "")
+    text = _ORDINAL.sub(lambda m: f"#{_ORDINALS[m.group(1).lower()]}", text)
+    return _CN_ORDINAL.sub(lambda m: f"#{_cn_number(m.group(1))}" if _cn_number(m.group(1)) else m.group(0), text)
+
+
+def _cn_number(text: str) -> int:
+    if text == "十":
+        return 10
+    if "十" in text:
+        tens, _, ones = text.partition("十")
+        return (_CN_DIGITS.get(tens, 1) if tens else 1) * 10 + (_CN_DIGITS.get(ones, 0) if ones else 0)
+    return _CN_DIGITS.get(text, 0) if len(text) == 1 else 0
+
+
+def _digit(value: str) -> str:
+    text = value.strip().lstrip("#").strip().lower()
+    if text.isdigit():
+        return text
+    if text in _WORD_NUMBERS:
+        return str(_WORD_NUMBERS[text])
+    if text in _ORDINALS and _ORDINALS[text]:
+        return str(_ORDINALS[text])
+    found = _numbers(_spoken_numbers(text))
+    return found[0] if found else ""
 
 
 def _remember_focus(ids: list[str]) -> None:
