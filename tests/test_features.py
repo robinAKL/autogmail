@@ -908,6 +908,62 @@ class WhatsAppTests(TempHome):
             self.assertIn("1. Georgie Hutchison", reply)
             self.assertIn("1/7 Hastings Road", reply)
 
+    def test_search_reads_letters_whose_preview_is_blank_and_falls_back_to_closest(self):
+        import json
+
+        from gmail_auto.models import Mail
+
+        blank = "‌ ͏‌ " * 20
+        sign = Mail(
+            id="d1", thread_id="t1", from_name="Sandeep Sharma via DocHub", from_email="no-reply@dochub.com", reply_email="",
+            subject="REMINDER: ACTION NEEDED: Bin PL QFA 151026_Signed Alteration Quotation_.pdf", date="2026-11-17",
+            body="", snippet=blank, received_ts=1794900000.0,
+        )
+        full = Mail(
+            id="d1", thread_id="t1", from_name=sign.from_name, from_email=sign.from_email, reply_email="", subject=sign.subject,
+            date="2026-11-17", body=".x { color: red; } Partners Life income cover alteration. Please sign by Wednesday.", snippet=blank,
+        )
+        opened = []
+
+        class _Client:
+            provider = "gmail"
+
+            def search(self, text, limit=25, raw=False):
+                return [sign] if raw else []
+
+            def get_message(self, message_id):
+                opened.append(message_id)
+                return full
+
+            def list_unread(self, limit=20):
+                return []
+
+            def list_recent(self, limit=25, full=False):
+                return []
+
+        seen = []
+
+        def fake_complete(system, user, **_):
+            if "searches" in system:
+                return json.dumps({"searches": ["dochub; subject:(signed)"], "keywords": ["signed", "dochub", "insurance"], "meaning": "x"})
+            seen.append(user)
+            return json.dumps({"picks": []})
+
+        with patch("gmail_auto.assistant.complete", side_effect=fake_complete):
+            reply = assistant._search_mail("保险 签字", [_Client()], request="帮我找需要签字的保险单")
+        self.assertEqual(opened, ["d1"])
+        self.assertIn("Partners Life income cover alteration", seen[0])
+        self.assertNotIn("color: red", seen[0])
+        self.assertIn("Closest", reply)
+        self.assertIn("Sandeep Sharma via DocHub", reply)
+
+    def test_letters_read_on_whatsapp_lose_css_and_invisible_padding(self):
+        text = assistant._plain(
+            "‌‌ Hello there.\n.hero-title { margin: 0 30px !important; } @media (max-width: 600px) { .a { padding: 0; } }"
+            "<style>p{color:red}</style><b>Bold</b> stays. Code {ABC} stays."
+        )
+        self.assertEqual(text, "Hello there.\n Bold stays. Code {ABC} stays.")
+
     def test_state_keys_do_not_undo_each_other(self):
         from gmail_auto.storage import save_doc
         from gmail_auto.store import get_state, set_state

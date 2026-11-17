@@ -854,7 +854,7 @@ def _read_entry(entry: dict, clients: list | None) -> str:
         if get_msg is not None:
             try:
                 mail = get_msg(mail_id)
-                body = (mail.body or mail.snippet or "")[:1000]
+                body = mail.body or mail.snippet or body
                 when = mail.date or when
             except ConfigError:
                 pass
@@ -869,9 +869,12 @@ def _read_entry(entry: dict, clients: list | None) -> str:
                     continue
                 found = next((item for item in candidates if getattr(item, "id", "") == mail_id), None)
                 if found is not None:
-                    body = (found.body or found.snippet or "")[:1000]
+                    body = found.body or found.snippet or body
                     when = found.date or when
                     break
+    body = _plain(body)
+    if len(body) > 1000:
+        body = body[:1000].rsplit(" ", 1)[0] + "…"
     num = entry.get("num") or ""
     prefix = f"#{num} " if num else ""
     meaning = _explain_mail(who, subject, body)
@@ -1050,7 +1053,7 @@ def _save_mail_list(mails: list) -> list[dict]:
                 "reply_email": mail.reply_email,
                 "subject": mail.subject,
                 "date": mail.date,
-                "snippet": (mail.snippet or mail.body or "")[:300],
+                "snippet": _plain(mail.snippet or "")[:300] or _plain(getattr(mail, "body", "") or "")[:300],
                 "received_ts": float(getattr(mail, "received_ts", 0) or 0),
             }
         )
@@ -1165,6 +1168,8 @@ def _search_mail(query: str, clients: list | None = None, request: str = "") -> 
     if not matches:
         return f"No emails found for \"{query}\"."
     entries = _save_mail_list(matches)
+    if all(getattr(mail, "_closest", False) for mail in matches):
+        return _format_mail_list(f"No exact match for \"{query}\". Closest ({len(entries)}):", entries)
     return _format_mail_list(f"Search \"{query}\" ({len(entries)}):", entries)
 
 
@@ -1179,8 +1184,13 @@ from DocHub without the word insurance, and an insurer's letter may never say "s
 combining the parts, write separate searches for EACH part on its own (one only about signing, one only
 about insurance, one for likely senders or services), plus subject: searches for likely subject words.
 
-Return JSON only:
-{"searches": ["4 to 6 Gmail search queries, each short, using OR between synonyms, e.g. (insurance OR policy OR 保险) (sign OR signature OR docusign OR dochub); (sign OR signature OR signed OR 签字) newer_than:60d; docusign OR dochub OR adobesign"],
+Each search is its own string in the list. Never join two searches with ";" or "," in one string.
+
+Return JSON only, for example:
+{"searches": ["(insurance OR policy OR 保险) (sign OR signature OR docusign OR dochub)",
+              "(sign OR signature OR signed OR 签字) newer_than:90d",
+              "subject:(signed OR signature OR \\"action needed\\")",
+              "docusign OR dochub OR adobesign"],
  "keywords": ["8 to 20 single words or short phrases in English and Chinese that such an email would contain"],
  "meaning": "one short English line saying what email is wanted"}"""
 
@@ -1188,8 +1198,11 @@ _SEARCH_PICK = """You pick which emails match what the owner is looking for. Jud
 languages: a Chinese request can match an English email. Weigh every part of the request: if they ask for
 something they must sign, a document waiting for signature (DocuSign, DocHub, "action needed", "please sign")
 fits better than a plain policy letter on the same topic, and a reminder that still needs action fits better
-than a "completed" or "finalized" notice. Put the best fit first. Only pick emails that really fit; if none
-do, return an empty list. Return JSON only: {"picks": [candidate numbers, best match first]}"""
+than a "completed" or "finalized" notice. Subjects are often cryptic codes (e.g. "Bin PL QFA ... Signed
+Alteration Quotation" is an insurance policy alteration sent for signing), so read the sender and preview too.
+Put the best fit first. When unsure, include the email: the owner would rather see a few possible matches
+than nothing. Leave out only emails that clearly have nothing to do with the request.
+Return JSON only: {"picks": [candidate numbers, best match first]}"""
 
 
 def _can_think() -> bool:
@@ -1212,7 +1225,11 @@ def _search_by_meaning(request: str, query: str, found_clients: list, pool: dict
         return None
     if not plan:
         return None
-    searches = [str(item).strip() for item in plan.get("searches") or [] if str(item).strip()][:6]
+    searches = []
+    for item in plan.get("searches") or []:
+        # A model sometimes packs several searches into one string; Gmail then finds nothing.
+        searches.extend(part.strip() for part in str(item).split(";") if part.strip())
+    searches = searches[:8]
     keywords = [str(item).strip().lower() for item in plan.get("keywords") or [] if len(str(item).strip()) > 1][:20]
     for client in found_clients:
         for search in searches:
@@ -1234,8 +1251,14 @@ def _search_by_meaning(request: str, query: str, found_clients: list, pool: dict
     if not candidates:
         return []
     lines = []
+    fetched = 0
     for index, mail in enumerate(candidates, 1):
-        snippet = " ".join((mail.snippet or getattr(mail, "body", "") or "").split())[:220]
+        snippet = _plain(mail.snippet or getattr(mail, "body", "") or "")[:220]
+        if len(snippet) < 40 and fetched < 8 and index <= 15:
+            # Some senders (DocHub, many newsletters) fill the preview with invisible characters, so read the
+            # start of the letter itself; otherwise only a cryptic subject is left to judge by.
+            fetched += 1
+            snippet = _opening(mail, found_clients) or snippet
         lines.append(
             f"{index}. From: {mail.from_name or ''} <{mail.from_email or ''}> | Date: {mail.date or ''} | "
             f"Subject: {mail.subject or '(no subject)'} | {snippet}"
@@ -1256,7 +1279,52 @@ def _search_by_meaning(request: str, query: str, found_clients: list, pool: dict
             continue
         if 1 <= number <= len(candidates) and candidates[number - 1] not in out:
             out.append(candidates[number - 1])
+    if not out and keywords:
+        # Nothing judged a sure match: show the closest by the words such a letter would contain, marked as such.
+        close = [mail for mail in candidates if sum(word in _mail_blob(mail) for word in keywords) >= 2][:5]
+        for mail in close:
+            setattr(mail, "_closest", True)
+        return close
     return out[:10]
+
+
+def _opening(mail, found_clients: list) -> str:
+    client = _client_for(getattr(mail, "provider", "gmail") or "gmail", found_clients)
+    fn = getattr(client, "get_message", None) if client is not None else None
+    if fn is None or not getattr(mail, "id", ""):
+        return ""
+    try:
+        full = fn(mail.id)
+    except Exception:
+        return ""
+    text = _plain(getattr(full, "body", "") or getattr(full, "snippet", "") or "")
+    if text and not getattr(mail, "body", ""):
+        try:
+            mail.body = text[:1500]
+        except AttributeError:
+            pass
+    return text[:220]
+
+
+_INVISIBLE = re.compile("[­͏؜ᅟᅠ឴឵᠎​-‏‪-‮⁠-⁤ㅤ﻿ﾠ]")
+_CSS_RULE = re.compile(r"[@.#]?[A-Za-z0-9_\-, .#:>\[\]=\"'()*@!]{0,120}\{(?:[^{}]*:[^{}]*|\s*)\}")
+
+
+def _plain(text: str) -> str:
+    """Readable text for WhatsApp: no invisible padding, HTML tags, style blocks or CSS rules."""
+    text = _INVISIBLE.sub("", text or "")
+    text = re.sub(r"(?is)<(style|script|head)\b.*?</\1>", " ", text)
+    text = re.sub(r"(?s)<!--.*?-->", " ", text)
+    text = re.sub(r"<[^>]{1,400}>", " ", text)
+    # CSS that leaked into the plain-text part, often nested in @media blocks: drop it a layer at a time.
+    for _ in range(3):
+        text, count = _CSS_RULE.subn(" ", text)
+        if not count:
+            break
+    text = re.sub(r"&nbsp;|&#160;", " ", text)
+    text = re.sub(r"[ \t\f\v]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n\n", text)
+    return text.strip()
 
 
 def _search_words(query: str) -> list[str]:
