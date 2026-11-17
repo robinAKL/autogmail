@@ -29,6 +29,12 @@ def set_live(live: bool) -> None:
 
 
 def get_state(key: str, default=None):
+    """Each key is its own record, so requests running at the same time on the hosted site cannot undo each
+    other's writes (one shared record was read, changed and written back whole). Keys saved before this
+    change are still read from the old shared record."""
+    own = load_doc(_state_name(key), None)
+    if isinstance(own, dict) and "v" in own:
+        return own["v"]
     data = load_doc("state", {})
     if not isinstance(data, dict):
         return default
@@ -36,12 +42,11 @@ def get_state(key: str, default=None):
 
 
 def set_state(key: str, value) -> None:
-    with LOCK:
-        data = load_doc("state", {})
-        if not isinstance(data, dict):
-            data = {}
-        data[key] = value
-        save_doc("state", data)
+    save_doc(_state_name(key), {"v": value})
+
+
+def _state_name(key: str) -> str:
+    return "state." + _SAFE_ID.sub("_", key)[:70]
 
 
 def load_processed() -> dict:

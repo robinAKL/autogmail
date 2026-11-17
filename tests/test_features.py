@@ -908,6 +908,22 @@ class WhatsAppTests(TempHome):
             self.assertIn("1. Georgie Hutchison", reply)
             self.assertIn("1/7 Hastings Road", reply)
 
+    def test_state_keys_do_not_undo_each_other(self):
+        from gmail_auto.storage import save_doc
+        from gmail_auto.store import get_state, set_state
+
+        save_doc("state", {"wa_mail_list": [{"num": "1", "subject": "Old Meetup"}], "wa_last_list": "approvals", "older_key": 5})
+        set_state("wa_mail_list", [{"num": "1", "subject": "Insurance"}])
+        set_state("wa_last_list", "mail")
+        # Another request that read the whole record earlier writes it back; the search list must survive.
+        save_doc("state", {"wa_mail_list": [{"num": "1", "subject": "Old Meetup"}], "wa_last_list": "approvals", "older_key": 5})
+        set_state("wa_seen", ["m1"])
+        self.assertEqual(get_state("wa_mail_list")[0]["subject"], "Insurance")
+        self.assertEqual(get_state("wa_last_list"), "mail")
+        self.assertEqual(get_state("older_key"), 5)
+        set_state("wa_pending_action", None)
+        self.assertIsNone(get_state("wa_pending_action", "default"))
+
     def test_search_understands_a_chinese_request_for_an_english_letter(self):
         import json
 

@@ -1174,14 +1174,22 @@ loosely ("the insurance thing I have to sign"). Think about how such an email is
 subject, the kind of sender (e.g. DocuSign, DocHub, Adobe Sign for signatures; the insurer or adviser for
 insurance), and words in both English and Chinese.
 
+An email rarely uses every word of the request: a form to sign may only say "Signed Alteration Quotation"
+from DocHub without the word insurance, and an insurer's letter may never say "sign". So besides one search
+combining the parts, write separate searches for EACH part on its own (one only about signing, one only
+about insurance, one for likely senders or services), plus subject: searches for likely subject words.
+
 Return JSON only:
-{"searches": ["3 to 6 Gmail search queries, each short, using OR between synonyms, e.g. (insurance OR policy OR 保险) (sign OR signature OR signed OR docusign OR dochub)"],
+{"searches": ["4 to 6 Gmail search queries, each short, using OR between synonyms, e.g. (insurance OR policy OR 保险) (sign OR signature OR docusign OR dochub); (sign OR signature OR signed OR 签字) newer_than:60d; docusign OR dochub OR adobesign"],
  "keywords": ["8 to 20 single words or short phrases in English and Chinese that such an email would contain"],
  "meaning": "one short English line saying what email is wanted"}"""
 
 _SEARCH_PICK = """You pick which emails match what the owner is looking for. Judge by meaning, across
-languages: a Chinese request can match an English email. Only pick emails that really fit; if none do,
-return an empty list. Return JSON only: {"picks": [candidate numbers, best match first]}"""
+languages: a Chinese request can match an English email. Weigh every part of the request: if they ask for
+something they must sign, a document waiting for signature (DocuSign, DocHub, "action needed", "please sign")
+fits better than a plain policy letter on the same topic, and a reminder that still needs action fits better
+than a "completed" or "finalized" notice. Put the best fit first. Only pick emails that really fit; if none
+do, return an empty list. Return JSON only: {"picks": [candidate numbers, best match first]}"""
 
 
 def _can_think() -> bool:
