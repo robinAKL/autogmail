@@ -102,10 +102,16 @@ def complete(system: str, user: str, max_tokens: int = 900, temperature: float =
 
 
 TRANSCRIBE_MODELS = ("gpt-4o-mini-transcribe", "whisper-1")
+# The Vercel AI Gateway has no /audio/transcriptions; it takes audio as a file part on chat completions.
+GATEWAY_AUDIO_MODEL = "google/gemini-3.6-flash"
+_HEAR_PROMPT = (
+    "Transcribe this voice message word for word, in the language it is spoken. "
+    "Return only the transcript, with no notes or quotation marks. If nothing is said, return nothing."
+)
 
 
 def transcribe(audio: bytes, filename: str = "voice.ogg", mime: str = "audio/ogg") -> str:
-    """Turn a voice note into text. Prefers a direct OpenAI key, since gateways may not carry audio."""
+    """Turn a voice note into text: OpenAI's transcription with a direct key, else a Gemini model via the gateway."""
     try:
         from openai import APIConnectionError, APIStatusError, AuthenticationError, OpenAI
     except ImportError as exc:
@@ -113,17 +119,22 @@ def transcribe(audio: bytes, filename: str = "voice.ogg", mime: str = "audio/ogg
     if not audio:
         raise ReplyError("The voice message was empty.")
 
+    from gmail_auto.envfile import ai_gateway_key, load_env
+
+    load_env()
     direct = (os.getenv("OPENAI_API_KEY") or "").strip()
-    explicit_url = (os.getenv("OPENAI_BASE_URL") or "").strip()
-    if direct:
-        kwargs = {"api_key": direct}
-        if explicit_url:
-            kwargs["base_url"] = explicit_url
-    else:
-        kwargs = {"api_key": require_openai_key()}
-        base_url = openai_base_url()
-        if base_url:
-            kwargs["base_url"] = base_url
+    explicit_url = (os.getenv("OPENAI_BASE_URL") or "").strip().rstrip("/")
+    if explicit_url == VERCEL_GATEWAY_URL:
+        explicit_url = ""
+    if not direct or direct.startswith("vck_"):
+        gateway = ai_gateway_key() or direct
+        if not gateway:
+            raise ReplyError("No AI key is set, so voice messages cannot be read.")
+        return _transcribe_via_gateway(OpenAI(api_key=gateway, base_url=VERCEL_GATEWAY_URL, timeout=60.0, max_retries=0), audio, filename, mime)
+
+    kwargs = {"api_key": direct}
+    if explicit_url:
+        kwargs["base_url"] = explicit_url
     client = OpenAI(timeout=60.0, max_retries=0, **kwargs)
     last: Exception | None = None
     for model in TRANSCRIBE_MODELS:
@@ -140,8 +151,43 @@ def transcribe(audio: bytes, filename: str = "voice.ogg", mime: str = "audio/ogg
         if text:
             return text
     if last is not None:
+        if ai_gateway_key():
+            return _transcribe_via_gateway(
+                OpenAI(api_key=ai_gateway_key(), base_url=VERCEL_GATEWAY_URL, timeout=60.0, max_retries=0), audio, filename, mime
+            )
         raise ReplyError(f"Could not read the voice message ({getattr(last, 'status_code', '')}).") from last
     raise ReplyError("Could not hear any words in the voice message.")
+
+
+def _transcribe_via_gateway(client, audio: bytes, filename: str, mime: str) -> str:
+    import base64
+
+    from openai import APIConnectionError, APIStatusError, AuthenticationError
+
+    model = (os.getenv("VOICE_MODEL") or "").strip() or GATEWAY_AUDIO_MODEL
+    data_url = f"data:{mime};base64," + base64.b64encode(audio).decode("ascii")
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": _HEAR_PROMPT},
+                        {"type": "file", "file": {"filename": filename, "file_data": data_url}},
+                    ],
+                }
+            ],
+            max_tokens=600,
+            temperature=0,
+        )
+    except AuthenticationError as exc:
+        raise ReplyError("The AI Gateway key was rejected while reading the voice message.") from exc
+    except APIConnectionError as exc:
+        raise ReplyError("Could not reach the AI Gateway to read the voice message.") from exc
+    except APIStatusError as exc:
+        raise ReplyError(f"The AI Gateway could not read the voice message with {model} ({getattr(exc, 'status_code', '')}).") from exc
+    return _message_text(response).strip().strip('"“”').strip()
 
 
 def parse_json(text: str) -> dict | None:

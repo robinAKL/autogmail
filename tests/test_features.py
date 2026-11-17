@@ -869,6 +869,42 @@ class WhatsAppTests(TempHome):
             self.assertIn("1. Georgie Hutchison", reply)
             self.assertIn("1/7 Hastings Road", reply)
 
+    def test_voice_goes_through_gateway_chat_when_only_a_gateway_key_is_set(self):
+        from types import SimpleNamespace
+
+        from gmail_auto import llm
+
+        calls = []
+
+        class _Completions:
+            def create(self, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='"find 1/7"'))])
+
+        class _OpenAI:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+                self.chat = SimpleNamespace(completions=_Completions())
+
+        saved = {k: os.environ.get(k) for k in ("OPENAI_API_KEY", "AI_GATEWAY_API_KEY", "OPENAI_BASE_URL")}
+        try:
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ["OPENAI_BASE_URL"] = ""
+            os.environ["AI_GATEWAY_API_KEY"] = "gw-test-key"
+            with patch("gmail_auto.envfile.load_env"), patch("openai.OpenAI", _OpenAI):
+                heard = llm.transcribe(b"OggS", "voice.ogg", "audio/ogg")
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        self.assertEqual(heard, "find 1/7")
+        self.assertEqual(calls[0]["base_url"], llm.VERCEL_GATEWAY_URL)
+        part = calls[1]["messages"][0]["content"][1]
+        self.assertEqual(part["type"], "file")
+        self.assertTrue(part["file"]["file_data"].startswith("data:audio/ogg;base64,"))
+
     def test_number_after_a_search_opens_that_letter_not_an_older_approval(self):
         from gmail_auto import store
 
@@ -914,6 +950,13 @@ class WhatsAppTests(TempHome):
         self.assertIn("Rates notice", listed)
         again = assistant.handle(whatsapp.Incoming(sender="64210000001", text="Tell me #1 details"), clients=[client])
         self.assertNotIn("More viewing times", again)
+
+        for text in ("More details about #1", "1"):
+            shown = assistant.handle(whatsapp.Incoming(sender="64210000001", text=text), clients=[client])
+            self.assertNotIn("no draft yet", shown)
+            self.assertIn("Subject: Rates notice", shown)
+            self.assertIn("Rates due.", shown)
+            self.assertIn("To reply, send: 1", shown)
 
     def test_whatsapp_can_summarize_unread_search_reply_and_archive_by_number(self):
         from gmail_auto.models import Mail

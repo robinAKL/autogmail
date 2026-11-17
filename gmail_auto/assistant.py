@@ -296,6 +296,13 @@ def _dispatch(parsed: dict, text: str, waiting: list, clients: list | None) -> s
         _remember_focus(numbers)
     if intent == "revise" and _shown_mail_entry(numbers) is not None:
         intent = "read" if _wants_reading(parsed.get("instruction") or "") else "draft_reply"
+    elif (
+        intent == "revise"
+        and not ((parsed.get("approval") or _item_from_numbers(numbers, waiting) or {}).get("draft") or "").strip()
+        and _wants_reading(_strip_number(parsed.get("instruction") or ""))
+    ):
+        # "More details about #167" asks to see the letter, not to rewrite a draft.
+        intent = "read"
 
     if intent == "help":
         return _HELP
@@ -345,8 +352,8 @@ def _dispatch(parsed: dict, text: str, waiting: list, clients: list | None) -> s
                 f"Draft for #{approval['id']} (to {approval.get('from_name') or approval.get('from_email')}):\n\n"
                 f"{approval['draft']}\n\nReply YES to send, NO to drop it, or tell me what to change."
             )
-        if approval is not None and not (approval.get("draft") or "").strip():
-            return f"#{approval['id']} has no draft yet. Send: {approval['id']} <what you want to say>"
+        if approval is not None:
+            return _read_approval(approval, clients)
         entry = _resolve_mail_entry(numbers[0] if numbers else "", parsed.get("query") or "", clients)
         if entry is None:
             return parsed.get("reply") or "Could not find that email. Ask me to summarise unread or search first."
@@ -798,6 +805,26 @@ def _explain_mail(who: str, subject: str, body: str) -> str:
     return " ".join(text.split())[:600]
 
 
+def _read_approval(approval: dict, clients: list | None) -> str:
+    """Show a waiting letter or notice: what it says, what it means, and its draft if there is one."""
+    item_id = str(approval.get("id") or "")
+    entry = {
+        "num": "",
+        "provider": approval.get("provider") or "gmail",
+        "mail_id": approval.get("mail_id") or "",
+        "from_name": approval.get("from_name") or "",
+        "from_email": approval.get("from_email") or "",
+        "subject": approval.get("subject") or "",
+        "date": approval.get("date") or "",
+        "snippet": (approval.get("body") or approval.get("summary") or "")[:1000],
+    }
+    text = f"#{item_id} " + _read_entry(entry, clients)
+    draft = (approval.get("draft") or "").strip()
+    if draft:
+        return text + f"\n\nDraft reply:\n{draft}\n\nReply YES to send, NO to drop it, or tell me what to change."
+    return text + f"\n\nTo reply, send: {item_id} <what you want to say>. To dismiss it, send: NO {item_id}"
+
+
 def _read_entry(entry: dict, clients: list | None) -> str:
     provider = entry.get("provider") or "gmail"
     mail_id = entry.get("mail_id") or ""
@@ -950,7 +977,7 @@ _READ_WORDS = re.compile(
 
 def _wants_reading(instruction: str) -> bool:
     """'Tell me #1 details' asks to see the letter; 'reply 1 thanks' asks to answer it."""
-    cleaned = (instruction or "").strip()
+    cleaned = re.sub(r"#?\s*\d{1,6}", " ", instruction or "").strip(" \t\n#:：,.-")
     if not cleaned:
         return True
     if re.match(r"^\s*(?:reply|re|回[复覆]?)\b", cleaned, flags=re.IGNORECASE):
