@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_attach.html" import attach_box %}
 {% block title %}Inbox{% endblock %}
 {% block body %}
 <header class="page-head">
@@ -156,12 +157,13 @@
         <h3>Reply waiting for your OK</h3>
         {% if waiting_item.reason %}<p class="hint">Why it is asking: {{ waiting_item.reason }}</p>{% endif %}
       </div>
-      <form method="post" action="{{ url_for('approvals_act', item_id=waiting_item.id, action='send') }}" data-busy="Sending…" data-confirm="Send this reply now?">
+      <form method="post" action="{{ url_for('approvals_act', item_id=waiting_item.id, action='send') }}" enctype="multipart/form-data" data-busy="Sending…" data-confirm="Send this reply now?">
         <input type="hidden" name="next" value="{{ url_for('home', show=show, open=opened.key) }}">
         <textarea name="draft" rows="9" maxlength="5000" required>{{ waiting_item.draft }}</textarea>
         {% if waiting_item.sources %}
         <p class="sources">Written using {% for title in waiting_item.sources %}<span class="chip tiny">{{ title }}</span>{% endfor %}</p>
         {% endif %}
+        {{ attach_box(waiting_item, attach_docs, files_ready, file_limit) }}
         <div class="button-row">
           <button type="submit">Send reply</button>
           <button class="quiet" type="submit" formaction="{{ url_for('approvals_act', item_id=waiting_item.id, action='save') }}" data-skip-confirm>Save changes</button>

@@ -148,6 +148,34 @@ def set_draft(item_id: str, text: str) -> dict:
         return item
 
 
+def attach(item_id: str, record: dict) -> dict:
+    """Add a kept file (see files.py) to a waiting reply."""
+    from gmail_auto.files import MAX_TOTAL_BYTES
+
+    with LOCK:
+        data = _load()
+        item = _pending_item(data, item_id)
+        listed = list(item.get("attachments") or [])
+        if any(entry.get("id") == record["id"] for entry in listed):
+            return item
+        if sum(int(entry.get("size") or 0) for entry in listed) + int(record.get("size") or 0) > MAX_TOTAL_BYTES:
+            raise ConfigError("That is too much to attach to one email (15 MB in all).")
+        listed.append({key: record.get(key) for key in ("id", "name", "mime", "size")})
+        item["attachments"] = listed
+        item["role"] = "ask"
+        _save(data)
+        return item
+
+
+def detach(item_id: str, file_id: str) -> dict:
+    with LOCK:
+        data = _load()
+        item = _pending_item(data, item_id)
+        item["attachments"] = [entry for entry in item.get("attachments") or [] if entry.get("id") != file_id]
+        _save(data)
+        return item
+
+
 def revise(item_id: str, instruction: str, profile: dict, rewrite=None) -> dict:
     """Rewrite the waiting draft the way the owner asked."""
     item = get(item_id)
@@ -172,7 +200,11 @@ def approve(item_id: str, via: str, client=None) -> dict:
 
             client = client_for(item.get("provider") or "gmail")
         mail = _mail(item)
-        client.send_reply(mail, item["draft"], client.get_user_email())
+        attached = _attachment_bytes(item)
+        if attached:
+            client.send_reply(mail, item["draft"], client.get_user_email(), attachments=attached)
+        else:
+            client.send_reply(mail, item["draft"], client.get_user_email())
     except Exception:
         _set_status(item_id, "pending")
         raise
@@ -250,6 +282,21 @@ def _pending_item(data: dict, item_id: str) -> dict:
     if item.get("status") != "pending":
         raise ConfigError("That reply is no longer waiting.")
     return item
+
+
+def _attachment_bytes(item: dict) -> list[tuple[str, str, bytes]]:
+    listed = item.get("attachments") or []
+    if not listed:
+        return []
+    from gmail_auto.files import read
+
+    out = []
+    for entry in listed:
+        try:
+            out.append((entry.get("name") or "file", entry.get("mime") or "application/octet-stream", read(entry["id"])))
+        except ConfigError as exc:
+            raise ConfigError(f"Could not attach {entry.get('name') or 'a file'}: {exc}") from exc
+    return out
 
 
 def _mail(item: dict) -> Mail:

@@ -363,6 +363,13 @@ a.story-who:hover { text-decoration: underline; }
 .reply-box form.rewrite-row, .rewrite-row { display: flex; gap: 8px; align-items: center; }
 .rewrite-row input[type=text] { flex: 1; min-width: 0; }
 .rewrite-row button { flex: none; }
+.attach-box { display: grid; gap: 6px; }
+.attach-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.attach-list li { display: flex; gap: 10px; align-items: center; background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 14px; }
+.attach-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.attach-pick { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.attach-pick input[type=file] { flex: 1 1 200px; min-width: 0; font-size: 13px; }
+.attach-pick select { flex: 1 1 180px; min-width: 0; }
 .tab-side { margin-left: auto; font-size: 13px; color: var(--muted); align-self: center; white-space: nowrap; }
 .reply-head { display: grid; gap: 2px; }
 .reply-text { white-space: pre-wrap; overflow-wrap: anywhere; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; max-height: 26rem; overflow: auto; }

@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, Response, abort, flash, redirect, request, session, url_for
 from markupsafe import Markup
 
-from gmail_auto import approvals, knowledge, microsoft, sharepoint, stats, whatsapp
+from gmail_auto import approvals, files, knowledge, microsoft, sharepoint, stats, whatsapp
 from gmail_auto.console import say
 from gmail_auto.accounts import finish_verification, gmail_status, mark_gmail_authorized, start_verification
 from gmail_auto.envfile import has_openai_key, using_gateway
@@ -285,11 +285,13 @@ def configure_app(app: Flask) -> None:
         blocked = _login_required()
         if blocked:
             return blocked
+        waiting = approvals.pending()
         return _render(
             "approvals.html",
-            waiting=approvals.pending(),
+            waiting=waiting,
             decided=approvals.recent(15),
             whatsapp_ready=whatsapp.ready(),
+            **_attach_context(bool(waiting)),
         )
 
     @app.post("/approvals/<item_id>/<action>")
@@ -302,14 +304,15 @@ def configure_app(app: Flask) -> None:
             target = url_for("approvals_page")
         back = redirect(target)
         try:
+            if action in ("send", "attach", "detach") and request.form.get("draft") is not None:
+                approvals.set_draft(item_id, request.form.get("draft"))
             if action == "send":
-                text = request.form.get("draft")
-                if text is not None:
-                    approvals.set_draft(item_id, text)
+                _attach_to(item_id)
                 item = approvals.approve(item_id, "web")
                 flash(f"Reply sent to {item.get('from_name') or item.get('from_email')}.")
             elif action == "save":
                 approvals.set_draft(item_id, request.form.get("draft", ""))
+                _attach_to(item_id)
                 flash("Draft saved. It is still waiting for your OK.")
             elif action == "rewrite":
                 instruction = request.form.get("instruction", "").strip()
@@ -320,6 +323,19 @@ def configure_app(app: Flask) -> None:
             elif action == "reject":
                 approvals.reject(item_id, "web")
                 flash("Nothing was sent. The email stays in your inbox.")
+            elif action == "attach":
+                names = _attach_to(item_id)
+                if names:
+                    flash(f"Attached {', '.join(names)}. Check the reply, then send.")
+                else:
+                    flash("Choose a file to attach first.", "error")
+            elif action == "detach":
+                file_id = request.form.get("file", "")
+                approvals.detach(item_id, file_id)
+                record = files.get(file_id)
+                if record and record.get("origin") == "reply":
+                    files.remove(file_id)
+                flash("Attachment removed.")
             else:
                 abort(404)
         except ConfigError as exc:
@@ -506,16 +522,23 @@ def configure_app(app: Flask) -> None:
             if not item or not item.filename:
                 continue
             name = os.path.basename(item.filename.replace("\\", "/"))
+            kept = None
             try:
+                raw = item.read()
+                text = extract_text(name, raw)
+                kept = _keep_original(raw, name, item.mimetype)
                 knowledge.add_document(
                     name,
-                    extract_text(name, item.read()),
+                    text,
                     "upload",
                     origin=name,
+                    meta={"file_id": kept["id"], "size": kept["size"]} if kept else None,
                     summarize=False,
                 )
                 added += 1
             except ConfigError as exc:
+                if kept:
+                    files.remove(kept["id"])
                 problems.append(str(exc))
                 flash(str(exc), "error")
         if added:
@@ -1075,6 +1098,52 @@ def render_markdown(text: str) -> Markup:
     return Markup("".join(blocks))
 
 
+
+def _attach_context(needed: bool) -> dict:
+    if not needed:
+        return {"attach_docs": [], "files_ready": False}
+    try:
+        docs = knowledge.attachable_documents()
+    except ConfigError:
+        docs = []
+    return {"attach_docs": docs, "files_ready": files.ready(), "file_limit": files.human_size(files.MAX_FILE_BYTES)}
+
+
+def _attach_to(item_id: str) -> list[str]:
+    """Attach uploaded files and/or a knowledge-base original to a waiting reply."""
+    if approvals.get(item_id) is None:
+        raise ConfigError("That reply was not found.")
+    names = []
+    doc_id = request.form.get("doc", "")
+    if doc_id:
+        doc = next((item for item in knowledge.attachable_documents() if item["id"] == doc_id), None)
+        record = files.get((doc or {}).get("meta", {}).get("file_id", "")) if doc else None
+        if record is None:
+            raise ConfigError("That knowledge file is no longer kept. Upload it again.")
+        approvals.attach(item_id, record)
+        names.append(record["name"])
+    for upload in request.files.getlist("files"):
+        if not upload or not upload.filename:
+            continue
+        record = files.save(upload.read(), upload.filename, upload.mimetype, origin="reply")
+        try:
+            approvals.attach(item_id, record)
+        except ConfigError:
+            files.remove(record["id"])
+            raise
+        names.append(record["name"])
+    return names
+
+
+def _keep_original(raw: bytes, name: str, mime: str) -> dict | None:
+    """Keep an uploaded knowledge file so replies can attach it. Skipped quietly when there is nowhere to keep it."""
+    if not files.ready() or not raw or len(raw) > files.MAX_FILE_BYTES:
+        return None
+    try:
+        return files.save(raw, name, mime, origin="knowledge")
+    except ConfigError:
+        return None
+
 # ---- inbox -------------------------------------------------------------------
 
 
@@ -1147,6 +1216,7 @@ def _home_context() -> dict:
         "stories": story_board(rows),
         "matter": story_detail(request.args.get("story", ""), rows),
         "waiting_item": waiting_item,
+        **_attach_context(waiting_item is not None),
         "filters": _FILTERS,
         "counts": counts,
         "show": show,

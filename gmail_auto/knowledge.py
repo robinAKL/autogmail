@@ -216,7 +216,22 @@ def add_document(title: str, text: str, source: str, origin: str = "", meta: dic
         index["docs"] = [item for item in index["docs"] if item["id"] != doc_id] + [entry]
         index["brief"]["stale"] = True
         _save_index(index)
+    if existing is not None:
+        _forget_file(existing, keep=(meta or {}).get("file_id", ""))
     return entry
+
+
+def attachable_documents() -> list[dict]:
+    """Knowledge documents whose original file was kept, so they can be attached to a reply."""
+    return [item for item in list_documents() if (item.get("meta") or {}).get("file_id")]
+
+
+def _forget_file(entry: dict, keep: str = "") -> None:
+    file_id = (entry.get("meta") or {}).get("file_id") or ""
+    if file_id and file_id != keep:
+        from gmail_auto import files
+
+        files.remove(file_id)
 
 
 def delete_document(doc_id: str) -> bool:
@@ -225,10 +240,12 @@ def delete_document(doc_id: str) -> bool:
         kept = [item for item in index["docs"] if item["id"] != doc_id]
         if len(kept) == len(index["docs"]):
             return False
+        gone = next(item for item in index["docs"] if item["id"] == doc_id)
         index["docs"] = kept
         index["brief"]["stale"] = True
         _save_index(index)
         delete_doc(_body_name(doc_id))
+    _forget_file(gone)
     return True
 
 

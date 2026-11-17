@@ -1,0 +1,32 @@
+{# Attachments on a waiting reply. Sits inside the reply's send form, which is multipart. #}
+{% macro attach_box(item, docs, ready, limit) %}
+<div class="attach-box">
+  {% if item.attachments %}
+  <ul class="attach-list">
+    {% for file in item.attachments %}
+    <li>
+      <span class="attach-name">📎 {{ file.name }}</span>
+      <span class="muted">{{ (file.size / 1000)|round|int }} KB</span>
+      <button class="quiet small danger-text" type="submit" name="file" value="{{ file.id }}"
+              formaction="{{ url_for('approvals_act', item_id=item.id, action='detach') }}" data-skip-confirm formnovalidate>Remove</button>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if ready %}
+  <div class="attach-pick">
+    <input type="file" name="files" multiple aria-label="Attach files from this computer">
+    {% if docs %}
+    <select name="doc" aria-label="Attach a file from the knowledge base">
+      <option value="">From the knowledge base…</option>
+      {% for doc in docs %}<option value="{{ doc.id }}">{{ doc.title }}</option>{% endfor %}
+    </select>
+    {% endif %}
+    <button class="quiet small" type="submit" formaction="{{ url_for('approvals_act', item_id=item.id, action='attach') }}" data-skip-confirm>Attach</button>
+  </div>
+  <p class="hint">Up to {{ limit }} a file. Files chosen here are attached when you press Send.</p>
+  {% else %}
+  <p class="hint">To attach files, set up R2 file storage (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET).</p>
+  {% endif %}
+</div>
+{% endmacro %}

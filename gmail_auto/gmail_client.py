@@ -92,8 +92,9 @@ class GmailClient:
             raise _translate(exc) from exc
         return self._stamp(parse_message(full))
 
-    def send_reply(self, mail: Mail, body: str, user_email: str) -> str:
-        payload = build_send_body(mail, body, user_email)
+    def send_reply(self, mail: Mail, body: str, user_email: str, attachments: list | None = None) -> str:
+        """attachments: (filename, mime, bytes) tuples."""
+        payload = build_send_body(mail, body, user_email, attachments)
         try:
             sent = self.service.users().messages().send(userId="me", body=payload).execute()
         except Exception as exc:
@@ -539,7 +540,7 @@ def decode_mime_header(value: str) -> str:
     return "".join(chunks)
 
 
-def build_reply_message(mail: Mail, body: str, user_email: str) -> EmailMessage:
+def build_reply_message(mail: Mail, body: str, user_email: str, attachments: list | None = None) -> EmailMessage:
     recipient = (mail.reply_email or mail.from_email).strip()
     if not recipient:
         raise ConfigError("This letter has no address to reply to.")
@@ -558,11 +559,14 @@ def build_reply_message(mail: Mail, body: str, user_email: str) -> EmailMessage:
         message["In-Reply-To"] = message_id
         message["References"] = f"{references} {message_id}".strip()
     message.set_content(body, subtype="plain", charset="utf-8")
+    for filename, mime, data in attachments or []:
+        maintype, _, subtype = (mime or "application/octet-stream").partition("/")
+        message.add_attachment(data, maintype=maintype or "application", subtype=subtype or "octet-stream", filename=filename)
     return message
 
 
-def build_send_body(mail: Mail, body: str, user_email: str) -> dict:
-    message = build_reply_message(mail, body, user_email)
+def build_send_body(mail: Mail, body: str, user_email: str, attachments: list | None = None) -> dict:
+    message = build_reply_message(mail, body, user_email, attachments)
     raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
     payload = {"raw": raw}
     if mail.thread_id:

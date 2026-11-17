@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_attach.html" import attach_box %}
 {% block title %}Approvals{% endblock %}
 {% block body %}
 <header class="page-head">
@@ -40,12 +41,13 @@
           </div>
         </form>
       </div>
-      <form class="approval-main" method="post" action="{{ url_for('approvals_act', item_id=item.id, action='send') }}" data-busy="Sending…" data-confirm="Send this reply to {{ item.from_name or item.from_email }} now?">
+      <form class="approval-main" method="post" action="{{ url_for('approvals_act', item_id=item.id, action='send') }}" enctype="multipart/form-data" data-busy="Sending…" data-confirm="Send this reply to {{ item.from_name or item.from_email }} now?">
         <label for="draft{{ item.id }}">Reply{% if item.edited %} <span class="muted">(edited)</span>{% endif %}</label>
         <textarea id="draft{{ item.id }}" name="draft" rows="10" maxlength="5000" required>{{ item.draft }}</textarea>
         {% if item.sources %}
         <p class="sources">Written using {% for title in item.sources %}<span class="chip tiny">{{ title }}</span>{% endfor %}</p>
         {% endif %}
+        {{ attach_box(item, attach_docs, files_ready, file_limit) }}
         <div class="button-row">
           <button type="submit">Send reply</button>
           <button class="quiet" type="submit" formaction="{{ url_for('approvals_act', item_id=item.id, action='save') }}" data-skip-confirm>Save changes</button>

@@ -1,5 +1,6 @@
 """An Outlook mailbox through Microsoft Graph, with the same shape as the Gmail client."""
 
+import base64
 import html
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -61,7 +62,7 @@ class OutlookClient:
         raw = microsoft.graph("outlook", "GET", f"/me/messages/{message_id}", params={"$select": _SELECT}, headers=_HTML)
         return self._stamp(parse_message(raw))
 
-    def send_reply(self, mail: Mail, body: str, user_email: str) -> str:
+    def send_reply(self, mail: Mail, body: str, user_email: str, attachments: list | None = None) -> str:
         """Reply on the same conversation. The draft Outlook builds already quotes the original below."""
         draft = microsoft.graph("outlook", "POST", f"/me/messages/{mail.id}/createReply", headers=_HTML)
         draft_id = draft.get("id")
@@ -75,6 +76,18 @@ class OutlookClient:
             f"/me/messages/{draft_id}",
             body={"body": {"contentType": "HTML", "content": mine + quoted}},
         )
+        for filename, mime, data in attachments or []:
+            microsoft.graph(
+                "outlook",
+                "POST",
+                f"/me/messages/{draft_id}/attachments",
+                body={
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": filename,
+                    "contentType": mime or "application/octet-stream",
+                    "contentBytes": base64.b64encode(data).decode("ascii"),
+                },
+            )
         microsoft.graph("outlook", "POST", f"/me/messages/{draft_id}/send")
         return draft_id
 
