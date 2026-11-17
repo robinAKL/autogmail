@@ -46,13 +46,13 @@ _INBOX_STORE_TTL = 15 * 60
 _INBOX_PAGE = 20
 _inbox_cache: dict = {"at": 0.0, "who": None, "data": None}
 _FILTERS = {
+    "all": "All",
     "todo": "To do",
     "notices": "Notices",
     "replied": "Replied",
     "skipped": "Skipped",
-    "all": "All",
 }
-_DEFAULT_FILTER = "todo"
+_DEFAULT_FILTER = "all"
 # Older links and bookmarks used these tab names.
 _OLD_FILTERS = {"important": "todo", "needs": "todo", "drafts": "todo", "open": "all"}
 _MODES = {

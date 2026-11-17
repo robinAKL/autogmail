@@ -314,7 +314,12 @@ class PageTests(WebCase):
         saved = sample(id="bill", subject="Your power bill is ready", body="Amount due $182 by 30 November.", from_email="noreply@mercury.co.nz")
         box = Inbox([saved])
         with patch("gmail_auto.web.connected_clients", return_value=([], [])), patch("gmail_auto.web.client_for", return_value=box):
-            _, text = self.page("/")
+            _, first = self.page("/")
+            self.assertIn('class="tab on" href="/?show=all"', first)
+            self.assertIn("Your power bill is ready", first)
+            self.assertIn("Big sale", first)
+
+            _, text = self.page("/?show=todo")
             self.assertIn('class="tab on" href="/?show=todo"', text)
             self.assertIn("Workshop next week", text)
             self.assertNotIn("Your power bill is ready", text)
