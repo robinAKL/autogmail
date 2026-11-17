@@ -343,6 +343,154 @@ def configure_app(app: Flask) -> None:
         _forget_inbox()
         return back
 
+    # ---- invoices ------------------------------------------------------------
+
+    @app.get("/invoices")
+    def invoices_page():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import invoices
+
+        listed = invoices.list_invoices()
+        return _render(
+            "invoices.html",
+            details=invoices.load_template(),
+            ready=invoices.template_ready(),
+            listed=listed,
+            sums={item["id"]: invoices.totals(item) for item in listed},
+            money=invoices.money,
+            file_types=", ".join(sorted(item.lstrip(".") for item in SUPPORTED)),
+        )
+
+    @app.post("/invoices/template")
+    def invoices_template():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import invoices
+
+        values = {key: request.form.get(key, "") for key in invoices.TEMPLATE_FIELDS}
+        for key in ("gst_registered", "prices_include_gst"):
+            values[key] = request.form.get(key) == "1"
+        invoices.save_template(values)
+        flash("Invoice details saved.")
+        return redirect(url_for("invoices_page") + "#template")
+
+    @app.post("/invoices/template/import")
+    def invoices_template_import():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import invoices
+        from gmail_auto.llm import model_ready
+
+        upload = request.files.get("file")
+        try:
+            if not upload or not upload.filename:
+                raise ConfigError("Choose an old invoice first (PDF or Word).")
+            if not model_ready():
+                raise ConfigError("Reading an old invoice needs an AI model. Fill in the details by hand instead.")
+            name = os.path.basename(upload.filename.replace("\\", "/"))
+            found = invoices.template_from_text(extract_text(name, upload.read()))
+            if not found:
+                raise ConfigError("No business details were found in that file.")
+            invoices.save_template(found)
+            flash(f"Filled in {len(found)} details from {name}. Check them below and fix anything that is wrong.")
+        except (ConfigError, ReplyError) as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("invoices_page") + "#template")
+
+    @app.post("/invoices/new")
+    def invoices_new():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import invoices
+
+        key = request.form.get("key", "")
+        mail = _find_mail(key) if key else None
+        if key and mail is None:
+            flash("This letter could not be loaded right now. Try again in a moment.", "error")
+            return redirect(url_for("home", open=key))
+        wanted = request.form.get("request", "").strip()
+        fields = invoices.fill_from(wanted, mail) if mail is not None or wanted else {}
+        invoice = invoices.create(fields, mail_key=mail.key if mail is not None else "")
+        return redirect(url_for("invoice_page", invoice_id=invoice["id"]))
+
+    @app.get("/invoices/<invoice_id>")
+    def invoice_page(invoice_id):
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import invoices
+
+        invoice = invoices.get(invoice_id)
+        if invoice is None:
+            abort(404)
+        template = invoice.get("template") or invoices.load_template()
+        blank = max(0, 3 - len(invoice.get("items") or [])) + 1 if invoice["status"] == "draft" else 0
+        return _render(
+            "invoice.html",
+            invoice=invoice,
+            details=template,
+            sums=invoices.totals(invoice, template),
+            money=invoices.money,
+            blank_rows=blank,
+            problems=invoices.missing_for_issue(invoice, template) if invoice["status"] == "draft" else [],
+            files_ready=files.ready(),
+        )
+
+    @app.post("/invoices/<invoice_id>/<action>")
+    def invoice_act(invoice_id, action):
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import invoices
+
+        back = redirect(url_for("invoice_page", invoice_id=invoice_id))
+        try:
+            if action in ("save", "issue", "issue_attach"):
+                if (invoices.get(invoice_id) or {}).get("status") == "draft":
+                    invoices.update(invoice_id, _invoice_form())
+            if action == "save":
+                flash("Invoice saved.")
+            elif action in ("issue", "issue_attach"):
+                invoice = invoices.issue(invoice_id)
+                if action == "issue_attach":
+                    return _attach_invoice(invoice)
+                flash(f"Invoice {invoice['number']} issued. Download it, or attach it to a reply.")
+            elif action == "attach":
+                invoice = invoices.get(invoice_id)
+                if invoice is None or invoice.get("status") != "issued":
+                    raise ConfigError("Issue the invoice first.")
+                return _attach_invoice(invoice)
+            elif action == "delete":
+                invoices.delete(invoice_id)
+                flash("Draft invoice deleted.")
+                return redirect(url_for("invoices_page"))
+            else:
+                abort(404)
+        except (ConfigError, ReplyError) as exc:
+            flash(str(exc), "error")
+        return back
+
+    @app.get("/invoices/<invoice_id>/pdf")
+    def invoice_pdf(invoice_id):
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import invoices
+
+        invoice = invoices.get(invoice_id)
+        if invoice is None:
+            abort(404)
+        response = Response(invoices.render_pdf(invoice), mimetype="application/pdf")
+        disposition = "attachment" if request.args.get("download") == "1" else "inline"
+        response.headers["Content-Disposition"] = f'{disposition}; filename="{invoices.file_name(invoice)}"'
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
     # ---- dashboard -----------------------------------------------------------
 
     @app.get("/dashboard")
@@ -1097,6 +1245,53 @@ def render_markdown(text: str) -> Markup:
     flush()
     return Markup("".join(blocks))
 
+
+
+def _invoice_form() -> dict:
+    descriptions = request.form.getlist("description")
+    quantities = request.form.getlist("qty")
+    prices = request.form.getlist("unit_price")
+    items = []
+    for index, description in enumerate(descriptions):
+        price = prices[index] if index < len(prices) else ""
+        items.append(
+            {
+                "description": description,
+                "qty": (quantities[index] if index < len(quantities) else "") or "1",
+                "unit_price": price if price.strip() else None,
+            }
+        )
+    fields = {key: request.form.get(key, "") for key in ("client_name", "client_email", "client_address", "reference", "notes", "issue_date", "due_date")}
+    fields["items"] = items
+    return fields
+
+
+def _attach_invoice(invoice: dict):
+    """Put the issued invoice's PDF on the reply to its letter, writing that reply if there is none yet."""
+    from gmail_auto import invoices
+    from gmail_auto.reply_now import draft_now, waiting_for
+
+    if not invoice.get("mail_key"):
+        raise ConfigError("This invoice was not made from a letter. Download it and attach it to an email yourself.")
+    record = files.get(invoice.get("file_id") or "")
+    if record is None:
+        record = files.save(invoices.render_pdf(invoice), invoices.file_name(invoice), "application/pdf", origin="invoice")
+        invoices.set_file(invoice["id"], record["id"])
+    item = waiting_for(invoice["mail_key"])
+    if item is None:
+        mail = _find_mail(invoice["mail_key"])
+        if mail is None:
+            raise ConfigError("The letter for this invoice could not be loaded right now. Try again in a moment.")
+        sums = invoices.totals(invoice)
+        points = (
+            f"Say that invoice {invoice['number']} for {invoices.money(sums['total'], sums['currency'])} is attached, "
+            f"due {invoice.get('due_date')}. Keep it short and friendly."
+        )
+        item = draft_now(mail, points, load_profile())
+    approvals.attach(item["id"], record)
+    _forget_inbox()
+    flash(f"Invoice {invoice['number']} is attached to the reply. Check it, then send.")
+    return redirect(url_for("home", show="todo", open=invoice["mail_key"]))
 
 
 def _attach_context(needed: bool) -> dict:

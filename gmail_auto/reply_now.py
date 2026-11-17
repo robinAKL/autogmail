@@ -47,6 +47,12 @@ def draft_now(mail: Mail, points: str, profile: dict, write=None, rewrite=None) 
     return item
 
 
+def waiting_for(key: str) -> dict | None:
+    """The reply already waiting for this letter, if any."""
+    record = load_processed().get(key)
+    return _waiting_item(record if isinstance(record, dict) else None)
+
+
 def _waiting_item(record: dict | None) -> dict | None:
     if not record or not record.get("approval_id"):
         return None

@@ -370,6 +370,17 @@ a.story-who:hover { text-decoration: underline; }
 .attach-pick { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .attach-pick input[type=file] { flex: 1 1 200px; min-width: 0; font-size: 13px; }
 .attach-pick select { flex: 1 1 180px; min-width: 0; }
+.invoice-lines td:first-child { width: 60%; }
+.invoice-lines input { width: 100%; min-width: 64px; }
+.invoice-lines td:nth-child(2) input { max-width: 80px; }
+.invoice-lines td:nth-child(3) input { max-width: 130px; }
+.invoice-lines input.needs { border-color: #d08a3c; background: #fdf6ec; }
+.table .num, .invoice-lines .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.invoice-sums { display: grid; grid-template-columns: auto auto; justify-content: end; column-gap: 28px; row-gap: 4px; font-variant-numeric: tabular-nums; }
+.invoice-sums > :nth-child(even) { text-align: right; }
+.invoice-sums strong { font-size: 16px; padding-top: 4px; }
+.plain-list { margin: 6px 0 0; padding-left: 18px; }
+.pre { white-space: pre-line; }
 .tab-side { margin-left: auto; font-size: 13px; color: var(--muted); align-self: center; white-space: nowrap; }
 .reply-head { display: grid; gap: 2px; }
 .reply-text { white-space: pre-wrap; overflow-wrap: anywhere; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; max-height: 26rem; overflow: auto; }

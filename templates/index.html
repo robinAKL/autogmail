@@ -141,6 +141,7 @@
         <input type="hidden" name="key" value="{{ opened.key }}">
         <input type="hidden" name="next" value="{{ url_for('home', show=show, open=opened.key) }}">
         <button class="quiet small" type="submit">Add to calendar</button>
+        <button class="quiet small" type="submit" formaction="{{ url_for('invoices_new') }}" data-busy="Filling in the invoice…">Create invoice</button>
       </form>
     </header>
 

@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}Invoices{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <h1>Invoices</h1>
+    <p class="sub">Open a letter and press Create invoice. The lines are filled from the letter and your knowledge base; amounts, GST and numbers are worked out for you.</p>
+  </div>
+</header>
+
+{% if not ready %}
+<p class="banner warn">Fill in your business details below first. They go on every invoice.</p>
+{% endif %}
+
+<div class="grid-2 wide-left">
+<section class="card">
+  <div class="card-head">
+    <h2 class="card-title">Your invoices</h2>
+    <form method="post" action="{{ url_for('invoices_new') }}" data-busy="Starting…">
+      <button class="quiet small" type="submit">New blank invoice</button>
+    </form>
+  </div>
+  {% if listed %}
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Number</th><th>For</th><th>Date</th><th style="text-align:right">Total</th><th></th></tr></thead>
+      <tbody>
+      {% for item in listed %}
+      {% set sum = sums[item.id] %}
+      <tr>
+        <td>{% if item.number %}<strong>{{ item.number }}</strong>{% else %}<span class="tag drafted">Draft</span>{% endif %}</td>
+        <td>{{ item.client_name or '—' }}{% if item.reference %}<br><span class="muted">{{ item.reference }}</span>{% endif %}</td>
+        <td>{{ item.issue_date or '—' }}</td>
+        <td style="text-align:right; font-variant-numeric: tabular-nums">{{ money(sum.total, sum.currency) }}</td>
+        <td class="actions"><a class="button quiet small" href="{{ url_for('invoice_page', invoice_id=item.id) }}">{% if item.status == 'draft' %}Edit{% else %}Open{% endif %}</a></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No invoices yet.</p>
+  {% endif %}
+</section>
+
+<section class="card" id="template">
+  <h2 class="card-title">Your details on every invoice</h2>
+  <form method="post" action="{{ url_for('invoices_template_import') }}" enctype="multipart/form-data" class="stack" data-busy="Reading the invoice…">
+    <label>
+      Fill in from an old invoice
+      <span class="hint">Upload one you sent before ({{ file_types }}). Your name, address, GST and bank details, and the next number are read from it.</span>
+      <input type="file" name="file" required>
+    </label>
+    <div class="button-row"><button class="quiet small" type="submit">Read it</button></div>
+  </form>
+  <form method="post" action="{{ url_for('invoices_template') }}" class="stack">
+    <label>Business name <input name="business_name" value="{{ details.business_name }}" maxlength="120" required></label>
+    <label>Address <textarea name="address" rows="3" maxlength="600">{{ details.address }}</textarea></label>
+    <div class="grid-2">
+      <label>Email <input name="email" value="{{ details.email }}" maxlength="120"></label>
+      <label>Phone <input name="phone" value="{{ details.phone }}" maxlength="120"></label>
+      <label>Bank account <input name="bank_account" value="{{ details.bank_account }}" maxlength="120" placeholder="12-3456-7890123-00"></label>
+      <label>Bank name <input name="bank_name" value="{{ details.bank_name }}" maxlength="120"></label>
+      <label>GST number <input name="gst_number" value="{{ details.gst_number }}" maxlength="120"></label>
+      <label>GST rate (%) <input name="gst_rate" value="{{ details.gst_rate }}" inputmode="decimal"></label>
+      <label>Number prefix <input name="prefix" value="{{ details.prefix }}" maxlength="12"></label>
+      <label>Next number <input name="next_number" value="{{ details.next_number }}" inputmode="numeric"></label>
+      <label>Pay within (days) <input name="payment_terms_days" value="{{ details.payment_terms_days }}" inputmode="numeric"></label>
+      <label>Currency <input name="currency" value="{{ details.currency }}" maxlength="3"></label>
+    </div>
+    <label class="check"><input type="checkbox" name="gst_registered" value="1" {% if details.gst_registered %}checked{% endif %}><span>GST registered (the PDF says Tax Invoice and adds GST)</span></label>
+    <label class="check"><input type="checkbox" name="prices_include_gst" value="1" {% if details.prices_include_gst %}checked{% endif %}><span>My prices already include GST</span></label>
+    <label>Note at the bottom <textarea name="notes" rows="2" maxlength="600" placeholder="Thank you for your business.">{{ details.notes }}</textarea></label>
+    <div class="button-row"><button type="submit">Save details</button></div>
+  </form>
+</section>
+</div>
+{% endblock %}

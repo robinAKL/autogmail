@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}{{ invoice.number or 'Draft invoice' }}{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <p class="kicker"><a href="{{ url_for('invoices_page') }}">Invoices</a></p>
+    <h1>{% if invoice.number %}Invoice {{ invoice.number }}{% else %}Draft invoice{% endif %}</h1>
+    <p class="sub">{% if invoice.status == 'draft' %}Check every line and price. The number is given when you issue it.{% else %}Issued {{ invoice.issued_at }}. An issued invoice is kept as it is.{% endif %}</p>
+  </div>
+  <div class="head-actions">
+    <a class="button quiet" href="{{ url_for('invoice_pdf', invoice_id=invoice.id) }}" target="_blank" rel="noopener">{% if invoice.status == 'draft' %}Preview PDF{% else %}Open PDF{% endif %}</a>
+    {% if invoice.status != 'draft' %}<a class="button quiet" href="{{ url_for('invoice_pdf', invoice_id=invoice.id, download=1) }}">Download</a>{% endif %}
+  </div>
+</header>
+
+{% if invoice.missing and invoice.status == 'draft' %}
+<div class="banner warn">
+  <strong>Could not be filled in:</strong>
+  <ul class="plain-list">{% for note in invoice.missing %}<li>{{ note }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+{% if invoice.status == 'draft' %}
+<form method="post" action="{{ url_for('invoice_act', invoice_id=invoice.id, action='save') }}" class="stack invoice-form">
+<div class="grid-2">
+  <section class="card">
+    <h2 class="card-title">Bill to</h2>
+    <label>Name <input name="client_name" value="{{ invoice.client_name or '' }}" maxlength="120"></label>
+    <label>Email <input name="client_email" value="{{ invoice.client_email or '' }}" maxlength="160"></label>
+    <label>Address <textarea name="client_address" rows="3" maxlength="600">{{ invoice.client_address or '' }}</textarea></label>
+  </section>
+  <section class="card">
+    <h2 class="card-title">Details</h2>
+    <label>Reference <input name="reference" value="{{ invoice.reference or '' }}" maxlength="120"></label>
+    <div class="grid-2">
+      <label>Date <input type="date" name="issue_date" value="{{ invoice.issue_date or '' }}"><span class="hint">Empty: the day it is issued</span></label>
+      <label>Due <input type="date" name="due_date" value="{{ invoice.due_date or '' }}"><span class="hint">Empty: {{ details.payment_terms_days }} days later</span></label>
+    </div>
+    <label>Note on this invoice <textarea name="notes" rows="2" maxlength="600">{{ invoice.notes or '' }}</textarea></label>
+  </section>
+</div>
+
+<section class="card">
+  <h2 class="card-title">Lines</h2>
+  <div class="table-wrap">
+    <table class="table invoice-lines">
+      <thead><tr><th>Description</th><th>Qty</th><th>Unit price{% if details.prices_include_gst %} (incl. GST){% endif %}</th><th style="text-align:right">Amount</th></tr></thead>
+      <tbody>
+      {% for line in sums.lines %}
+      <tr>
+        <td><input name="description" value="{{ line.description }}" maxlength="300" aria-label="Description"></td>
+        <td><input name="qty" value="{{ '%g'|format(line.qty) if line.qty is not none else '1' }}" inputmode="decimal" aria-label="Quantity"></td>
+        <td><input name="unit_price" value="{{ '%.2f'|format(line.unit_price) if line.unit_price is not none else '' }}" inputmode="decimal" aria-label="Unit price" {% if line.unit_price is none %}class="needs" placeholder="price?"{% endif %}></td>
+        <td class="num">{{ money(line.amount) }}</td>
+      </tr>
+      {% endfor %}
+      {% for _ in range(blank_rows) %}
+      <tr>
+        <td><input name="description" maxlength="300" aria-label="Description" placeholder="Add a line"></td>
+        <td><input name="qty" value="1" inputmode="decimal" aria-label="Quantity"></td>
+        <td><input name="unit_price" inputmode="decimal" aria-label="Unit price"></td>
+        <td></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="invoice-sums">
+    {% if details.gst_registered %}
+    <span>Subtotal (excl. GST)</span><span>{{ money(sums.subtotal) }}</span>
+    <span>GST {{ sums.rate|float|round(2) }}%</span><span>{{ money(sums.gst) }}</span>
+    {% endif %}
+    <strong>Total {{ sums.currency }}</strong><strong>{{ money(sums.total) }}</strong>
+  </div>
+  <p class="hint">Amounts update when you save. Add more lines by saving; a fresh empty row appears each time.</p>
+</section>
+
+{% if problems %}
+<p class="banner warn">Before it can be issued: {{ problems|join('; ') }}.</p>
+{% endif %}
+<div class="button-row">
+  <button type="submit">Save</button>
+  {% if invoice.mail_key %}
+  <button type="submit" formaction="{{ url_for('invoice_act', invoice_id=invoice.id, action='issue_attach') }}" data-confirm="Give this invoice its number and attach it to the reply? An issued invoice cannot be changed." data-busy="Issuing…" {% if not files_ready %}disabled title="Set up R2 file storage to attach files"{% endif %}>Issue and attach to reply</button>
+  {% endif %}
+  <button class="quiet" type="submit" formaction="{{ url_for('invoice_act', invoice_id=invoice.id, action='issue') }}" data-confirm="Give this invoice its number? An issued invoice cannot be changed." data-busy="Issuing…">Issue</button>
+  <button class="quiet danger-text" type="submit" formaction="{{ url_for('invoice_act', invoice_id=invoice.id, action='delete') }}" data-confirm="Delete this draft invoice?" formnovalidate>Delete draft</button>
+</div>
+</form>
+{% else %}
+<section class="card">
+  <div class="grid-2">
+    <div>
+      <p class="kicker">Bill to</p>
+      <p><strong>{{ invoice.client_name }}</strong>{% if invoice.client_email %}<br>{{ invoice.client_email }}{% endif %}</p>
+      {% if invoice.client_address %}<p class="pre">{{ invoice.client_address }}</p>{% endif %}
+    </div>
+    <div>
+      <p class="kicker">Dates</p>
+      <p>Issued {{ invoice.issue_date }} · due {{ invoice.due_date }}</p>
+      {% if invoice.reference %}<p class="muted">{{ invoice.reference }}</p>{% endif %}
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Description</th><th>Qty</th><th style="text-align:right">Unit price</th><th style="text-align:right">Amount</th></tr></thead>
+      <tbody>
+      {% for line in sums.lines %}
+      <tr><td>{{ line.description }}</td><td>{{ '%g'|format(line.qty) }}</td><td class="num">{{ money(line.unit_price) }}</td><td class="num">{{ money(line.amount) }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="invoice-sums">
+    {% if details.gst_registered %}
+    <span>Subtotal (excl. GST)</span><span>{{ money(sums.subtotal) }}</span>
+    <span>GST {{ sums.rate|float|round(2) }}%</span><span>{{ money(sums.gst) }}</span>
+    {% endif %}
+    <strong>Total {{ sums.currency }}</strong><strong>{{ money(sums.total) }}</strong>
+  </div>
+  {% if invoice.mail_key %}
+  <form method="post" action="{{ url_for('invoice_act', invoice_id=invoice.id, action='attach') }}" class="button-row" data-busy="Attaching…">
+    <button type="submit" {% if not files_ready %}disabled title="Set up R2 file storage to attach files"{% endif %}>Attach to the reply</button>
+    <a class="quiet-link" href="{{ url_for('home', open=invoice.mail_key) }}">Open the letter</a>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}
