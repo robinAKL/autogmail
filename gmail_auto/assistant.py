@@ -817,7 +817,9 @@ def _kb_and_profile_context(query: str) -> str:
         parts.append("RELEVANT KNOWLEDGE:\n" + snippets)
     else:
         doc_lines = []
-        for doc in list_documents()[:4]:
+        from gmail_auto.knowledge import is_template
+
+        for doc in [item for item in list_documents() if not is_template(item)][:4]:
             full = get_document(doc["id"]) if doc.get("id") else None
             text = (full or {}).get("summary") or (full or {}).get("text") or ""
             if text:

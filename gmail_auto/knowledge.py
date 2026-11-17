@@ -221,6 +221,89 @@ def add_document(title: str, text: str, source: str, origin: str = "", meta: dic
     return entry
 
 
+ROLES = {
+    "reference": "Reference",
+    "price_list": "Price list",
+    "invoice_template": "Invoice template",
+    "contract_template": "Contract template",
+}
+# A template is an example of a document, not facts: an old invoice names another client and their amounts.
+TEMPLATE_ROLES = {"invoice_template", "contract_template"}
+
+
+def role_of(item: dict) -> str:
+    role = (item.get("meta") or {}).get("role") or "reference"
+    return role if role in ROLES else "reference"
+
+
+def is_template(item: dict) -> bool:
+    return role_of(item) in TEMPLATE_ROLES
+
+
+def templates(role: str) -> list[dict]:
+    return [item for item in list_documents() if role_of(item) == role]
+
+
+def update_meta(doc_id: str, changes: dict) -> dict:
+    """Change a document's type or template details. Replies are rebuilt without templates."""
+    with LOCK:
+        index = load_index()
+        entry = next((item for item in index["docs"] if item["id"] == doc_id), None)
+        if entry is None:
+            raise ConfigError("That document is no longer in the knowledge base.")
+        entry["meta"] = {**(entry.get("meta") or {}), **changes}
+        index["brief"]["stale"] = True
+        _save_index(index)
+        return entry
+
+
+_INVOICE_HINT = re.compile(r"(?i)\b(tax invoice|invoice (?:no|number|#|date)|bill to|amount due|invoice total|gst no)\b")
+_CONTRACT_HINT = re.compile(
+    r"(?i)\b(this agreement|agreement between|the parties|hereby|terms and conditions|in witness|signed by|"
+    r"governing law|termination|indemnif\w+|confidentiality|commencement date)\b|合同|协议|甲方|乙方"
+)
+_PRICE_HINT = re.compile(r"(?i)\b(price list|pricing|our rates|fee schedule|rate card|per hour|per session|per person)\b|价目|报价单|收费标准")
+
+
+def classify(title: str, text: str, complete=None) -> str:
+    """Decide whether an upload is an invoice template, a contract template, a price list or plain reference."""
+    from gmail_auto.llm import model_ready, parse_json
+
+    head = f"{title}\n{(text or '')[:5000]}"
+    if complete is None:
+        complete = _complete_for_classify() if model_ready() else None
+    if complete is not None:
+        try:
+            raw = complete(
+                "You sort a document the owner uploaded to their business knowledge base. Answer with JSON only: "
+                '{"role": "invoice_template" | "contract_template" | "price_list" | "reference"}. '
+                "invoice_template: an invoice or tax invoice the owner sent (or a blank one), useful as a layout. "
+                "contract_template: an agreement, contract or terms the owner uses with clients, filled or blank. "
+                "price_list: mainly the owner's prices, rates or packages. reference: anything else.",
+                head,
+                max_tokens=60,
+                temperature=0,
+            )
+            role = str((parse_json(raw) or {}).get("role") or "").strip()
+            if role in ROLES:
+                return role
+        except ReplyError:
+            pass
+    if len(_INVOICE_HINT.findall(head)) >= 2:
+        return "invoice_template"
+    if len(set(match.lower() for match in _CONTRACT_HINT.findall(head))) >= 3:
+        return "contract_template"
+    if _PRICE_HINT.search(head):
+        return "price_list"
+    return "reference"
+
+
+def _complete_for_classify():
+    from gmail_auto.llm import complete
+
+    return complete
+
+
 def attachable_documents() -> list[dict]:
     """Knowledge documents whose original file was kept, so they can be attached to a reply."""
     return [item for item in list_documents() if (item.get("meta") or {}).get("file_id")]
@@ -787,6 +870,8 @@ def _chunks() -> list[dict]:
         return _cache["chunks"]
     chunks = []
     for item in index["docs"]:
+        if is_template(item):
+            continue
         body = load_doc(_body_name(item["id"]), {})
         text = body.get("text", "") if isinstance(body, dict) else ""
         for piece in _split(text):
@@ -886,6 +971,8 @@ def _source_material(profile: dict) -> str:
         parts.append("THE USER'S OWN RULES\n" + "\n".join(f"- {rule}" for rule in index["rules"]))
     budget = 24000
     for item in sorted(index["docs"], key=lambda doc: doc.get("added_at", ""), reverse=True):
+        if is_template(item):
+            continue
         body = load_doc(_body_name(item["id"]), {})
         text = body.get("text", "") if isinstance(body, dict) else ""
         piece = text if len(text) <= 2500 else (item.get("summary") or _first_lines(text))

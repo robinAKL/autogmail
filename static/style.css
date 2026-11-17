@@ -381,6 +381,14 @@ a.story-who:hover { text-decoration: underline; }
 .invoice-sums strong { font-size: 16px; padding-top: 4px; }
 .plain-list { margin: 6px 0 0; padding-left: 18px; }
 .pre { white-space: pre-line; }
+.doc-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.role-form select, .small-select { min-height: 32px; padding: 4px 8px; font-size: 13px; width: auto; }
+.chip.role-invoice_template, .chip.role-contract_template { background: #f3e9dc; color: #7a4a17; }
+.chip.role-price_list { background: #e5f0e8; color: #2f5d3a; }
+.contract-fields td:nth-child(2) { width: 45%; }
+.contract-fields input { width: 100%; }
+.contract-fields input.needs { border-color: #d08a3c; background: #fdf6ec; }
+.template-list li { display: grid; gap: 4px; margin-bottom: 12px; }
 .tab-side { margin-left: auto; font-size: 13px; color: var(--muted); align-self: center; white-space: nowrap; }
 .reply-head { display: grid; gap: 2px; }
 .reply-text { white-space: pre-wrap; overflow-wrap: anywhere; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; max-height: 26rem; overflow: auto; }

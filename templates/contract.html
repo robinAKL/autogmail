@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Contract{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <p class="kicker"><a href="{{ url_for('contracts_page') }}">Contracts</a></p>
+    <h1>{{ contract.template_title }}</h1>
+    <p class="sub">Started {{ contract.created_text }}. Check every value; the rest of the contract is your template, unchanged.</p>
+  </div>
+  <div class="head-actions">
+    <a class="button quiet" href="{{ url_for('contract_docx', contract_id=contract.id) }}">Download Word file</a>
+  </div>
+</header>
+
+{% if contract.missing %}
+<div class="banner warn">
+  <strong>Could not be filled in:</strong>
+  <ul class="plain-list">{% for note in contract.missing %}<li>{{ note }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<form method="post" action="{{ url_for('contract_act', contract_id=contract.id, action='save') }}" class="stack">
+<section class="card">
+  <h2 class="card-title">Parts for this client</h2>
+  <div class="table-wrap">
+    <table class="table contract-fields">
+      <thead><tr><th>Part</th><th>Value</th><th>In the template</th></tr></thead>
+      <tbody>
+      {% for field in contract.fields %}
+      <tr>
+        <td><strong>{{ field.name }}</strong></td>
+        <td><input name="field_{{ loop.index0 }}" value="{{ contract['values'][field.name] or '' }}" maxlength="400" aria-label="{{ field.name }}" {% if field.name in empty %}class="needs" placeholder="not known yet"{% endif %}></td>
+        <td class="muted">{{ field.example }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="hint">An empty part shows as [its name] in the Word file, so nothing from the old client is left in.</p>
+</section>
+{% if empty %}<p class="banner warn">Still empty: {{ empty|join(', ') }}.</p>{% endif %}
+<div class="button-row">
+  <button type="submit">Save</button>
+  {% if contract.mail_key %}
+  <button type="submit" formaction="{{ url_for('contract_act', contract_id=contract.id, action='attach') }}" data-busy="Attaching…" {% if not files_ready %}disabled title="Set up R2 file storage to attach files"{% endif %}>Attach to reply</button>
+  {% endif %}
+  <button class="quiet danger-text" type="submit" formaction="{{ url_for('contract_act', contract_id=contract.id, action='delete') }}" data-confirm="Delete this contract draft?" formnovalidate>Delete draft</button>
+</div>
+</form>
+{% endblock %}

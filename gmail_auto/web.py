@@ -647,6 +647,8 @@ def configure_app(app: Flask) -> None:
             file_types=", ".join(sorted(item.lstrip(".") for item in SUPPORTED)),
             upload_limit="4 MB" if os.environ.get("VERCEL") else "30 MB",
             upload_max_bytes=3_800_000 if os.environ.get("VERCEL") else 28_000_000,
+            roles=knowledge.ROLES,
+            role_of=knowledge.role_of,
         )
 
     @app.get("/knowledge/doc/<doc_id>")
@@ -675,7 +677,7 @@ def configure_app(app: Flask) -> None:
                 raw = item.read()
                 text = extract_text(name, raw)
                 kept = _keep_original(raw, name, item.mimetype)
-                knowledge.add_document(
+                entry = knowledge.add_document(
                     name,
                     text,
                     "upload",
@@ -684,6 +686,9 @@ def configure_app(app: Flask) -> None:
                     summarize=False,
                 )
                 added += 1
+                note = _apply_role(entry, knowledge.classify(name, text), text)
+                if note:
+                    flash(note)
             except ConfigError as exc:
                 if kept:
                     files.remove(kept["id"])
@@ -758,6 +763,117 @@ def configure_app(app: Flask) -> None:
         if knowledge.delete_document(doc_id):
             flash("Document removed from the knowledge base.")
         return redirect(url_for("knowledge_page") + "#documents")
+
+    @app.post("/knowledge/doc/<doc_id>/role")
+    def knowledge_role(doc_id):
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        doc = knowledge.get_document(doc_id)
+        role = request.form.get("role", "")
+        if doc is None or role not in knowledge.ROLES:
+            abort(404)
+        try:
+            note = _apply_role(doc, role, doc.get("text") or "")
+            flash(note or f"{doc['title']} is now used as {knowledge.ROLES[role].lower()}.")
+        except ConfigError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("knowledge_page") + "#documents")
+
+    # ---- contracts -----------------------------------------------------------
+
+    @app.get("/contracts")
+    def contracts_page():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import contracts
+
+        return _render("contracts.html", templates=knowledge.templates("contract_template"), drafts=contracts.list_drafts())
+
+    @app.post("/contracts/new")
+    def contracts_new():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import contracts
+
+        found = knowledge.templates("contract_template")
+        template = next((item for item in found if item["id"] == request.form.get("template", "")), found[0] if found else None)
+        key = request.form.get("key", "")
+        if template is None:
+            flash("Upload a contract you use (a Word file) to the knowledge base first.", "error")
+            return redirect(url_for("knowledge_page") + "#documents")
+        if not (template.get("meta") or {}).get("fields"):
+            flash(f"No parts to fill in were found in {template['title']}. Mark them like {{{{Client name}}}} and upload it again.", "error")
+            return redirect(url_for("contracts_page"))
+        mail = _find_mail(key) if key else None
+        if key and mail is None:
+            flash("This letter could not be loaded right now. Try again in a moment.", "error")
+            return redirect(url_for("home", open=key))
+        wanted = request.form.get("request", "").strip()
+        values, missing = contracts.fill_from(template, wanted, mail) if mail is not None or wanted else ({}, [])
+        contract = contracts.create(template, values, missing, mail_key=mail.key if mail is not None else "")
+        return redirect(url_for("contract_page", contract_id=contract["id"]))
+
+    @app.get("/contracts/<contract_id>")
+    def contract_page(contract_id):
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import contracts
+
+        contract = contracts.get(contract_id)
+        if contract is None:
+            abort(404)
+        return _render("contract.html", contract=contract, empty=contracts.empty_fields(contract), files_ready=files.ready())
+
+    @app.post("/contracts/<contract_id>/<action>")
+    def contract_act(contract_id, action):
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import contracts
+
+        contract = contracts.get(contract_id)
+        if contract is None:
+            abort(404)
+        try:
+            if action in ("save", "attach"):
+                contract = contracts.update(contract_id, {field["name"]: request.form.get(f"field_{index}", "") for index, field in enumerate(contract["fields"])})
+            if action == "save":
+                flash("Contract saved.")
+            elif action == "attach":
+                return _attach_contract(contract)
+            elif action == "delete":
+                contracts.delete(contract_id)
+                flash("Contract draft deleted.")
+                return redirect(url_for("contracts_page"))
+            else:
+                abort(404)
+        except (ConfigError, ReplyError) as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("contract_page", contract_id=contract_id))
+
+    @app.get("/contracts/<contract_id>/docx")
+    def contract_docx(contract_id):
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import contracts
+
+        contract = contracts.get(contract_id)
+        if contract is None:
+            abort(404)
+        try:
+            data = contracts.render_docx(_contract_original(contract), contract)
+        except ConfigError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("contract_page", contract_id=contract_id))
+        response = Response(data, mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        response.headers["Content-Disposition"] = f'attachment; filename="{contracts.file_name(contract)}"'
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
 
     @app.post("/knowledge/rules")
     def knowledge_rules():
@@ -1247,6 +1363,91 @@ def render_markdown(text: str) -> Markup:
 
 
 
+def _apply_role(entry: dict, role: str, text: str) -> str:
+    """Record what kind of document an upload is, and set up the template it holds. Returns a note for the owner."""
+    from gmail_auto import contracts, invoices
+
+    title = entry.get("title") or "The file"
+    if role not in knowledge.ROLES:
+        role = "reference"
+    changes = {"role": role}
+    note = ""
+    if role == "invoice_template":
+        from gmail_auto.llm import model_ready
+
+        found = {}
+        if model_ready():
+            try:
+                found = invoices.template_from_text(text)
+            except (ConfigError, ReplyError):
+                found = {}
+        current = invoices.load_template()
+        fill = {key: value for key, value in found.items() if key != "next_number" and not str(current.get(key) or "").strip()}
+        if int(found.get("next_number") or 0) > int(current.get("next_number") or 1):
+            fill["next_number"] = found["next_number"]
+        if fill:
+            invoices.save_template(fill)
+        note = (
+            f"{title} looks like an invoice. It is kept as your invoice template, not as facts for replies"
+            + (f", and {len(fill)} of your invoice details were filled in from it." if fill else ".")
+        )
+    elif role == "contract_template":
+        fields = contracts.find_fields(text)
+        changes["fields"] = fields
+        word = (title.lower().endswith(".docx")) and bool((entry.get("meta") or {}).get("file_id"))
+        note = f"{title} looks like a contract. It is kept as a contract template, not as facts for replies. "
+        if not word:
+            note += "Upload the Word (.docx) version to draft contracts from it."
+        elif fields:
+            note += f"{len(fields)} parts to fill in per client were found: " + ", ".join(field["name"] for field in fields[:6]) + "."
+        else:
+            note += "No parts to fill in were found. Mark them in the Word file like {{Client name}} and upload it again."
+    elif role == "price_list":
+        note = f"{title} looks like a price list. Replies and invoices will use its prices."
+    knowledge.update_meta(entry["id"], changes)
+    return note
+
+
+def _contract_templates() -> list[dict]:
+    try:
+        return [item for item in knowledge.templates("contract_template") if (item.get("meta") or {}).get("fields")]
+    except ConfigError:
+        return []
+
+
+def _contract_original(contract: dict) -> bytes:
+    template = next((item for item in knowledge.list_documents() if item["id"] == contract.get("template_id")), None)
+    file_id = ((template or {}).get("meta") or {}).get("file_id") or ""
+    if not file_id or files.get(file_id) is None:
+        raise ConfigError("The Word file of this contract template is not kept. Upload it to the knowledge base again.")
+    return files.read(file_id)
+
+
+def _attach_contract(contract: dict):
+    """Put the drafted contract on the reply to its letter, writing that reply if there is none yet."""
+    from gmail_auto import contracts
+    from gmail_auto.reply_now import draft_now, waiting_for
+
+    if not contract.get("mail_key"):
+        raise ConfigError("This contract was not made from a letter. Download it and attach it to an email yourself.")
+    empty = contracts.empty_fields(contract)
+    if empty:
+        raise ConfigError("Fill in every part first: " + ", ".join(empty) + ".")
+    data = contracts.render_docx(_contract_original(contract), contract)
+    record = files.save(data, contracts.file_name(contract), "application/vnd.openxmlformats-officedocument.wordprocessingml.document", origin="contract")
+    contracts.set_file(contract["id"], record["id"])
+    item = waiting_for(contract["mail_key"])
+    if item is None:
+        mail = _find_mail(contract["mail_key"])
+        if mail is None:
+            raise ConfigError("The letter for this contract could not be loaded right now. Try again in a moment.")
+        item = draft_now(mail, "Say the contract is attached for them to read and sign, and to ask if anything needs changing. Keep it short.", load_profile())
+    approvals.attach(item["id"], record)
+    _forget_inbox()
+    flash("The contract is attached to the reply. Check both, then send.")
+    return redirect(url_for("home", show="todo", open=contract["mail_key"]))
+
+
 def _invoice_form() -> dict:
     descriptions = request.form.getlist("description")
     quantities = request.form.getlist("qty")
@@ -1412,6 +1613,7 @@ def _home_context() -> dict:
         "matter": story_detail(request.args.get("story", ""), rows),
         "waiting_item": waiting_item,
         **_attach_context(waiting_item is not None),
+        "contract_templates": _contract_templates() if opened else [],
         "filters": _FILTERS,
         "counts": counts,
         "show": show,

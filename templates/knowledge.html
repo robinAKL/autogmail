@@ -336,14 +336,25 @@
       <div class="doc-head">
         <div>
           <h3><a href="{{ url_for('knowledge_doc', doc_id=doc.id) }}">{{ doc.title }}</a></h3>
+          {% set role = role_of(doc) %}
           <p class="meta"><span class="chip tiny src-{{ doc.source }}">{{ sources.get(doc.source, doc.source) }}</span>
+            {% if role != 'reference' %}<span class="chip tiny role-{{ role }}">{{ roles[role] }}</span>{% endif %}
             <span class="dot">·</span> added {{ doc.added_at }}
             <span class="dot">·</span> {{ '{:,}'.format(doc.chars) }} characters{% if doc.clipped %} (cut to fit){% endif %}</p>
         </div>
-        <form method="post" action="{{ url_for('knowledge_delete', doc_id=doc.id) }}" data-confirm="Remove “{{ doc.title }}” from the knowledge base?">
-          <button class="quiet small danger-text" type="submit">Remove</button>
-        </form>
+        <div class="doc-actions">
+          <form method="post" action="{{ url_for('knowledge_role', doc_id=doc.id) }}" class="role-form" data-busy="Updating…">
+            <select name="role" aria-label="Use this document as" onchange="this.form.requestSubmit()">
+              {% for key, label in roles.items() %}<option value="{{ key }}" {% if key == role %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select>
+            <noscript><button class="quiet small" type="submit">Set</button></noscript>
+          </form>
+          <form method="post" action="{{ url_for('knowledge_delete', doc_id=doc.id) }}" data-confirm="Remove “{{ doc.title }}” from the knowledge base?">
+            <button class="quiet small danger-text" type="submit">Remove</button>
+          </form>
+        </div>
       </div>
+      {% if role in ('invoice_template', 'contract_template') %}<p class="hint">Used as a template only. Its client names and amounts are not used as facts in replies.</p>{% endif %}
       {% if doc.summary %}<div class="prose small">{{ doc.summary|md }}</div>{% endif %}
     </article>
     {% endfor %}

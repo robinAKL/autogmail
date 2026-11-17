@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Contracts{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <h1>Contracts</h1>
+    <p class="sub">Drafted from your own Word contract: the parts that change per client are filled in, everything else stays exactly as you wrote it. Open a letter and press Create contract.</p>
+  </div>
+</header>
+
+<div class="grid-2 wide-left">
+<section class="card">
+  <h2 class="card-title">Drafts</h2>
+  {% if drafts %}
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Contract</th><th>Started</th><th></th></tr></thead>
+      <tbody>
+      {% for item in drafts %}
+      <tr>
+        <td><strong>{{ item.template_title }}</strong>{% for field in item.fields[:2] %}{% if item['values'][field.name] %}<br><span class="muted">{{ field.name }}: {{ item['values'][field.name] }}</span>{% endif %}{% endfor %}</td>
+        <td class="nowrap">{{ item.created_text }}</td>
+        <td class="actions"><a class="button quiet small" href="{{ url_for('contract_page', contract_id=item.id) }}">Open</a></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No contracts drafted yet.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2 class="card-title">Your contract templates</h2>
+  {% if templates %}
+  <ul class="plain-list template-list">
+    {% for item in templates %}
+    {% set fields = (item.meta or {}).get('fields') or [] %}
+    <li>
+      <strong>{{ item.title }}</strong>
+      {% if not item.title.lower().endswith('.docx') %}<span class="hint">Upload the Word (.docx) version to draft from it.</span>
+      {% elif fields %}<span class="hint">Fills in: {{ fields|map(attribute='name')|join(', ') }}</span>
+      {% else %}<span class="hint">No parts to fill in found. Mark them like {{ '{{Client name}}' }} in Word and upload again.</span>{% endif %}
+      {% if fields %}
+      <form method="post" action="{{ url_for('contracts_new') }}" class="button-row" data-busy="Starting…">
+        <input type="hidden" name="template" value="{{ item.id }}">
+        <button class="quiet small" type="submit">New blank contract</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">Upload a contract you use to <a href="{{ url_for('knowledge_page') }}#documents">Knowledge</a>. It is recognised as a contract template and kept out of the facts replies use.</p>
+  {% endif %}
+  <p class="hint">Best: a Word file with the client parts written as {{ '{{Client name}}' }}, {{ '{{Fee}}' }}, {{ '{{Start date}}' }}. A contract filled in for an earlier client also works; the client's details in it are found for you.</p>
+</section>
+</div>
+{% endblock %}

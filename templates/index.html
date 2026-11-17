@@ -142,6 +142,14 @@
         <input type="hidden" name="next" value="{{ url_for('home', show=show, open=opened.key) }}">
         <button class="quiet small" type="submit">Add to calendar</button>
         <button class="quiet small" type="submit" formaction="{{ url_for('invoices_new') }}" data-busy="Filling in the invoice…">Create invoice</button>
+        {% if contract_templates %}
+        {% if contract_templates|length > 1 %}
+        <select name="template" aria-label="Contract template" class="small-select">
+          {% for item in contract_templates %}<option value="{{ item.id }}">{{ item.title }}</option>{% endfor %}
+        </select>
+        {% else %}<input type="hidden" name="template" value="{{ contract_templates[0].id }}">{% endif %}
+        <button class="quiet small" type="submit" formaction="{{ url_for('contracts_new') }}" data-busy="Filling in the contract…">Create contract</button>
+        {% endif %}
       </form>
     </header>
 
