@@ -56,7 +56,8 @@ LABELS = {
 
 _FINE = re.compile(
     r"\b(infringement|penalty notice|parking (?:ticket|fine|notice)|speed(?:ing)? (?:camera|ticket|fine)|"
-    r"traffic (?:fine|offence)|toll (?:notice|charge)|fine of|you have been fined|court|summons|"
+    r"traffic (?:fine|offence)|toll (?:notice|charge)|fine of|you have been fined|summons|"
+    r"court (?:date|hearing|order|notice|fines?|summons|proceedings)|district court|disputes tribunal|"
     r"final notice|debt collect\w*)\b|罚单|罚款|违章",
     re.IGNORECASE,
 )
@@ -104,6 +105,8 @@ _JOB_ALERT = re.compile(
     r"recommended jobs?|similar jobs?)\b|招聘|职位推荐|新职位",
     re.IGNORECASE,
 )
+# An out-of-office answer to the owner's own mail says nothing new.
+_AUTO_REPLY = re.compile(r"^\s*(automatic reply|auto(?:matic)?[- ]?reply|out of (?:the )?office|auto:)|^\s*自动回复", re.IGNORECASE)
 # A paid receipt, an order update or an account alert is a notification, not a bill.
 _NOTICE_WORDS = re.compile(
     r"\b(receipt|your order|order (?:confirmed|confirmation|shipped|#)|has shipped|out for delivery|"
@@ -158,7 +161,11 @@ def assess(mail: Mail, lookups: bool = True) -> dict:
         return dict(_NOT_IMPORTANT)
     notice = is_notification(mail)
     selling = bool(_MARKETING.search(text) or re.search(r"退订|限时优惠|立即抢购|优惠券", text))
-    if not _institution(mail) and (_JOB_ALERT.search(mail.subject or "") or (notice and _JOB_ALERT.search(text))):
+    if _AUTO_REPLY.search(mail.subject or ""):
+        return dict(_NOT_IMPORTANT)
+    if not _institution(mail) and (
+        _JOB_ALERT.search(mail.subject or "") or _JOB_ALERT.search(sender) or (notice and _JOB_ALERT.search(text))
+    ):
         return dict(_NOT_IMPORTANT)
     # Bulk and automated mail only counts as health or home when the subject or sender says so,
     # not because a word like "clinic" or "lease" appears somewhere in a long digest.

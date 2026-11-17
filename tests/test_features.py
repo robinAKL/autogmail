@@ -413,6 +413,23 @@ class ImportanceTests(TempHome):
         self.assertEqual(assess(results)["kind"], "health")
         self.assertEqual(assess(doctor)["kind"], "health")
 
+    def test_auto_replies_job_alert_senders_and_sports_courts_are_not_notices(self):
+        from gmail_auto.importance import assess
+
+        away = sample(from_email="riz@innopro.example", subject="Automatic reply: Invitation: Breakfast", body="I am away until Monday.")
+        linkedin = sample(
+            from_email="jobalerts-noreply@linkedin.com",
+            from_name="LinkedIn Job Alerts",
+            subject="Computer Engineering Expert - AI Content Specialist role",
+            body="Hospital systems specialist wanted.",
+        )
+        courts = sample(from_email="bookings@sportscentre.example", subject="Court Availability During the School Holidays", body="Book a badminton court.")
+        hearing = sample(from_email="registry@lawfirm.example", subject="Your court date", body="The hearing is on 3 December.")
+        self.assertFalse(assess(away)["important"])
+        self.assertFalse(assess(linkedin)["important"])
+        self.assertNotEqual(assess(courts)["kind"], "fine")
+        self.assertEqual(assess(hearing)["kind"], "fine")
+
     def test_notifications_receipts_and_marketing_do_not_ping(self):
         from gmail_auto.importance import assess
 

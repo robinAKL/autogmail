@@ -46,15 +46,15 @@ _INBOX_STORE_TTL = 15 * 60
 _INBOX_PAGE = 20
 _inbox_cache: dict = {"at": 0.0, "who": None, "data": None}
 _FILTERS = {
-    "important": "Important",
-    "all": "All",
-    "open": "In progress",
-    "needs": "Waiting on me",
+    "todo": "To do",
+    "notices": "Notices",
     "replied": "Replied",
-    "drafts": "Drafts",
     "skipped": "Skipped",
+    "all": "All",
 }
-_DEFAULT_FILTER = "important"
+_DEFAULT_FILTER = "todo"
+# Older links and bookmarks used these tab names.
+_OLD_FILTERS = {"important": "todo", "needs": "todo", "drafts": "todo", "open": "all"}
 _MODES = {
     "draft": ("Write only", "Drafts are saved. Nothing is sent from your mailbox."),
     "always": ("Show me every reply", "Every reply waits for your OK on WhatsApp or Approvals."),
@@ -225,6 +225,29 @@ def configure_app(app: Flask) -> None:
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Cache-Control"] = "private, max-age=120"
         return response
+
+    @app.post("/mail/reply")
+    def mail_reply():
+        """Write a draft reply to the open letter. It waits in To do until it is sent or dropped."""
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto.reply_now import draft_now
+
+        key = request.form.get("key", "")
+        mail = _find_mail(key)
+        try:
+            if mail is None:
+                raise ConfigError("This letter could not be loaded right now. Try again in a moment.")
+            draft_now(mail, request.form.get("points", ""), load_profile())
+            flash("Draft ready. Check it, change anything you like, then send.")
+        except (ConfigError, ReplyError) as exc:
+            flash(str(exc), "error")
+            show = _OLD_FILTERS.get(request.form.get("show", ""), request.form.get("show", ""))
+            _forget_inbox()
+            return redirect(url_for("home", show=show if show in _FILTERS else None, open=key or None))
+        _forget_inbox()
+        return redirect(url_for("home", show="todo", open=key))
 
     @app.post("/run")
     def run_now():
@@ -1073,22 +1096,14 @@ def _home_context() -> dict:
     kinds = set(inbox_kinds(load_settings()))
     counts = {name: 0 for name in _FILTERS}
     for row in rows:
-        row["important"] = _row_is_important(row, kinds)
+        row["bucket"] = _bucket(row, kinds)
         counts["all"] += 1
-        counts[row["group"]] = counts.get(row["group"], 0) + 1
-        if row["important"]:
-            counts["important"] += 1
-        if row.get("story_open"):
-            counts["open"] = counts.get("open", 0) + 1
-    show = request.args.get("show", _DEFAULT_FILTER)
+        if row["bucket"] in counts:
+            counts[row["bucket"]] += 1
+    show = _OLD_FILTERS.get(request.args.get("show", ""), request.args.get("show", _DEFAULT_FILTER))
     if show not in _FILTERS:
         show = _DEFAULT_FILTER
-    if show == "important":
-        visible = [row for row in rows if row["important"]]
-    elif show == "open":
-        visible = [row for row in rows if row.get("story_open")]
-    else:
-        visible = [row for row in rows if show == "all" or row["group"] == show]
+    visible = rows if show == "all" else [row for row in rows if row["bucket"] == show]
     wanted = request.args.get("open", "")
     page, pages = _inbox_page(visible, wanted)
     listed = visible[(page - 1) * _INBOX_PAGE : page * _INBOX_PAGE]
@@ -1347,6 +1362,7 @@ def _find_mail(key: str):
 def _inbox_query() -> dict:
     query = {}
     show = request.args.get("show", "")
+    show = _OLD_FILTERS.get(show, show)
     if show in _FILTERS and show != _DEFAULT_FILTER:
         query["show"] = show
     opened = request.args.get("open", "")
@@ -1481,14 +1497,28 @@ def _rows_from_store() -> list[dict]:
     return _merge_history([])
 
 
-def _row_is_important(row: dict, kinds: set[str]) -> bool:
-    """The Important tab: letters that need you or got a reply, plus anything the push rules call important.
+def _bucket(row: dict, kinds: set[str]) -> str:
+    """Which tab a letter belongs to, by what the owner has to do about it.
 
-    Skipped notifications, newsletters and job alerts stay out unless a push rule (a bill, a fine, a school
-    or government letter...) picks them up and that kind is switched on in Settings.
+    To do: a draft waits for a look, or the letter has not been handled yet.
+    Notices: no reply is needed, but a push rule (a bill, a fine, a school or government letter...) says
+    it matters and that kind is switched on in Settings.
     """
-    if row.get("group") in ("needs", "replied", "drafts"):
-        return True
+    kind = row.get("kind")
+    if kind in ("waiting", "drafted"):
+        return "todo"
+    if row.get("group") == "replied":
+        return "replied"
+    if _is_notice(row, kinds):
+        return "notices"
+    if kind == "pending":
+        return "todo"
+    if row.get("group") == "skipped":
+        return "skipped"
+    return "all"
+
+
+def _is_notice(row: dict, kinds: set[str]) -> bool:
     if row.get("sensitive"):
         return False
     from gmail_auto.importance import assess

@@ -208,8 +208,9 @@ class PageTests(WebCase):
             _, needs = self.page("/?show=needs")
             self.assertIn("Spring sale", needs)
             self.assertNotIn('row-subject">Lunch?', needs)
-            self.assertIn("Waiting on me", needs)
-            self.assertIn("In progress", needs)
+            self.assertIn('class="tab on" href="/?show=todo"', needs)
+            self.assertIn("Notices", needs)
+            self.assertNotIn("In progress", needs)
 
     def test_inbox_story_timeline_only_when_the_same_matter_has_more_than_one_letter(self):
         first = sample(
@@ -314,16 +315,23 @@ class PageTests(WebCase):
         box = Inbox([saved])
         with patch("gmail_auto.web.connected_clients", return_value=([], [])), patch("gmail_auto.web.client_for", return_value=box):
             _, text = self.page("/")
-            self.assertIn('class="tab on" href="/?show=important"', text)
+            self.assertIn('class="tab on" href="/?show=todo"', text)
             self.assertIn("Workshop next week", text)
-            self.assertIn("Your power bill is ready", text)
+            self.assertNotIn("Your power bill is ready", text)
             self.assertNotIn("You may be a fit", text)
             self.assertNotIn("Big sale", text)
             self.assertIn("This list comes from saved records", text)
             self.assertNotIn("could not be reached", text)
 
-            _, opened = self.page("/?open=bill")
+            _, notices = self.page("/?show=notices")
+            self.assertIn("Your power bill is ready", notices)
+            self.assertNotIn("Workshop next week", notices)
+            self.assertNotIn("You may be a fit", notices)
+            self.assertNotIn("Big sale", notices)
+
+            _, opened = self.page("/?show=notices&open=bill")
             self.assertIn('src="/mail/body?key=bill"', opened)
+            self.assertIn('action="/mail/reply"', opened)
             self.assertIn("Amount due $182", self.client.get("/mail/body?key=bill").get_data(as_text=True))
 
             _, every = self.page("/?show=all")
@@ -335,9 +343,11 @@ class PageTests(WebCase):
 
         save_settings({"notify_kinds": ["fine"]})
         with patch("gmail_auto.web.connected_clients", return_value=([], [])):
-            _, text = self.page("/")
+            _, text = self.page("/?show=notices")
         self.assertNotIn("Your power bill is ready", text)
-        self.assertIn("Workshop next week", text)
+        with patch("gmail_auto.web.connected_clients", return_value=([], [])):
+            _, old_link = self.page("/?show=important")
+        self.assertIn("Workshop next week", old_link)
 
     def test_inbox_pages_older_history_and_keeps_mailbox_marks(self):
         live = sample(id="now", subject="Today's letter", received_ts=1794387660.0, date="2026-11-13 18:00")
@@ -485,7 +495,7 @@ class ApprovalPageTests(WebCase):
         self.assertIn("Meet Friday?", text)
         self.assertIn("Commits to a time.", text)
         self.assertIn("Friday at 2pm works.", text)
-        self.assertIn('<b class="badge">2</b>', text)
+        self.assertIn('title="Drafts waiting for your OK">2</b>', text)
         first = next(item for item in approvals.pending() if item["mail_id"] == "w1")
         second = next(item for item in approvals.pending() if item["mail_id"] == "w2")
         with patch("gmail_auto.mailboxes.client_for", return_value=fake):
@@ -505,6 +515,74 @@ class ApprovalPageTests(WebCase):
         _, board = self.page("/dashboard")
         self.assertIn("What happened to each day", board)
         self.assertIn("View as a table", board)
+
+
+class ReplyButtonTests(WebCase):
+    def test_reply_on_any_letter_writes_a_draft_that_waits_then_sends(self):
+        letter = sample(id="r1", subject="Course price?", body="How much is the spring course?", label_ids=["INBOX"])
+        box = Inbox([letter])
+        written = []
+
+        def fake_write(mail, profile, language):
+            written.append(mail.id)
+            return Draft(action="reply", reply="The spring course is in the price list.", reason="", sources=["Price list"])
+
+        with patch("gmail_auto.web.connected_clients", return_value=([box], [])), patch("gmail_auto.web.client_for", return_value=box), patch(
+            "gmail_auto.generator.draft_reply", side_effect=fake_write
+        ):
+            _, before = self.page("/?show=all&open=r1")
+            self.assertIn('action="/mail/reply"', before)
+            self.assertNotIn("Reply waiting for your OK", before)
+            made = self.client.post("/mail/reply", data={"key": "r1", "show": "all"})
+            self.assertEqual(made.headers["Location"], "/?show=todo&open=r1")
+            _, page = self.page(made.headers["Location"])
+            self.assertIn("Reply waiting for your OK", page)
+            self.assertIn("The spring course is in the price list.", page)
+            self.assertIn('name="instruction"', page)
+            self.assertNotIn('action="/mail/reply"', page)
+            self.assertIn('title="Drafts waiting for your OK">1</b>', page)
+            # Pressing Reply again keeps the one waiting draft instead of writing a second.
+            self.client.post("/mail/reply", data={"key": "r1"})
+        self.assertEqual(written, ["r1"])
+        waiting = approvals.pending()
+        self.assertEqual(len(waiting), 1)
+        with patch("gmail_auto.mailboxes.client_for", return_value=box):
+            self.client.post(f"/approvals/{waiting[0]['id']}/send", data={"draft": "Spring is $300.", "next": "/?show=replied&open=r1"})
+        self.assertEqual(box.sent, [("r1", "Spring is $300.", box.get_user_email())])
+        with patch("gmail_auto.web.connected_clients", return_value=([box], [])), patch("gmail_auto.web.client_for", return_value=box):
+            _, done = self.page("/?show=replied&open=r1")
+        self.assertIn("Replied after your OK", done)
+        self.assertIn("Reply again", done)
+
+    def test_points_write_the_draft_and_failures_are_shown(self):
+        letter = sample(id="r2", subject="Meet?", body="Can we meet next week?", label_ids=["INBOX"])
+        box = Inbox([letter])
+        asked = []
+
+        def fake_rewrite(item, instruction, profile):
+            asked.append((item["subject"], item["draft"], instruction))
+            return "Yes, Friday 2pm works."
+
+        with patch("gmail_auto.web.connected_clients", return_value=([box], [])), patch("gmail_auto.web.client_for", return_value=box), patch(
+            "gmail_auto.generator.revise_reply", side_effect=fake_rewrite
+        ):
+            self.client.post("/mail/reply", data={"key": "r2", "points": "yes, Friday 2pm"})
+        self.assertEqual(asked, [("Meet?", "", "yes, Friday 2pm")])
+        self.assertEqual(approvals.pending()[0]["draft"], "Yes, Friday 2pm works.")
+
+        box.mails.append(sample(id="r3", subject="Newsletter", body="Hi", label_ids=["INBOX"]))
+        _forget_inbox()
+        with patch("gmail_auto.web.connected_clients", return_value=([box], [])), patch("gmail_auto.web.client_for", return_value=box), patch(
+            "gmail_auto.generator.draft_reply", side_effect=lambda *_: Draft(action="skip")
+        ), patch("gmail_auto.generator.revise_reply", side_effect=ConfigError("model is down")):
+            failed = self.client.post("/mail/reply", data={"key": "r3", "show": "all"}, follow_redirects=True)
+        self.assertIn("model is down", failed.get_data(as_text=True))
+        self.assertEqual(len(approvals.pending()), 1)
+
+        _forget_inbox()
+        with patch("gmail_auto.web.client_for", side_effect=ConfigError("offline")), patch("gmail_auto.web.connected_clients", return_value=([], [])):
+            gone = self.client.post("/mail/reply", data={"key": "nope"}, follow_redirects=True)
+        self.assertIn("could not be loaded", gone.get_data(as_text=True))
 
 
 class KnowledgePageTests(WebCase):

@@ -19,14 +19,10 @@
     </a>
     {% set here = request.endpoint %}
     <nav class="nav" aria-label="Main">
-      <a href="{{ url_for('home') }}" class="{% if here == 'home' %}on{% endif %}" title="Inbox">
+      <a href="{{ url_for('home') }}" class="{% if here in ('home', 'approvals_page') %}on{% endif %}" title="Inbox">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h4l2 3h4l2-3h4"/><path d="M5.5 5h13l1.5 8v6H4v-6z"/></svg>
         <span>Inbox</span>
-      </a>
-      <a href="{{ url_for('approvals_page') }}" class="{% if here == 'approvals_page' %}on{% endif %}" title="Approvals">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/></svg>
-        <span>Approvals</span>
-        {% if nav_waiting %}<b class="badge">{{ nav_waiting }}</b>{% endif %}
+        {% if nav_waiting %}<b class="badge" title="Drafts waiting for your OK">{{ nav_waiting }}</b>{% endif %}
       </a>
       <a href="{{ url_for('dashboard_page') }}" class="{% if here == 'dashboard_page' %}on{% endif %}" title="Dashboard">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-7"/></svg>

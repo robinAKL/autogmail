@@ -72,6 +72,7 @@
   {% for name, label in filters.items() %}
   <a class="tab {% if show == name %}on{% endif %}" href="{{ url_for('home', show=name) }}">{{ label }}<span>{{ counts[name] }}</span></a>
   {% endfor %}
+  {% if show == 'todo' and nav_waiting %}<a class="tab-side" href="{{ url_for('approvals_page') }}">All {{ nav_waiting }} drafts on one page</a>{% endif %}
 </nav>
 
 <div class="inbox-desk">
@@ -92,7 +93,7 @@
       </span>
     </a>
     {% else %}
-    <p class="empty">{% if show == 'important' %}Nothing important right now. Skipped notifications are under All and Skipped.{% elif show == 'open' %}No ongoing matters. A story appears here once the same thread has more than one letter.{% elif show == 'needs' %}Nothing waiting on you.{% else %}Nothing here.{% endif %}</p>
+    <p class="empty">{% if show == 'todo' %}Nothing to do. New letters that need a reply show up here with a draft ready.{% elif show == 'notices' %}No notices. Bills, fines, school and government letters land here when they arrive.{% else %}Nothing here.{% endif %}</p>
     {% endfor %}
     {% if pager and pager.pages > 1 %}
     <nav class="pager" aria-label="Inbox pages">
@@ -167,6 +168,11 @@
           <button class="quiet danger-text" type="submit" formaction="{{ url_for('approvals_act', item_id=waiting_item.id, action='reject') }}" data-skip-confirm formnovalidate>Don't send</button>
         </div>
       </form>
+      <form method="post" action="{{ url_for('approvals_act', item_id=waiting_item.id, action='rewrite') }}" class="rewrite-row" data-busy="Rewriting…">
+        <input type="hidden" name="next" value="{{ url_for('home', show=show, open=opened.key) }}">
+        <input type="text" name="instruction" maxlength="1000" required placeholder="What to change, e.g. shorter, say we can do Friday 2pm" aria-label="What to change">
+        <button class="quiet" type="submit">Rewrite</button>
+      </form>
     </div>
     {% elif opened.reply %}
     <div class="reply-box {{ opened.kind }}">
@@ -179,6 +185,17 @@
       <p class="sources">Written using {% for title in opened.sources %}<span class="chip tiny">{{ title }}</span>{% endfor %}</p>
       {% endif %}
       {% if opened.outbox %}<p class="hint">Saved as {{ opened.outbox }}</p>{% endif %}
+    </div>
+    {% endif %}
+    {% if not waiting_item and opened.has_body %}
+    <div class="reply-box start">
+      <form method="post" action="{{ url_for('mail_reply') }}" class="rewrite-row" data-busy="Writing a draft…">
+        <input type="hidden" name="key" value="{{ opened.key }}">
+        <input type="hidden" name="show" value="{{ show }}">
+        <input type="text" name="points" maxlength="1000" placeholder="What to say (optional), e.g. yes, Friday 2pm works" aria-label="What to say in the reply">
+        <button type="submit">{% if opened.kind == 'sent' %}Reply again{% else %}Reply{% endif %}</button>
+      </form>
+      <p class="hint">Writes a draft from your knowledge base. Nothing is sent until you press Send.</p>
     </div>
     {% endif %}
     {% else %}

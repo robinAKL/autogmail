@@ -359,6 +359,11 @@ a.story-who:hover { text-decoration: underline; }
 .reply-box.waiting { background: #fdf6f1; }
 .reply-box.drafted { background: #fdf9ee; }
 .reply-box form { display: grid; gap: 12px; }
+.reply-box.start { background: #fff; padding-top: 14px; padding-bottom: 16px; gap: 6px; }
+.reply-box form.rewrite-row, .rewrite-row { display: flex; gap: 8px; align-items: center; }
+.rewrite-row input[type=text] { flex: 1; min-width: 0; }
+.rewrite-row button { flex: none; }
+.tab-side { margin-left: auto; font-size: 13px; color: var(--muted); align-self: center; white-space: nowrap; }
 .reply-head { display: grid; gap: 2px; }
 .reply-text { white-space: pre-wrap; overflow-wrap: anywhere; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; max-height: 26rem; overflow: auto; }
 .reply-text.tall { max-height: none; }
