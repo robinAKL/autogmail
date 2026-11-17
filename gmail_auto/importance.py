@@ -97,6 +97,13 @@ _MARKETING = re.compile(
     r"% off|sale ends|limited time|special offer|deal of|promo code|coupon|free trial|shop now|book now)\b",
     re.IGNORECASE,
 )
+# Job boards and recruiter digests list jobs at clinics, landlords and councils; none of it is the owner's own business.
+_JOB_ALERT = re.compile(
+    r"\b(\d+\s+(?:new\s+)?jobs?\b|new jobs?|jobs? (?:this|of the) week|job (?:alerts?|digest|listings?|matches|board|openings?)|"
+    r"jobs? (?:for|matching) you|remote jobs?|apply now|now hiring|we'?re hiring|is hiring|open (?:roles|positions)|"
+    r"recommended jobs?|similar jobs?)\b|招聘|职位推荐|新职位",
+    re.IGNORECASE,
+)
 # A paid receipt, an order update or an account alert is a notification, not a bill.
 _NOTICE_WORDS = re.compile(
     r"\b(receipt|your order|order (?:confirmed|confirmation|shipped|#)|has shipped|out for delivery|"
@@ -151,6 +158,12 @@ def assess(mail: Mail, lookups: bool = True) -> dict:
         return dict(_NOT_IMPORTANT)
     notice = is_notification(mail)
     selling = bool(_MARKETING.search(text) or re.search(r"退订|限时优惠|立即抢购|优惠券", text))
+    if not _institution(mail) and (_JOB_ALERT.search(mail.subject or "") or (notice and _JOB_ALERT.search(text))):
+        return dict(_NOT_IMPORTANT)
+    # Bulk and automated mail only counts as health or home when the subject or sender says so,
+    # not because a word like "clinic" or "lease" appears somewhere in a long digest.
+    headline = f"{mail.subject or ''}\n{sender}"
+    topic_text = headline if notice else text
 
     # These matter even when an automated system sends them, as long as it is not selling something.
     if not selling:
@@ -164,9 +177,9 @@ def assess(mail: Mail, lookups: bool = True) -> dict:
         return _tag("school", "School or parent mail.")
     if _institution(mail) and not selling:
         return _tag("institution", "From a government office or other institution.")
-    if not selling and _HEALTH.search(text):
+    if not selling and _HEALTH.search(topic_text):
         return _tag("health", "Health: results, prescriptions, referrals or clinic mail.")
-    if not selling and _HOUSING.search(text):
+    if not selling and _HOUSING.search(topic_text):
         return _tag("housing", "About your home, tenancy, rent or rates.")
 
     if notice:

@@ -391,6 +391,28 @@ class ImportanceTests(TempHome):
         self.assertEqual(assess(school)["kind"], "school")
         self.assertFalse(assess(junk)["important"])
 
+    def test_job_digests_are_not_health_or_home_but_real_clinic_mail_is(self):
+        from gmail_auto.importance import assess
+
+        digest = sample(
+            from_email="team@remoteusa.co",
+            from_name="Remoteusa.co",
+            subject="💼 23 new jobs this week on Remoteusa.co",
+            body="Clinic Coordinator at Sunrise Medical Centre. Hospital Referral Specialist. Leasing agent for a property manager.",
+        )
+        bulk_clinic_word = sample(
+            from_email="digest@community.example",
+            subject="Your weekly roundup",
+            body="Stories this week: a new clinic opens downtown.",
+            headers={"list-unsubscribe": "<mailto:x@community.example>"},
+        )
+        results = sample(from_email="noreply@managemyhealth.co.nz", subject="Your test results are ready")
+        doctor = sample(from_email="reception@smithdoctors.co.nz", subject="Appointment", body="Your referral to the specialist has been sent.")
+        self.assertFalse(assess(digest)["important"])
+        self.assertFalse(assess(bulk_clinic_word)["important"])
+        self.assertEqual(assess(results)["kind"], "health")
+        self.assertEqual(assess(doctor)["kind"], "health")
+
     def test_notifications_receipts_and_marketing_do_not_ping(self):
         from gmail_auto.importance import assess
 
