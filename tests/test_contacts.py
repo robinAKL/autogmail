@@ -55,6 +55,29 @@ class ContactStoreTests(WebCase):
         contacts.build([_record("r1", "sender@mx252.csdn.net", "CSDN"), _record("r2", "lee@abcbuild.co.nz", "Lee", action="expired")])
         self.assertEqual(contacts.all_contacts(), [])
 
+    def test_replies_to_shared_or_automated_addresses_never_go_out_alone(self):
+        for address in ("ats-notifications@atsmail.employmenthero.com", "communications@westlakegirls.school.nz", "uk.noreply@shop.example"):
+            self.assertTrue(contacts.looks_automated(address), address)
+        set_live(True)
+        save_settings({"approval_mode": "never"})
+        box = FakeGmail(
+            [
+                sample(id="s1", from_email="communications@westlakegirls.school.nz", from_name="Westlake Girls", subject="Important Term 4 Dates", body="Term 4 ends on 11 December."),
+                sample(id="s2", from_email="lee@abcbuild.example", from_name="Lee", subject="Thanks", body="Got your note, thanks."),
+                sample(id="s3", from_email="ann@b.example", from_name="Ann", subject="Can we meet?", body="Are you free on Friday?"),
+            ]
+        )
+        drafts = {
+            "s1": Draft(action="reply", reply="Thank you for the dates.", reason="Responding to important school dates."),
+            "s2": Draft(action="reply", reply="You're welcome.", reason="This is a routine notification, but a short thank-you is polite."),
+            "s3": Draft(action="reply", reply="Yes, Friday works.", reason="She asks about Friday."),
+        }
+        run_once(gmail=box, generate=lambda mail, *_: drafts[mail.id])
+        self.assertEqual([sent[0] for sent in box.sent], ["s3"])
+        waiting = {item["mail_id"]: item["reason"] for item in approvals.pending()}
+        self.assertIn("shared or automated address", waiting["s1"])
+        self.assertIn("Looks like a notice", waiting["s2"])
+
     def test_model_suggests_types_and_details_but_owner_edits_win(self):
         contacts.build([_record("a1", "lee@abcbuild.co.nz", "Lee Wong"), _record("e1", "mum@gmail.com", "Mum")])
         lee = contacts.find("lee@abcbuild.co.nz")

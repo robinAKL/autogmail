@@ -50,10 +50,16 @@ _ROBOT_SUBDOMAIN = re.compile(
 )
 
 
+# Words that mark a mailing or system address wherever they appear ("ats-notifications@", "uk.noreply@").
+_ROBOT_ANYWHERE = re.compile(r"notification|no-?reply|do-?not-?reply|donotreply|newsletter|mailer|bounce|alerts?(?![a-z])|digest|automated|postmaster")
+# Shared accounts that send to everyone at once (school and company announcements).
+_BROADCAST_LOCAL = re.compile(r"^(?:communications?|comms|announcements?|notices?|noticeboard|bulletins?|broadcast|mailings?|mailinglist)(?:[+._-].*)?$")
+
+
 def looks_automated(address: str) -> bool:
     """Addresses that belong to systems, shops and mailing tools rather than a person."""
     local, _, domain = (address or "").lower().partition("@")
-    if not domain or _ROBOT_LOCAL.match(local):
+    if not domain or _ROBOT_LOCAL.match(local) or _BROADCAST_LOCAL.match(local) or _ROBOT_ANYWHERE.search(local):
         return True
     labels = domain.split(".")
     base = 3 if len(labels) >= 3 and labels[-2] in {"co", "com", "org", "net", "govt", "ac", "school"} and len(labels[-1]) == 2 else 2

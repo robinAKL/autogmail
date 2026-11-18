@@ -1,4 +1,5 @@
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -347,7 +348,8 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
             draft.action = "ask"
             draft.reason = draft.reason or verdict.reason
         draft = _restrain_auto_reply(mail, draft)
-        must_wait = False
+        # Replies the safety checks held (automated senders, notices) wait whatever the sending mode.
+        must_wait = bool(getattr(draft, "hold", False))
         if draft.action in {"reply", "ask"}:
             from gmail_auto.contacts import TYPES, always_ask
 
@@ -438,6 +440,12 @@ def _as_draft(result) -> Draft:
     return Draft(action="reply", reply=str(result or ""))
 
 
+_NOTICE_REASON = re.compile(
+    r"(?i)\b(notification|notice|automated|newsletter|routine (?:update|summary|reminder)|no reply (?:is )?needed|"
+    r"status update|for your information|fyi|mass (?:email|mailing)|marketing)\b"
+)
+
+
 def _restrain_auto_reply(mail: Mail, draft: Draft) -> Draft:
     """Do not send a drafted reply back to an automated notice, even if the model was confident."""
     if draft.action != "reply":
@@ -452,9 +460,25 @@ def _restrain_auto_reply(mail: Mail, draft: Draft) -> Draft:
         or is_notification(mail)
     )
     if not automated:
+        from gmail_auto.contacts import looks_automated
+
+        # A shared or mailing address (communications@, hello@ on a mailing subdomain...) may still be a person
+        # asking something, so it is not dropped; it just never goes out without the owner seeing it.
+        if looks_automated(mail.reply_email or mail.from_email or ""):
+            draft.action = "ask"
+            draft.hold = True
+            draft.reason = "Sent from a shared or automated address, so this reply waits for you." + (f" {draft.reason}" if draft.reason else "")
+            return draft
+        # The model said it is a notice but still chose to reply: trust the reason, not the action.
+        if _NOTICE_REASON.search(draft.reason or ""):
+            draft.action = "ask"
+            draft.hold = True
+            draft.reason = f"{draft.reason} (Looks like a notice, so this waits for you.)"
+            return draft
         return draft
     if assess(mail).get("important"):
         draft.action = "ask"
+        draft.hold = True
         draft.reason = draft.reason or "Automated sender — check before this goes out."
         return draft
     draft.action = "skip"

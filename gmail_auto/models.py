@@ -36,3 +36,5 @@ class Draft:
     reason: str = ""
     summary: str = ""
     sources: list[str] = field(default_factory=list)
+    # Set by the safety checks: this reply waits for the owner whatever the sending mode.
+    hold: bool = False
