@@ -434,7 +434,10 @@ a.story-who:hover { text-decoration: underline; }
 .table td { padding: 10px 12px 10px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
 .table tr:last-child td { border-bottom: 0; }
 .table.compact td { padding: 6px 12px 6px 0; font-variant-numeric: tabular-nums; }
-.table .actions { display: flex; gap: 8px; justify-content: flex-end; }
+/* Stays a table cell (display:flex on a td breaks the row lines); the buttons and forms inside sit in a line. */
+.table td.actions { text-align: right; white-space: nowrap; }
+.table td.actions > form, .table td.actions > .button, .table td.actions > a, .table td.actions > span { display: inline-flex; vertical-align: middle; margin: 0 0 0 8px; }
+.table td.actions > :first-child { margin-left: 0; }
 
 /* ---- dashboard ---- */
 .tiles { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; }
