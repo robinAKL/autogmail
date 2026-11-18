@@ -413,6 +413,20 @@ class ImportanceTests(TempHome):
         self.assertEqual(assess(results)["kind"], "health")
         self.assertEqual(assess(doctor)["kind"], "health")
 
+    def test_github_build_and_vercel_mail_is_never_a_notice(self):
+        from gmail_auto.importance import assess
+
+        for sender, subject in (
+            ("notifications@github.com", "[robinAKL/superagent] PR run failed: ci - URGENT: team cleanup"),
+            ("noreply@github.com", "[GitHub] Payment failed for your plan"),
+            ("failed-payments@vercel.com", "[Action Required] Payment Failed for the Supabase Integration"),
+            ("notifications@vercel.com", "Failed production deployment on autogmail"),
+            ("builds@circleci.com", "Build failed: main"),
+            ("team@mail.netlify.com", "Deploy failed for site"),
+        ):
+            self.assertFalse(assess(sample(from_email=sender, subject=subject, body="Action required: please fix."))["important"], sender)
+        self.assertTrue(assess(sample(from_email="billing@power.example", subject="Your bill is ready", body="Amount due $182 by 30 November."))["important"])
+
     def test_auto_replies_job_alert_senders_and_sports_courts_are_not_notices(self):
         from gmail_auto.importance import assess
 

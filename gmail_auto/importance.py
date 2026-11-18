@@ -137,6 +137,22 @@ _INSTITUTION_DOMAINS = (
 )
 _SCHOOL = ("westlake", "wairau", "etap.co.nz", "school.nz")
 _COMPANY = ("kiwiknowledge", "kiwi knowledge", "innopro")
+# Code hosting, build and deploy services. Their "run failed", "URGENT" and billing mails are for the
+# developer's own tooling, never Notices or WhatsApp pings (the owner asked for these to be left out).
+DEV_TOOL_DOMAINS = (
+    "github.com", "githubusercontent.com", "gitlab.com", "bitbucket.org", "atlassian-bitbucket.com",
+    "vercel.com", "netlify.com", "circleci.com", "travis-ci.com", "travis-ci.org", "buildkite.com",
+    "dev.azure.com", "visualstudio.com", "render.com", "railway.app", "codemagic.io", "bitrise.io",
+)
+
+
+def from_dev_tool(mail: Mail) -> bool:
+    """Mail from GitHub, CI/build services or Vercel (any address on those domains or their subdomains)."""
+    for address in (mail.from_email or "", mail.reply_email or ""):
+        domain = address.lower().rsplit("@", 1)[-1] if "@" in address else ""
+        if domain and any(domain == item or domain.endswith("." + item) for item in DEV_TOOL_DOMAINS):
+            return True
+    return False
 _ROBOT_NAMES = {
     "alert", "alerts", "news", "info", "hello", "hi", "offers", "offer", "deals", "updates", "update",
     "support", "help", "team", "billing", "accounts", "account", "service", "services", "mail", "mailer",
@@ -157,7 +173,7 @@ def assess(mail: Mail, lookups: bool = True) -> dict:
     text = f"{mail.subject or ''}\n{mail.body or mail.snippet or ''}"
     blob = f"{sender}\n{text}"
     lowered = blob.lower()
-    if obvious_junk(mail):
+    if obvious_junk(mail) or from_dev_tool(mail):
         return dict(_NOT_IMPORTANT)
     notice = is_notification(mail)
     selling = bool(_MARKETING.search(text) or re.search(r"退订|限时优惠|立即抢购|优惠券", text))
