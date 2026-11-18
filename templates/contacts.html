@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Contacts{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <h1>Contacts</h1>
+    <p class="sub">Everyone you deal with by email, sorted into clients, students, suppliers and so on. Replies, new emails, invoices and contracts use what is here. Your edits are never overwritten.</p>
+  </div>
+  <div class="head-actions">
+    <form method="post" action="{{ url_for('contacts_scan') }}" data-busy="Reading your mail…">
+      <button type="submit">Scan mail</button>
+    </form>
+  </div>
+</header>
+
+{% if not total %}
+<section class="card empty-state">
+  <h2>No contacts yet</h2>
+  <p>Press Scan mail. People who wrote to you (not robots or newsletters) and people you wrote to are added, and their type is suggested for you to confirm. New letters add people on their own after that.</p>
+</section>
+{% else %}
+<nav class="tabs-row" aria-label="Contact type">
+  <a class="tab {% if not kind %}on{% endif %}" href="{{ url_for('contacts_page', q=query or None) }}">All<span>{{ total }}</span></a>
+  {% if counts.suggested %}<a class="tab {% if kind == 'suggested' %}on{% endif %}" href="{{ url_for('contacts_page', type='suggested') }}">To confirm<span>{{ counts.suggested }}</span></a>{% endif %}
+  {% for key, label in types.items() %}{% if counts[key] %}
+  <a class="tab {% if kind == key %}on{% endif %}" href="{{ url_for('contacts_page', type=key, q=query or None) }}">{{ label }}<span>{{ counts[key] }}</span></a>
+  {% endif %}{% endfor %}
+  {% if counts.unsorted %}<a class="tab {% if kind == 'unsorted' %}on{% endif %}" href="{{ url_for('contacts_page', type='unsorted') }}">Not sorted<span>{{ counts.unsorted }}</span></a>{% endif %}
+</nav>
+
+<form method="get" action="{{ url_for('contacts_page') }}" class="search-row">
+  {% if kind %}<input type="hidden" name="type" value="{{ kind }}">{% endif %}
+  <input type="search" name="q" value="{{ query }}" placeholder="Search name, company or email" aria-label="Search contacts">
+  <button class="quiet" type="submit">Search</button>
+</form>
+
+<section class="card">
+  {% if shown %}
+  <div class="table-wrap">
+    <table class="table contacts-table">
+      <thead><tr><th>Name</th><th>Company</th><th>Type</th><th>Last mail</th><th></th></tr></thead>
+      <tbody>
+      {% for item in shown %}
+      <tr>
+        <td><a href="{{ url_for('contact_page', contact_id=item.id) }}"><strong>{{ item.name or item.emails[0] }}</strong></a><br><span class="muted">{{ item.emails[0] }}</span></td>
+        <td>{% if item.company %}{{ item.company }}{% else %}<span class="muted">{{ item.emails[0].split('@')[-1] }}</span>{% endif %}{% if item.title %}<br><span class="muted">{{ item.title }}</span>{% endif %}</td>
+        <td>
+          {% if item.type %}<span class="chip tiny type-{{ item.type }}">{{ types[item.type] }}</span>{% if item.type_status == 'suggested' %} <span class="muted small-text" title="{{ item.type_reason }}">suggested</span>{% endif %}
+          {% else %}<span class="muted">not sorted</span>{% endif %}
+        </td>
+        <td class="nowrap">{{ item.last_seen or '—' }}</td>
+        <td class="actions">
+          {% if item.type_status == 'suggested' %}
+          <form method="post" action="{{ url_for('contact_act', contact_id=item.id, action='confirm') }}">
+            <input type="hidden" name="next" value="{{ request.full_path }}">
+            <button class="quiet small" type="submit" title="{{ item.type_reason }}">Confirm</button>
+          </form>
+          {% endif %}
+          <a class="button quiet small" href="{{ url_for('compose_page', to=item.emails[0]) }}">Write</a>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No contacts here.</p>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

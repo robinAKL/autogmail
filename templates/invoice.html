@@ -118,12 +118,15 @@
     {% endif %}
     <strong>Total {{ sums.currency }}</strong><strong>{{ money(sums.total) }}</strong>
   </div>
+  <div class="button-row">
   {% if invoice.mail_key %}
-  <form method="post" action="{{ url_for('invoice_act', invoice_id=invoice.id, action='attach') }}" class="button-row" data-busy="Attaching…">
+  <form method="post" action="{{ url_for('invoice_act', invoice_id=invoice.id, action='attach') }}" data-busy="Attaching…">
     <button type="submit" {% if not files_ready %}disabled title="Set up R2 file storage to attach files"{% endif %}>Attach to the reply</button>
-    <a class="quiet-link" href="{{ url_for('home', open=invoice.mail_key) }}">Open the letter</a>
   </form>
   {% endif %}
+  <a class="button {% if invoice.mail_key %}quiet{% endif %}" href="{{ url_for('compose_page', invoice=invoice.id) }}">Send in a new email</a>
+  {% if invoice.mail_key %}<a class="quiet-link" href="{{ url_for('home', open=invoice.mail_key) }}">Open the letter</a>{% endif %}
+  </div>
 </section>
 {% endif %}
 {% endblock %}

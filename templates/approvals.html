@@ -5,7 +5,7 @@
 <header class="page-head">
   <div>
     <h1>Approvals</h1>
-    <p class="sub">Replies that wait for your OK before they are sent.
+    <p class="sub">Replies and new emails that wait for your OK before they are sent. <a href="{{ url_for('compose_page') }}">Write a new email</a>.
       {% if whatsapp_ready %}You are also asked on WhatsApp — answer in either place.{% else %}<a href="{{ url_for('connections_page') }}#whatsapp">Connect WhatsApp</a> to be asked on your phone.{% endif %}
     </p>
   </div>
@@ -19,20 +19,27 @@
       <div>
         <p class="kicker">#{{ item.id }} · asked {{ item.created_text }}</p>
         <h2>{{ item.subject or '(no subject)' }}</h2>
+        {% if item.mode == 'new' %}
+        <p class="meta"><span class="chip tiny">New email</span> to <strong>{{ item.to }}</strong>
+          <span class="dot">·</span> {{ item.date }}
+        {% else %}
         <p class="meta"><strong>{{ item.from_name or item.from_email }}</strong>{% if item.from_name %} &lt;{{ item.from_email }}&gt;{% endif %}
           <span class="dot">·</span> {{ item.date }}
+        {% endif %}
           <span class="dot">·</span> <span class="chip tiny {{ item.provider }}">{{ item.provider|title }}</span></p>
       </div>
       <span class="tag waiting">Waiting for your OK</span>
     </header>
     <div class="approval-grid">
       <div class="approval-side">
+        {% if item.mode != 'new' %}
         {% if item.summary %}<p class="ai-note"><b>What they want</b> {{ item.summary }}</p>{% endif %}
         {% if item.reason %}<p class="ai-note ask"><b>Why it is asking</b> {{ item.reason }}</p>{% endif %}
         <details class="original">
           <summary>Show the original letter</summary>
           <div class="reply-text">{{ item.body }}</div>
         </details>
+        {% endif %}
         <form class="rewrite" method="post" action="{{ url_for('approvals_act', item_id=item.id, action='rewrite') }}" data-busy="Rewriting…">
           <label for="instruction{{ item.id }}">Ask for a rewrite</label>
           <div class="inline-form">
@@ -41,8 +48,14 @@
           </div>
         </form>
       </div>
-      <form class="approval-main" method="post" action="{{ url_for('approvals_act', item_id=item.id, action='send') }}" enctype="multipart/form-data" data-busy="Sending…" data-confirm="Send this reply to {{ item.from_name or item.from_email }} now?">
+      <form class="approval-main" method="post" action="{{ url_for('approvals_act', item_id=item.id, action='send') }}" enctype="multipart/form-data" data-busy="Sending…" data-confirm="Send this to {{ item.to or item.from_name or item.from_email }} now?">
+        {% if item.mode == 'new' %}
+        <label>To <input name="to" value="{{ item.to }}" maxlength="600" required></label>
+        <label>Subject <input name="subject" value="{{ item.subject }}" maxlength="200" required></label>
+        <label for="draft{{ item.id }}">Email{% if item.edited %} <span class="muted">(edited)</span>{% endif %}</label>
+        {% else %}
         <label for="draft{{ item.id }}">Reply{% if item.edited %} <span class="muted">(edited)</span>{% endif %}</label>
+        {% endif %}
         <textarea id="draft{{ item.id }}" name="draft" rows="10" maxlength="5000" required>{{ item.draft }}</textarea>
         {% if item.sources %}
         <p class="sources">Written using {% for title in item.sources %}<span class="chip tiny">{{ title }}</span>{% endfor %}</p>

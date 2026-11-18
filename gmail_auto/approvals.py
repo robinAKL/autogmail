@@ -59,6 +59,69 @@ def create(mail: Mail, draft, language: str, role: str = "ask", kind: str = "") 
         return item
 
 
+NEW_EMAIL_NOTE = "(This is a new email the owner is writing, not a reply to a letter.)"
+
+
+def create_new(to: str, subject: str, body: str, provider: str = "gmail", language: str = "en", reason: str = "", sources=None) -> dict:
+    """A new email the owner asked for. It waits here like a reply, and is sent as a new message."""
+    with LOCK:
+        data = _load()
+        data["seq"] = int(data.get("seq", 0)) + 1
+        item_id = str(data["seq"])
+        item = {
+            "id": item_id,
+            "mode": "new",
+            "key": f"new:{item_id}",
+            "provider": provider or "gmail",
+            "account": "",
+            "mail_id": "",
+            "thread_id": "",
+            "to": to,
+            "from_name": to,
+            "from_email": to,
+            "reply_email": to,
+            "subject": subject,
+            "date": _now(),
+            "received_ts": 0.0,
+            "message_id": "",
+            "references": "",
+            "body": NEW_EMAIL_NOTE,
+            "summary": f"New email to {to}",
+            "reason": reason or "You asked for this email.",
+            "draft": body,
+            "language": language,
+            "sources": list(sources or []),
+            "status": "pending",
+            "role": "ask",
+            "kind": "",
+            "created_at": time.time(),
+            "created_text": _now(),
+            "decided_at": 0,
+            "decided_text": "",
+            "via": "",
+            "edited": False,
+            "wa_ids": [],
+        }
+        data["items"][item_id] = item
+        _save(data)
+        return item
+
+
+def set_new_fields(item_id: str, to: str, subject: str) -> dict:
+    with LOCK:
+        data = _load()
+        item = _pending_item(data, item_id)
+        if item.get("mode") != "new":
+            return item
+        to, subject = (to or "").strip(), " ".join((subject or "").split())
+        if to:
+            item.update({"to": to, "from_name": to, "from_email": to, "reply_email": to, "summary": f"New email to {to}"})
+        if subject:
+            item["subject"] = subject[:200]
+        _save(data)
+        return item
+
+
 def pending() -> list[dict]:
     items = [
         item
@@ -201,7 +264,12 @@ def approve(item_id: str, via: str, client=None) -> dict:
             client = client_for(item.get("provider") or "gmail")
         mail = _mail(item)
         attached = _attachment_bytes(item)
-        if attached:
+        if item.get("mode") == "new":
+            if attached:
+                client.send_new(item["to"], item.get("subject") or "", item["draft"], attachments=attached)
+            else:
+                client.send_notice(item["to"], item.get("subject") or "", item["draft"])
+        elif attached:
             client.send_reply(mail, item["draft"], client.get_user_email(), attachments=attached)
         else:
             client.send_reply(mail, item["draft"], client.get_user_email())
@@ -210,6 +278,9 @@ def approve(item_id: str, via: str, client=None) -> dict:
         raise
     waited = time.time() - float(item.get("created_at") or time.time())
     item = _decide(item_id, "sent", via)
+    if item.get("mode") == "new":
+        stats.note_decision(waited, edited=bool(item.get("edited")))
+        return item
     update_processed(item["key"], {"action": "sent", "approved": True, "reply": item["draft"], "via": via})
     stats.note_outcome("approved_sent", mail, sources=item.get("sources"))
     stats.note_decision(waited, edited=bool(item.get("edited")))

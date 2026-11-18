@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Write email{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <p class="kicker"><a href="{{ url_for('home') }}">Inbox</a></p>
+    <h1>Write a new email</h1>
+    <p class="sub">Say what it should cover. {% if has_model %}It is written from your knowledge base in your voice, then waits for you to check and send.{% else %}No AI model is set, so what you type is the email.{% endif %} Nothing is sent until you press Send.</p>
+  </div>
+</header>
+
+<form method="post" action="{{ url_for('compose_send') }}" enctype="multipart/form-data" class="stack compose-form" data-busy="Writing the email…">
+<div class="grid-2 wide-left">
+  <section class="card">
+    <label>To <input name="to" value="{{ to }}" maxlength="600" required placeholder="lee@example.com (separate several with commas)" autocomplete="email" list="people"></label>
+    <datalist id="people">{% for item in people %}<option value="{{ item.emails[0] }}">{{ item.name }}{% if item.company %} · {{ item.company }}{% endif %}</option>{% endfor %}</datalist>
+    <label>Subject <span class="hint">Optional{% if has_model %}: one is written for you{% endif %}</span><input name="subject" value="{{ subject }}" maxlength="200"></label>
+    <label>What to say
+      <textarea name="points" rows="7" maxlength="3000" {% if not has_model %}required{% endif %} placeholder="e.g. Confirm the workshop on 3 December at 2pm, Ponsonby. Price as in our price list. Ask how many people are coming.">{{ points }}</textarea>
+    </label>
+  </section>
+
+  <section class="card">
+    <h2 class="card-title">Attach</h2>
+    {% if not files_ready %}
+    <p class="hint">To attach files, set up R2 file storage (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET).</p>
+    {% else %}
+    {% if issued %}
+    <label>Invoice
+      <select name="invoice">
+        <option value="">No invoice</option>
+        {% for item in issued %}<option value="{{ item.id }}" {% if item.id == chosen_invoice %}selected{% endif %}>{{ item.number }} · {{ item.client_name }} · {{ money(sums[item.id].total, sums[item.id].currency) }}</option>{% endfor %}
+      </select>
+    </label>
+    {% endif %}
+    {% if ready_contracts %}
+    <label>Contract
+      <select name="contract">
+        <option value="">No contract</option>
+        {% for item in ready_contracts %}<option value="{{ item.id }}" {% if item.id == chosen_contract %}selected{% endif %}>{{ item.template_title }}{% for field in item.fields[:1] %} · {{ item['values'][field.name] }}{% endfor %}</option>{% endfor %}
+      </select>
+    </label>
+    {% endif %}
+    {% if docs %}
+    <fieldset class="doc-picks">
+      <legend>From the knowledge base</legend>
+      {% for doc in docs %}
+      <label class="check"><input type="checkbox" name="doc" value="{{ doc.id }}"><span>{{ doc.title }}</span></label>
+      {% endfor %}
+    </fieldset>
+    {% endif %}
+    <label>From this computer <input type="file" name="files" multiple></label>
+    <p class="hint">Up to 3 MB a file.</p>
+    {% endif %}
+  </section>
+</div>
+<div class="button-row">
+  <button type="submit">{% if has_model %}Write it{% else %}Save draft{% endif %}</button>
+  <span class="hint">You check it on the next page before anything is sent.</span>
+</div>
+</form>
+{% endblock %}

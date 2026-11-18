@@ -18,6 +18,7 @@ from gmail_auto.errors import ConfigError, ReplyError
 from gmail_auto.storage import LOCK, load_doc, save_doc
 
 MAX_FIELDS = 25
+DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _ID = re.compile(r"^[a-f0-9]{12}$")
 _BRACES = re.compile(r"\{\{\s*([^{}\n]{1,60}?)\s*\}\}")
 _BRACKETS = re.compile(r"\[([A-Z][A-Za-z0-9 /'&-]{1,40})\]")
@@ -201,6 +202,17 @@ def render_docx(original: bytes, contract: dict) -> bytes:
                 data = _swap_xml(data.decode("utf-8"), swaps).encode("utf-8")
             target.writestr(info, data)
     return out.getvalue()
+
+
+def original(contract: dict) -> bytes:
+    """The template's Word file, as uploaded to the knowledge base."""
+    from gmail_auto import files, knowledge
+
+    template = next((item for item in knowledge.list_documents() if item["id"] == contract.get("template_id")), None)
+    file_id = ((template or {}).get("meta") or {}).get("file_id") or ""
+    if not file_id or files.get(file_id) is None:
+        raise ConfigError("The Word file of this contract template is not kept. Upload it to the knowledge base again.")
+    return files.read(file_id)
 
 
 def file_name(contract: dict) -> str:

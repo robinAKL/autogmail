@@ -304,6 +304,10 @@ def configure_app(app: Flask) -> None:
             target = url_for("approvals_page")
         back = redirect(target)
         try:
+            if action in ("send", "save", "attach", "detach") and request.form.get("to") is not None:
+                from gmail_auto.outgoing import clean_recipients
+
+                approvals.set_new_fields(item_id, clean_recipients(request.form.get("to", "")), request.form.get("subject", ""))
             if action in ("send", "attach", "detach") and request.form.get("draft") is not None:
                 approvals.set_draft(item_id, request.form.get("draft"))
             if action == "send":
@@ -342,6 +346,206 @@ def configure_app(app: Flask) -> None:
             flash(str(exc), "error")
         _forget_inbox()
         return back
+
+    # ---- contacts ------------------------------------------------------------
+
+    @app.get("/contacts")
+    def contacts_page():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import contacts
+
+        everyone = contacts.all_contacts()
+        kind = request.args.get("type", "")
+        query = " ".join(request.args.get("q", "").split()).lower()
+        shown = everyone
+        if kind == "unsorted":
+            shown = [item for item in shown if not item.get("type")]
+        elif kind == "suggested":
+            shown = [item for item in shown if item.get("type_status") == "suggested"]
+        elif kind in contacts.TYPES:
+            shown = [item for item in shown if item.get("type") == kind]
+        if query:
+            shown = [
+                item
+                for item in shown
+                if query in " ".join([item.get("name") or "", item.get("company") or "", " ".join(item.get("emails") or [])]).lower()
+            ]
+        counts = {key: sum(1 for item in everyone if item.get("type") == key) for key in contacts.TYPES}
+        counts["unsorted"] = sum(1 for item in everyone if not item.get("type"))
+        counts["suggested"] = sum(1 for item in everyone if item.get("type_status") == "suggested")
+        return _render(
+            "contacts.html",
+            shown=shown[:300],
+            total=len(everyone),
+            counts=counts,
+            types=contacts.TYPES,
+            kind=kind,
+            query=request.args.get("q", ""),
+        )
+
+    @app.post("/contacts/scan")
+    def contacts_scan():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import contacts
+        from gmail_auto.llm import model_ready
+
+        sent = []
+        own = {chip.get("email", "") for chip in _account_chips()}
+        try:
+            clients, _ = connected_clients()
+        except Exception:
+            clients = []
+        for client in clients:
+            try:
+                own.add(client.get_user_email())
+                sent.extend(client.list_sent(200))
+            except Exception:
+                continue
+        try:
+            result = contacts.build(list_processed(3000), sent, own)
+            sorted_now = contacts.sort_pending(40)
+        except (ConfigError, ReplyError) as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("contacts_page"))
+        left = sum(1 for item in contacts.all_contacts() if not item.get("type"))
+        message = f"{result['added']} new and {result['updated']} updated from your mail; {result['total']} contacts in all."
+        if sorted_now:
+            message += f" Sorted {sorted_now}: check the suggested types."
+        if left and model_ready():
+            message += f" {left} not sorted yet: press Scan again to sort more."
+        elif left:
+            message += " Without an AI model, set each type yourself."
+        flash(message)
+        return redirect(url_for("contacts_page", type="suggested" if sorted_now else None))
+
+    @app.get("/contacts/<contact_id>")
+    def contact_page(contact_id):
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import contacts, invoices
+
+        contact = contacts.get(contact_id)
+        if contact is None:
+            abort(404)
+        emails = set(contact.get("emails") or [])
+        billed = [item for item in invoices.list_invoices() if (item.get("client_email") or "").lower() in emails]
+        return _render(
+            "contact.html",
+            contact=contact,
+            types=contacts.TYPES,
+            tones=contacts.TONES,
+            languages=contacts.LANGUAGES,
+            letters=contacts.history(contact),
+            billed=billed,
+            sums={item["id"]: invoices.totals(item) for item in billed},
+            money=invoices.money,
+            always_ask=contacts.ALWAYS_ASK,
+        )
+
+    @app.post("/contacts/<contact_id>/<action>")
+    def contact_act(contact_id, action):
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import contacts
+
+        try:
+            if action == "save":
+                values = {key: request.form.get(key, "") for key in contacts.EDITABLE if key in request.form}
+                if "emails" in request.form:
+                    values["emails"] = request.form.get("emails", "")
+                contacts.save_edit(contact_id, values)
+                flash("Contact saved. Your changes are kept even when contacts are scanned again.")
+            elif action == "confirm":
+                contacts.confirm_type(contact_id)
+                flash("Type confirmed.")
+                nxt = request.form.get("next", "")
+                if nxt.startswith("/") and not nxt.startswith("//"):
+                    return redirect(nxt)
+            elif action == "hide":
+                contacts.hide(contact_id)
+                flash("Removed from contacts. It will not come back when mail is scanned.")
+                return redirect(url_for("contacts_page"))
+            else:
+                abort(404)
+        except ConfigError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("contact_page", contact_id=contact_id))
+
+    # ---- new emails ----------------------------------------------------------
+
+    @app.get("/compose")
+    def compose_page():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import contracts, invoices
+        from gmail_auto.llm import model_ready
+
+        issued = [item for item in invoices.list_invoices() if item.get("status") == "issued"]
+        ready = [item for item in contracts.list_drafts() if not contracts.empty_fields(item)]
+        chosen_invoice = invoices.get(request.args.get("invoice", ""))
+        return _render(
+            "compose.html",
+            to=request.args.get("to") or (chosen_invoice or {}).get("client_email") or "",
+            subject=request.args.get("subject", ""),
+            points=request.args.get("points", ""),
+            docs=knowledge.attachable_documents(),
+            people=_people_for_compose(),
+            issued=issued,
+            ready_contracts=ready,
+            chosen_invoice=request.args.get("invoice", ""),
+            chosen_contract=request.args.get("contract", ""),
+            files_ready=files.ready(),
+            has_model=model_ready(),
+            money=invoices.money,
+            sums={item["id"]: invoices.totals(item) for item in issued},
+        )
+
+    @app.post("/compose")
+    def compose_send():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import contracts, invoices, outgoing
+
+        uploaded = []
+        try:
+            to = outgoing.clean_recipients(request.form.get("to", ""))
+            records = [outgoing.knowledge_file(doc_id) for doc_id in request.form.getlist("doc") if doc_id]
+            invoice = invoices.get(request.form.get("invoice", ""))
+            if invoice is not None:
+                records.append(outgoing.invoice_file(invoice))
+            contract = contracts.get(request.form.get("contract", ""))
+            if contract is not None:
+                records.append(outgoing.contract_file(contract))
+            for upload in request.files.getlist("files"):
+                if upload and upload.filename:
+                    record = files.save(upload.read(), upload.filename, upload.mimetype, origin="reply")
+                    uploaded.append(record)
+                    records.append(record)
+            item = outgoing.start(to, request.form.get("points", ""), request.form.get("subject", ""), load_profile(), records)
+        except (ConfigError, ReplyError) as exc:
+            for record in uploaded:
+                files.remove(record["id"])
+            flash(str(exc), "error")
+            return redirect(
+                url_for(
+                    "compose_page",
+                    to=request.form.get("to", ""),
+                    subject=request.form.get("subject", ""),
+                    points=request.form.get("points", "")[:1500] or None,
+                    invoice=request.form.get("invoice") or None,
+                    contract=request.form.get("contract") or None,
+                )
+            )
+        flash(f"Email to {item['to']} is written. Check it, then send.")
+        return redirect(url_for("approvals_page") + f"#a{item['id']}")
 
     # ---- invoices ------------------------------------------------------------
 
@@ -866,7 +1070,7 @@ def configure_app(app: Flask) -> None:
         if contract is None:
             abort(404)
         try:
-            data = contracts.render_docx(_contract_original(contract), contract)
+            data = contracts.render_docx(contracts.original(contract), contract)
         except ConfigError as exc:
             flash(str(exc), "error")
             return redirect(url_for("contract_page", contract_id=contract_id))
@@ -1408,6 +1612,26 @@ def _apply_role(entry: dict, role: str, text: str) -> str:
     return note
 
 
+def _people_for_compose() -> list[dict]:
+    try:
+        from gmail_auto.contacts import all_contacts
+
+        return all_contacts()[:400]
+    except ConfigError:
+        return []
+
+
+def _person_for(opened: dict | None) -> dict | None:
+    if not opened or not opened.get("email"):
+        return None
+    try:
+        from gmail_auto.contacts import find
+
+        return find(opened["email"])
+    except ConfigError:
+        return None
+
+
 def _contract_templates() -> list[dict]:
     try:
         return [item for item in knowledge.templates("contract_template") if (item.get("meta") or {}).get("fields")]
@@ -1415,27 +1639,15 @@ def _contract_templates() -> list[dict]:
         return []
 
 
-def _contract_original(contract: dict) -> bytes:
-    template = next((item for item in knowledge.list_documents() if item["id"] == contract.get("template_id")), None)
-    file_id = ((template or {}).get("meta") or {}).get("file_id") or ""
-    if not file_id or files.get(file_id) is None:
-        raise ConfigError("The Word file of this contract template is not kept. Upload it to the knowledge base again.")
-    return files.read(file_id)
-
-
 def _attach_contract(contract: dict):
     """Put the drafted contract on the reply to its letter, writing that reply if there is none yet."""
-    from gmail_auto import contracts
+    from gmail_auto.outgoing import contract_file
     from gmail_auto.reply_now import draft_now, waiting_for
 
+
     if not contract.get("mail_key"):
-        raise ConfigError("This contract was not made from a letter. Download it and attach it to an email yourself.")
-    empty = contracts.empty_fields(contract)
-    if empty:
-        raise ConfigError("Fill in every part first: " + ", ".join(empty) + ".")
-    data = contracts.render_docx(_contract_original(contract), contract)
-    record = files.save(data, contracts.file_name(contract), "application/vnd.openxmlformats-officedocument.wordprocessingml.document", origin="contract")
-    contracts.set_file(contract["id"], record["id"])
+        raise ConfigError("This contract was not made from a letter. Use Send in a new email instead.")
+    record = contract_file(contract)
     item = waiting_for(contract["mail_key"])
     if item is None:
         mail = _find_mail(contract["mail_key"])
@@ -1472,12 +1684,11 @@ def _attach_invoice(invoice: dict):
     from gmail_auto import invoices
     from gmail_auto.reply_now import draft_now, waiting_for
 
+    from gmail_auto.outgoing import invoice_file
+
     if not invoice.get("mail_key"):
-        raise ConfigError("This invoice was not made from a letter. Download it and attach it to an email yourself.")
-    record = files.get(invoice.get("file_id") or "")
-    if record is None:
-        record = files.save(invoices.render_pdf(invoice), invoices.file_name(invoice), "application/pdf", origin="invoice")
-        invoices.set_file(invoice["id"], record["id"])
+        raise ConfigError("This invoice was not made from a letter. Use Send in a new email instead.")
+    record = invoice_file(invoice)
     item = waiting_for(invoice["mail_key"])
     if item is None:
         mail = _find_mail(invoice["mail_key"])
@@ -1614,6 +1825,7 @@ def _home_context() -> dict:
         "waiting_item": waiting_item,
         **_attach_context(waiting_item is not None),
         "contract_templates": _contract_templates() if opened else [],
+        "person": _person_for(opened),
         "filters": _FILTERS,
         "counts": counts,
         "show": show,

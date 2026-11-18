@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}{{ contact.name or contact.emails[0] }}{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <p class="kicker"><a href="{{ url_for('contacts_page') }}">Contacts</a></p>
+    <h1>{{ contact.name or contact.emails[0] }}</h1>
+    <p class="sub">
+      {% if contact.type %}<span class="chip tiny type-{{ contact.type }}">{{ types[contact.type] }}</span>{% if contact.type_status == 'suggested' %} suggested{% if contact.type_reason %}: {{ contact.type_reason }}{% endif %}{% endif %}{% endif %}
+      {% if contact.company %} · {{ contact.company }}{% endif %}
+      · {{ contact.letters or 0 }} letters from them, {{ contact.replied or 0 }} from you
+    </p>
+  </div>
+  <div class="head-actions">
+    {% if contact.type_status == 'suggested' %}
+    <form method="post" action="{{ url_for('contact_act', contact_id=contact.id, action='confirm') }}"><button class="quiet" type="submit">Confirm {{ types[contact.type]|lower }}</button></form>
+    {% endif %}
+    <a class="button" href="{{ url_for('compose_page', to=contact.emails[0]) }}">Write email</a>
+  </div>
+</header>
+
+{% if contact.type in always_ask %}
+<p class="banner warn">Replies to {{ types[contact.type]|lower }} contacts are never sent on their own. They always wait for you.</p>
+{% endif %}
+
+<div class="grid-2 wide-left">
+<form method="post" action="{{ url_for('contact_act', contact_id=contact.id, action='save') }}" class="card stack">
+  <h2 class="card-title">Details</h2>
+  <div class="grid-2">
+    <label>Name <input name="name" value="{{ contact.name }}" maxlength="160"></label>
+    <label>Type
+      <select name="type">
+        <option value="" {% if not contact.type %}selected{% endif %}>Not sorted</option>
+        {% for key, label in types.items() %}<option value="{{ key }}" {% if contact.type == key %}selected{% endif %}>{{ label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Company <input name="company" value="{{ contact.company }}" maxlength="160"></label>
+    <label>Title <input name="title" value="{{ contact.title }}" maxlength="160"></label>
+    <label>Phone <input name="phone" value="{{ contact.phone }}" maxlength="160"></label>
+    <label>Greet them as <input name="salutation" value="{{ contact.salutation }}" maxlength="160" placeholder="e.g. Hi Lee / Dear Mr Wong"></label>
+    <label>Tone
+      <select name="tone">{% for key, label in tones.items() %}<option value="{{ key }}" {% if contact.tone == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+    </label>
+    <label>Language
+      <select name="language">{% for key, label in languages.items() %}<option value="{{ key }}" {% if contact.language == key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+    </label>
+  </div>
+  <label>Address <textarea name="address" rows="2" maxlength="600">{{ contact.address }}</textarea></label>
+  <label>Other email addresses <input name="emails" value="{{ contact.emails[1:]|join(', ') }}" maxlength="400" placeholder="Separate with commas"><span class="hint">Main: {{ contact.emails[0] }}</span></label>
+  <label>Notes <textarea name="notes" rows="3" maxlength="600" placeholder="Anything replies should know, e.g. prefers calls in the morning">{{ contact.notes }}</textarea></label>
+  <div class="button-row">
+    <button type="submit">Save</button>
+    <button class="quiet danger-text" type="submit" formaction="{{ url_for('contact_act', contact_id=contact.id, action='hide') }}" data-confirm="Remove {{ contact.name or contact.emails[0] }} from contacts? Their mail is not touched." formnovalidate>Not a contact</button>
+  </div>
+</form>
+
+<div class="stack">
+  <section class="card">
+    <h2 class="card-title">Recent letters</h2>
+    {% if letters %}
+    <ul class="plain-list letter-list">
+      {% for record in letters %}
+      <li><a href="{{ url_for('home', show='all', open=record.id) }}">{{ record.subject or '(no subject)' }}</a><br><span class="muted">{{ (record.processed_at or '')[:16] }}{% if record.summary %} · {{ record.summary[:120] }}{% endif %}</span></li>
+      {% endfor %}
+    </ul>
+    {% else %}<p class="empty">No handled letters from them yet.</p>{% endif %}
+  </section>
+  {% if billed %}
+  <section class="card">
+    <h2 class="card-title">Invoices</h2>
+    <ul class="plain-list letter-list">
+      {% for item in billed %}
+      <li><a href="{{ url_for('invoice_page', invoice_id=item.id) }}">{{ item.number or 'Draft' }}</a> · {{ money(sums[item.id].total, sums[item.id].currency) }}{% if item.due_date %} · due {{ item.due_date }}{% endif %}</li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</div>
+</div>
+{% endblock %}

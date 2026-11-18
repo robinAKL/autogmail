@@ -110,18 +110,26 @@ class OutlookClient:
         return draft_id
 
     def send_notice(self, to: str, subject: str, body: str) -> None:
-        microsoft.graph(
-            "outlook",
-            "POST",
-            "/me/sendMail",
-            body={
-                "message": {
-                    "subject": subject,
-                    "body": {"contentType": "Text", "content": body},
-                    "toRecipients": [{"emailAddress": {"address": to}}],
+        self.send_new(to, subject, body)
+
+    def send_new(self, to: str, subject: str, body: str, attachments: list | None = None) -> None:
+        """A new email (not a reply). to may hold several addresses separated by commas."""
+        message = {
+            "subject": subject,
+            "body": {"contentType": "Text", "content": body},
+            "toRecipients": [{"emailAddress": {"address": address.strip()}} for address in to.split(",") if address.strip()],
+        }
+        if attachments:
+            message["attachments"] = [
+                {
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": filename,
+                    "contentType": mime or "application/octet-stream",
+                    "contentBytes": base64.b64encode(data).decode("ascii"),
                 }
-            },
-        )
+                for filename, mime, data in attachments
+            ]
+        microsoft.graph("outlook", "POST", "/me/sendMail", body={"message": message})
 
     def mark_read(self, message_id: str) -> None:
         microsoft.graph("outlook", "PATCH", f"/me/messages/{message_id}", body={"isRead": True})

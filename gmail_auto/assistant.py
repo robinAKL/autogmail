@@ -64,7 +64,8 @@ Return ONE JSON object:
 - numbers: array of waiting-item or listed-email ids mentioned (e.g. ["145","139","138"]). Empty if none.
 - number: first number as a string, or ""
 - query: search keyword, sender, or calendar range, else ""
-- to, subject, body: for compose
+- to, subject, body: for compose (to is an email address, or the person's name if no address was given)
+- attach: for compose, what to attach, e.g. ["invoice"], ["contract"], ["price list"]; else []
 - instruction: how to reply or revise
 - title, start, end, location: for calendar (start/end ISO 8601 in Pacific/Auckland if known, else "")
 - attendees: array of email addresses for invite
@@ -104,6 +105,11 @@ def handle(incoming: whatsapp.Incoming, clients: list | None = None) -> str:
             return _execute_pending(pending, clients)
         if stance == "no":
             set_state("wa_pending_action", None)
+            if pending.get("kind") == "send_new" and pending.get("approval_id"):
+                try:
+                    approvals.reject(pending["approval_id"], "whatsapp")
+                except ConfigError:
+                    pass
             return "Cancelled. Nothing was sent or deleted."
     text = _spoken_numbers(text)
     parsed = _interpret(text, waiting, incoming.context_id, clients)
@@ -387,7 +393,7 @@ def _dispatch(parsed: dict, text: str, waiting: list, clients: list | None) -> s
             return "Which email should I reply to? Ask me to summarise unread or search first."
         return _reply_listed(str(entry.get("num") or number or "1"), entry, parsed.get("instruction") or text, clients)
     if intent == "compose":
-        return _compose_preview(parsed)
+        return _compose_preview(parsed, text, clients)
     if intent == "archive":
         number = numbers[0] if numbers else ""
         if parsed.get("immediate") and number:
@@ -499,14 +505,64 @@ def _analyze(numbers: list[str], parsed: dict, clients: list | None) -> str:
     return "\n\n".join(part for part in parts if part)
 
 
-def _compose_preview(parsed: dict) -> str:
+def _compose_preview(parsed: dict, text: str = "", clients: list | None = None) -> str:
+    """A new email from WhatsApp. It waits in the approvals queue (also on the web page) with its attachments."""
+    from gmail_auto import outgoing
+
     to_addr = str(parsed.get("to") or "").strip()
     subject = str(parsed.get("subject") or "").strip() or "Hello"
     body = str(parsed.get("body") or "").strip()
-    if not to_addr or not body:
-        return str(parsed.get("reply") or "Please tell me the recipient email address and what you want to say.")
-    set_state("wa_pending_action", {"kind": "send_new", "to": to_addr, "subject": subject, "body": body})
-    return f"Ready to send:\nTo: {to_addr}\nSubject: {subject}\n\n{body}\n\nReply YES to send, or NO to cancel."
+    if to_addr and "@" not in to_addr:
+        to_addr = _address_for(to_addr) or to_addr
+    if not to_addr or "@" not in to_addr or not body:
+        return str(parsed.get("reply") or "Please tell me the recipient's email address and what you want to say.")
+    try:
+        to_addr = outgoing.clean_recipients(to_addr)
+    except ConfigError as exc:
+        return str(exc)
+    wanted = [str(item) for item in parsed.get("attach") or [] if str(item).strip()]
+    for word, label in ((r"发票|invoice", "invoice"), (r"合同|协议|contract|agreement", "contract"), (r"价目|价格表|price ?list", "price list")):
+        if re.search(word, text or "", flags=re.IGNORECASE) and not any(re.search(word, item, flags=re.IGNORECASE) for item in wanted):
+            wanted.append(label)
+    records, missing = outgoing.find_attachments(wanted, to_addr, text)
+    found = _mail_clients(clients)
+    provider = getattr(found[0], "provider", "") if found else ""
+    item = approvals.create_new(to_addr, subject, body, provider=provider or "gmail")
+    for record in records:
+        approvals.attach(item["id"], record)
+    set_state("wa_pending_action", {"kind": "send_new", "approval_id": item["id"], "to": to_addr, "subject": subject, "body": body})
+    lines = [f"Ready to send (#{item['id']}):", f"To: {to_addr}", f"Subject: {subject}", "", body]
+    if records:
+        lines += ["", "Attached: " + ", ".join(record["name"] for record in records)]
+    if missing:
+        lines += ["", "Not attached:"] + [f"- {note}" for note in missing]
+    lines += ["", "Reply YES to send, NO to cancel, or tell me what to change. It is also on the Approvals page."]
+    return "\n".join(lines)
+
+
+def _address_for(name: str) -> str:
+    """The address of someone the owner named, from mail already handled ("Lee" → lee@client.example)."""
+    wanted = " ".join(name.split()).lower()
+    if len(wanted) < 2:
+        return ""
+    try:
+        from gmail_auto.contacts import by_name
+
+        found = by_name(wanted)
+    except ConfigError:
+        found = []
+    if found:
+        return found[0]["emails"][0]
+    try:
+        records = list_processed(3000)
+    except ConfigError:
+        return ""
+    for record in records:
+        who = (record.get("from_name") or "").lower()
+        address = (record.get("reply_email") or record.get("from_email") or "").strip()
+        if who and address and "@" in address and (wanted == who or wanted in who.split() or who.startswith(wanted)):
+            return address
+    return ""
 
 
 def _ask_archive(number: str, query: str, clients: list | None) -> str:
@@ -960,6 +1016,12 @@ def _execute_pending(pending: dict, clients: list | None) -> str:
         if client is None:
             return "Could not run that action: no mailbox is connected."
         if kind == "send_new":
+            if pending.get("approval_id"):
+                item = approvals.approve(pending["approval_id"], "whatsapp", client)
+                set_state("wa_pending_action", None)
+                attached = len(item.get("attachments") or [])
+                extra = f" with {attached} attachment{'s' if attached != 1 else ''}" if attached else ""
+                return f"Sent email to {item['to']}{extra} — \"{item.get('subject')}\"."
             client.send_notice(pending["to"], pending["subject"], pending["body"])
             set_state("wa_pending_action", None)
             return f"Sent email to {pending['to']} — \"{pending['subject']}\"."

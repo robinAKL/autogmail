@@ -9,7 +9,8 @@ from gmail_auto.storage import load_doc, save_doc
 _BRIEF_SYSTEM = """You are the owner's mail clerk. Read the letter and extract a brief.
 Do not decide whether to reply, ignore, or ask the owner. Do not write a reply.
 Return JSON only:
-{"summary":"5-8 short lines of what the letter is","facts":["sender=...","asks=...","deadline=..."],"quotes":["short phrases copied from the letter"],"spam_cues":["gambling bonus","QQ id","old date", ...]}
+{"summary":"5-8 short lines of what the letter is","facts":["sender=...","asks=...","deadline=..."],"quotes":["short phrases copied from the letter"],"spam_cues":["gambling bonus","QQ id","old date", ...],"sender":{"company":"","title":"","phone":"","address":""}}
+sender: the SENDER's own details as written in their signature or letterhead; empty strings when not shown. Never the owner's details, and never guess.
 facts.asks must be what the SENDER is requesting of the owner. FAQ headings in a notice ("How can I see the result?") are not asks. If the letter tells the owner a process is complete and how to look it up, set asks=none (status notice).
 """
 _KEEP = 80
@@ -36,7 +37,7 @@ def brief_mail(mail: Mail, use_cache: bool = True) -> dict:
         f"{(mail.body or mail.snippet or '')[:4000]}"
     )
     try:
-        raw = complete(_BRIEF_SYSTEM, prompt, max_tokens=350, temperature=0.1, role="worker")
+        raw = complete(_BRIEF_SYSTEM, prompt, max_tokens=450, temperature=0.1, role="worker")
     except (ConfigError, ReplyError):
         _store(mail.key, fallback)
         return fallback
@@ -51,6 +52,10 @@ def brief_mail(mail: Mail, use_cache: bool = True) -> dict:
         "quotes": _list(data.get("quotes")),
         "spam_cues": _list(data.get("spam_cues")) or fallback["spam_cues"],
     }
+    sender = data.get("sender") if isinstance(data.get("sender"), dict) else {}
+    details = {key: _line(sender.get(key), 160) for key in ("company", "title", "phone", "address") if str(sender.get(key) or "").strip()}
+    if details:
+        brief["sender"] = details
     _store(mail.key, brief)
     return brief
 

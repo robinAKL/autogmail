@@ -270,19 +270,43 @@ def fill_from(request: str, mail=None, complete=None) -> dict:
 
         if not model_ready():
             fields["missing"] = ["No AI model is set, so fill in the lines yourself."]
+            _from_contact(fields, mail)
             return fields
     prompt = _fill_prompt(request, mail)
     try:
         data = parse_json(complete(_FILL_SYSTEM, prompt, max_tokens=1200, temperature=0.1)) or {}
     except ReplyError as exc:
         fields["missing"] = [f"The model could not help: {exc}"]
+        _from_contact(fields, mail)
         return fields
     for key in ("client_name", "client_email", "client_address", "reference", "notes"):
         if str(data.get(key) or "").strip():
             fields[key] = data[key]
     fields["items"] = data.get("items") or []
     fields["missing"] = data.get("missing") or []
+    _from_contact(fields, mail)
     return fields
+
+
+def _from_contact(fields: dict, mail) -> None:
+    """The client's company and address from Contacts beat what the model read off one letter."""
+    if mail is None:
+        return
+    try:
+        from gmail_auto.contacts import find
+
+        person = find(mail.reply_email or mail.from_email)
+    except ConfigError:
+        person = None
+    if not person:
+        return
+    if person.get("company") and not person.get("company_guessed"):
+        fields["client_name"] = person["company"] + (f" (attn. {person['name']})" if person.get("name") else "")
+    elif person.get("name") and not fields.get("client_name"):
+        fields["client_name"] = person["name"]
+    if person.get("address"):
+        fields["client_address"] = person["address"]
+    fields["client_email"] = fields.get("client_email") or person["emails"][0]
 
 
 def _fill_prompt(request: str, mail) -> str:

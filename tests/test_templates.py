@@ -129,7 +129,7 @@ class TemplatePageTests(WebCase):
             self.assertIn("Still empty: Fee", edit)
 
             blocked = self.client.post(f"/contracts/{contract_id}/attach", data={"field_0": "Lee Wong", "field_1": ""}, follow_redirects=True)
-            self.assertIn("Fill in every part first: Fee", blocked.get_data(as_text=True))
+            self.assertIn("Fill in every part of the contract first: Fee", blocked.get_data(as_text=True))
 
             with patch("gmail_auto.generator.revise_reply", return_value="Hi Lee, the contract is attached."):
                 done = self.client.post(f"/contracts/{contract_id}/attach", data={"field_0": "Lee Wong", "field_1": "NZD 2,400 + GST"})

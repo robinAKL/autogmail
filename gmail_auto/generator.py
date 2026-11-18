@@ -163,11 +163,13 @@ def clean_reply(text: str) -> str:
 
 
 def _user_prompt(mail: Mail, profile: dict, knowledge: str, language: str, history: str = "") -> str:
+    person = _person_card(mail.reply_email or mail.from_email)
     return (
         "MY PROFILE:\n"
         f"{profile_as_prompt(profile)}\n\n"
         + (knowledge + "\n\n" if knowledge else "")
         + ((history + "\n\n") if history else "")
+        + (f"WHO IS WRITING (from my contacts; follow the greeting and tone):\n{person}\n\n" if person else "")
         + "THE LETTER TO ANSWER:\n"
         f"From: {mail.from_name or mail.from_email}\n"
         f"Address: {mail.from_email}\n"
@@ -177,6 +179,15 @@ def _user_prompt(mail: Mail, profile: dict, knowledge: str, language: str, histo
         f"{_LANGUAGE_LINES[language]}\n"
         "Return the JSON object only."
     )
+
+
+def _person_card(address: str) -> str:
+    try:
+        from gmail_auto.contacts import card, find
+
+        return card(find(address))
+    except Exception:
+        return ""
 
 
 def _unknown_number(reply: str, profile: dict, knowledge: str = "") -> bool:

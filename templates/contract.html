@@ -44,6 +44,7 @@
   {% if contract.mail_key %}
   <button type="submit" formaction="{{ url_for('contract_act', contract_id=contract.id, action='attach') }}" data-busy="Attaching…" {% if not files_ready %}disabled title="Set up R2 file storage to attach files"{% endif %}>Attach to reply</button>
   {% endif %}
+  {% if not empty %}<a class="button quiet" href="{{ url_for('compose_page', contract=contract.id) }}">Send in a new email</a>{% endif %}
   <button class="quiet danger-text" type="submit" formaction="{{ url_for('contract_act', contract_id=contract.id, action='delete') }}" data-confirm="Delete this contract draft?" formnovalidate>Delete draft</button>
 </div>
 </form>

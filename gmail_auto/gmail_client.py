@@ -111,11 +111,18 @@ class GmailClient:
         return sent.get("id", "")
 
     def send_notice(self, to: str, subject: str, body: str) -> None:
+        self.send_new(to, subject, body)
+
+    def send_new(self, to: str, subject: str, body: str, attachments: list | None = None) -> None:
+        """A new email (not a reply). to may hold several addresses separated by commas."""
         message = EmailMessage()
         message["To"] = to
         message["From"] = self.get_user_email()
         message["Subject"] = subject
-        message.set_content(body)
+        message.set_content(body, subtype="plain", charset="utf-8")
+        for filename, mime, data in attachments or []:
+            maintype, _, subtype = (mime or "application/octet-stream").partition("/")
+            message.add_attachment(data, maintype=maintype or "application", subtype=subtype or "octet-stream", filename=filename)
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
         try:
             self.service.users().messages().send(userId="me", body={"raw": raw}).execute()

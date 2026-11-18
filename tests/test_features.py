@@ -1565,7 +1565,7 @@ class ConversationalAgentTests(TempHome):
             preview = assistant.handle(whatsapp.Incoming(sender="64211234567", text="帮我给 lee@example.com 发封邮件说明报价"), clients=[client])
 
         self.assertIn("$200/hr", mocked_llm.call_args[0][1])
-        self.assertIn("Ready to send:", preview)
+        self.assertIn("Ready to send (#", preview)
         self.assertIn("lee@example.com", preview)
         self.assertEqual(sent_emails, [])
 

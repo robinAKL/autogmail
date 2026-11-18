@@ -333,6 +333,12 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
             _skip(client, mail, Skip(verdict.reason or "junk", code=verdict.code or "junk"), report)
             continue
         try:
+            from gmail_auto.contacts import note_letter
+
+            note_letter(mail, brief)
+        except ConfigError:
+            pass
+        try:
             draft = _as_draft(generate(mail, profile, decision.language))
         except ReplyError as exc:
             _fail(client, mail, report, str(exc))
@@ -341,6 +347,19 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
             draft.action = "ask"
             draft.reason = draft.reason or verdict.reason
         draft = _restrain_auto_reply(mail, draft)
+        must_wait = False
+        if draft.action in {"reply", "ask"}:
+            from gmail_auto.contacts import TYPES, always_ask
+
+            try:
+                close = always_ask(mail.reply_email or mail.from_email)
+            except ConfigError:
+                close = None
+            if close is not None:
+                # Friends and family: never sent on its own, even in "send whenever it can" mode.
+                must_wait = True
+                draft.action = "ask"
+                draft.reason = f"{close.get('name') or 'This person'} is marked as {TYPES[close['type']].lower()}; replies to them always wait for you."
         if draft.action in {"reply", "ask"} and not draft.summary and brief.get("summary"):
             draft.summary = brief["summary"]
         subject = short_subject(mail.subject)
@@ -361,7 +380,7 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
                 stats.note_outcome("drafted", mail, sources=draft.sources)
                 report.drafted += 1
                 report.lines.append(f"Draft saved: {subject}")
-            elif settings["approval_mode"] == "always" or (settings["approval_mode"] == "smart" and draft.action == "ask"):
+            elif must_wait or settings["approval_mode"] == "always" or (settings["approval_mode"] == "smart" and draft.action == "ask"):
                 tag = _tag(mail)
                 item = approvals.create(mail, draft, decision.language, kind=tag.get("kind") if tag.get("important") else "")
                 mark_processed(_record(mail, "waiting", draft.reason, draft.reply, decision.language, False, "", draft, approval_id=item["id"]))

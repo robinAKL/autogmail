@@ -389,6 +389,18 @@ a.story-who:hover { text-decoration: underline; }
 .contract-fields input { width: 100%; }
 .contract-fields input.needs { border-color: #d08a3c; background: #fdf6ec; }
 .template-list li { display: grid; gap: 4px; margin-bottom: 12px; }
+.doc-picks { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: grid; gap: 6px; max-height: 220px; overflow: auto; margin: 0; }
+.doc-picks legend { font-size: 13px; font-weight: 600; padding: 0 4px; }
+.search-row { display: flex; gap: 8px; margin: 12px 0; max-width: 520px; }
+.search-row input { flex: 1; min-width: 0; }
+.chip.type-client { background: #e3edf9; color: #234a78; }
+.chip.type-student { background: #ece5f7; color: #4d3577; }
+.chip.type-supplier { background: #f3e9dc; color: #7a4a17; }
+.chip.type-partner { background: #e2f1ef; color: #1f5a52; }
+.chip.type-friend, .chip.type-family { background: #fbe7ea; color: #82303d; }
+.chip.type-institution { background: #ececec; color: #444; }
+.small-text { font-size: 12px; }
+.letter-list li { margin-bottom: 10px; }
 .tab-side { margin-left: auto; font-size: 13px; color: var(--muted); align-self: center; white-space: nowrap; }
 .reply-head { display: grid; gap: 2px; }
 .reply-text { white-space: pre-wrap; overflow-wrap: anywhere; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; max-height: 26rem; overflow: auto; }

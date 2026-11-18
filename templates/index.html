@@ -14,6 +14,7 @@
     </p>
   </div>
   <div class="head-actions">
+    <a class="button quiet" href="{{ url_for('compose_page') }}" {% if not connected %}aria-disabled="true"{% endif %}>Write email</a>
     <form method="get" action="{{ url_for('inbox_refresh') }}" data-busy="Reading mailbox…">
       <button class="quiet" type="submit" {% if not connected %}disabled{% endif %}>Refresh list</button>
     </form>
@@ -124,6 +125,7 @@
         <strong>{{ opened.who }}</strong>{% if opened.email and opened.email != opened.who %} &lt;{{ opened.email }}&gt;{% endif %}
         <span class="dot">·</span> {{ opened.date }}
         <span class="dot">·</span> <span class="chip tiny {{ opened.provider }}">{{ opened.provider_label }}</span>
+        {% if person %}<span class="dot">·</span> <a class="chip tiny type-{{ person.type or 'none' }}" href="{{ url_for('contact_page', contact_id=person.id) }}" title="Open contact">{{ person.type|title if person.type else 'Contact' }}{% if person.company %} · {{ person.company }}{% endif %}</a>{% endif %}
       </p>
       {% if opened.summary %}
       <p class="ai-note"><b>What they want</b> {{ opened.summary }}</p>
