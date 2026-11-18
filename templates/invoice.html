@@ -126,7 +126,7 @@
     <button type="submit" {% if not files_ready %}disabled title="Set up R2 file storage to attach files"{% endif %}>Attach to the reply</button>
   </form>
   {% endif %}
-  <a class="button {% if invoice.mail_key %}quiet{% endif %}" href="{{ url_for('compose_page', invoice=invoice.id) }}">Send in a new email</a>
+  <a class="button {% if invoice.mail_key %}quiet{% endif %}" href="{{ url_for('write_start', invoice=invoice.id) }}">Send in a new email</a>
   {% if word == 'quote' and not invoice.invoice_id %}
   <form method="post" action="{{ url_for('invoice_act', invoice_id=invoice.id, action='to_invoice') }}" data-confirm="Make a draft invoice from this quote?"><button class="quiet" type="submit">Accepted: make the invoice</button></form>
   {% endif %}

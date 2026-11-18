@@ -533,6 +533,88 @@ def configure_app(app: Flask) -> None:
             flash(str(exc), "error")
         return redirect(url_for("contact_page", contact_id=contact_id))
 
+    # ---- writing with the assistant ------------------------------------------
+
+    @app.get("/write")
+    def write_start():
+        """A new writing session, optionally with someone to write to and files already attached."""
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import writer
+
+        refs = [f"doc:{doc_id}" for doc_id in request.args.getlist("doc") if doc_id]
+        if request.args.get("invoice"):
+            refs.append(f"invoice:{request.args['invoice']}")
+        if request.args.get("contract"):
+            refs.append(f"contract:{request.args['contract']}")
+        to = request.args.get("to", "")
+        if not to and request.args.get("invoice"):
+            from gmail_auto import invoices
+
+            to = (invoices.get(request.args["invoice"]) or {}).get("client_email") or ""
+        try:
+            session = writer.start(to=to, subject=request.args.get("subject", ""), refs=refs)
+        except ConfigError as exc:
+            flash(str(exc), "error")
+            return redirect(url_for("compose_page"))
+        return redirect(url_for("write_page", session_id=session["id"]))
+
+    @app.get("/write/<session_id>")
+    def write_page(session_id):
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import writer
+        from gmail_auto.llm import model_ready
+
+        session = writer.get(session_id)
+        if session is None:
+            flash("That draft is no longer here. Start a new email.", "error")
+            return redirect(url_for("write_start"))
+        return _render(
+            "write.html",
+            session=session,
+            people=_people_for_compose(),
+            has_model=model_ready(),
+            files_ready=files.ready(),
+        )
+
+    @app.post("/write/<session_id>/<action>")
+    def write_act(session_id, action):
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import writer
+
+        back = redirect(url_for("write_page", session_id=session_id) + "#end")
+        try:
+            if action == "say":
+                writer.say(session_id, request.form.get("text", ""), load_profile())
+            elif action == "edit":
+                writer.edit(
+                    session_id,
+                    to=request.form.get("to"),
+                    subject=request.form.get("subject"),
+                    body=request.form.get("body"),
+                    detach=request.form.get("detach", ""),
+                )
+            elif action == "queue":
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"))
+                item = writer.queue(session_id)
+                flash(f"The email to {item['to']} is waiting in Approvals. Send it from there, or on WhatsApp.")
+                return redirect(url_for("approvals_page") + f"#a{item['id']}")
+            elif action == "send":
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"))
+                item = writer.send(session_id)
+                flash(f"Sent to {item['to']}.")
+                return redirect(url_for("home"))
+            else:
+                abort(404)
+        except (ConfigError, ReplyError) as exc:
+            flash(str(exc), "error")
+        return back
+
     # ---- new emails ----------------------------------------------------------
 
     @app.get("/compose")

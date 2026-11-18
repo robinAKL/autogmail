@@ -7,7 +7,7 @@
     <p class="sub">Everything you send to people: files you send as they are, and the quotes, invoices and contracts made from your templates. Any of them can go into an email.</p>
   </div>
   <div class="head-actions">
-    <a class="button quiet" href="{{ url_for('compose_page') }}">Write email</a>
+    <a class="button quiet" href="{{ url_for('write_start') }}">Write email</a>
   </div>
 </header>
 
@@ -36,7 +36,7 @@
         <td class="nowrap">{{ doc.added_at }}</td>
         <td class="actions">
           {% if kept %}
-          <a class="button quiet small" href="{{ url_for('compose_page', doc=doc.id) }}">Send</a>
+          <a class="button quiet small" href="{{ url_for('write_start', doc=doc.id) }}">Send</a>
           <a class="button quiet small" href="{{ url_for('document_file', doc_id=doc.id) }}">Download</a>
           {% else %}<span class="hint">Not kept: upload again to attach it</span>{% endif %}
         </td>

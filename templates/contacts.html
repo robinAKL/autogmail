@@ -56,7 +56,7 @@
             <button class="quiet small" type="submit" title="{{ item.type_reason }}">Confirm</button>
           </form>
           {% endif %}
-          <a class="button quiet small" href="{{ url_for('compose_page', to=item.emails[0]) }}">Write</a>
+          <a class="button quiet small" href="{{ url_for('write_start', to=item.emails[0]) }}">Write</a>
         </td>
       </tr>
       {% endfor %}

@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Write email{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <p class="kicker"><a href="{{ url_for('home') }}">Inbox</a></p>
+    <h1>Write an email</h1>
+    <p class="sub">Tell the assistant who it is for, what to say and what to attach. It uses your contacts, documents and knowledge, asks when something is missing, and never sends on its own.</p>
+  </div>
+  <div class="head-actions">
+    <a class="button quiet" href="{{ url_for('write_start') }}">New email</a>
+    <a class="quiet-link" href="{{ url_for('compose_page') }}">Simple form</a>
+  </div>
+</header>
+
+<div class="write-desk">
+  <section class="card write-chat" aria-label="Conversation">
+    <div class="chat-log" id="chat-log">
+      {% if not session.messages %}
+      <div class="chat-hint">
+        <p><strong>For example</strong></p>
+        <ul class="plain-list">
+          <li>Write to Lee: confirm Wednesday 2pm, attach our company introduction</li>
+          <li>给 ABC Builders 发报价，3 个月辅导，附上产品介绍</li>
+          <li>Make it shorter and more formal</li>
+          <li>Also attach the price list</li>
+        </ul>
+        {% if not has_model %}<p class="banner warn">No AI model is set, so the assistant cannot write. Type the email on the right.</p>{% endif %}
+      </div>
+      {% endif %}
+      {% for message in session.messages %}
+      <div class="chat-msg {{ message.who }}">
+        <div class="bubble">{{ message.text }}</div>
+        <span class="chat-time">{{ message.at }}</span>
+      </div>
+      {% endfor %}
+      {% for made in session.made %}
+      <a class="chip tiny made-link" href="{{ made.url }}" target="_blank" rel="noopener">Open the draft {{ made.kind }}</a>
+      {% endfor %}
+      <span id="end"></span>
+    </div>
+    <form method="post" action="{{ url_for('write_act', session_id=session.id, action='say') }}" class="chat-input" data-busy="Writing…">
+      <textarea name="text" rows="2" maxlength="2000" required placeholder="What should the email say, and what should go with it?" aria-label="Message to the assistant" autofocus></textarea>
+      <button type="submit" {% if not has_model %}disabled{% endif %}>Send</button>
+    </form>
+  </section>
+
+  <section class="card write-draft" aria-label="Draft">
+    <form method="post" action="{{ url_for('write_act', session_id=session.id, action='edit') }}" class="stack">
+      <label>To <input name="to" value="{{ session.to }}" maxlength="600" list="people" placeholder="Name or email address"></label>
+      <datalist id="people">{% for item in people %}<option value="{{ item.emails[0] }}">{{ item.name }}{% if item.company %} · {{ item.company }}{% endif %}</option>{% endfor %}</datalist>
+      <label>Subject <input name="subject" value="{{ session.subject }}" maxlength="200"></label>
+      <label>Email <textarea name="body" rows="14" maxlength="6000">{{ session.body }}</textarea></label>
+      {% if session.attachments %}
+      <ul class="attach-list">
+        {% for item in session.attachments %}
+        <li><span class="attach-name">📎 {{ item.name }}</span><span class="muted">{{ ((item.size or 0) / 1000)|round|int }} KB</span>
+          <button class="quiet small danger-text" type="submit" name="detach" value="{{ item.ref }}">Remove</button></li>
+        {% endfor %}
+      </ul>
+      {% elif not files_ready %}
+      <p class="hint">Set up R2 file storage to attach files.</p>
+      {% endif %}
+      <div class="button-row">
+        <button class="quiet" type="submit">Save changes</button>
+        <button class="quiet" type="submit" formaction="{{ url_for('write_act', session_id=session.id, action='queue') }}">Put in Approvals</button>
+        <button type="submit" formaction="{{ url_for('write_act', session_id=session.id, action='send') }}" data-confirm="Send this email to {{ session.to or 'them' }} now?" data-busy="Sending…">Send</button>
+      </div>
+      {% if session.status == 'queued' %}<p class="hint">Also waiting in Approvals. Changes here update it there.</p>{% endif %}
+    </form>
+  </section>
+</div>
+<script>
+  (function () {
+    var log = document.getElementById("chat-log");
+    if (log) log.scrollTop = log.scrollHeight;
+    var box = document.querySelector(".chat-input textarea");
+    if (box) box.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        if (box.value.trim()) box.form.requestSubmit();
+      }
+    });
+  })();
+</script>
+{% endblock %}

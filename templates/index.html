@@ -14,7 +14,7 @@
     </p>
   </div>
   <div class="head-actions">
-    <a class="button quiet" href="{{ url_for('compose_page') }}" {% if not connected %}aria-disabled="true"{% endif %}>Write email</a>
+    <a class="button quiet" href="{{ url_for('write_start') }}" {% if not connected %}aria-disabled="true"{% endif %}>Write email</a>
     <form method="get" action="{{ url_for('inbox_refresh') }}" data-busy="Reading mailbox…">
       <button class="quiet" type="submit" {% if not connected %}disabled{% endif %}>Refresh list</button>
     </form>

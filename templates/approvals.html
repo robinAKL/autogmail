@@ -5,7 +5,7 @@
 <header class="page-head">
   <div>
     <h1>Approvals</h1>
-    <p class="sub">Replies and new emails that wait for your OK before they are sent. <a href="{{ url_for('compose_page') }}">Write a new email</a>.
+    <p class="sub">Replies and new emails that wait for your OK before they are sent. <a href="{{ url_for('write_start') }}">Write a new email</a>.
       {% if whatsapp_ready %}You are also asked on WhatsApp — answer in either place.{% else %}<a href="{{ url_for('connections_page') }}#whatsapp">Connect WhatsApp</a> to be asked on your phone.{% endif %}
     </p>
   </div>

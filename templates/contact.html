@@ -15,7 +15,7 @@
     {% if contact.type_status == 'suggested' %}
     <form method="post" action="{{ url_for('contact_act', contact_id=contact.id, action='confirm') }}"><button class="quiet" type="submit">Confirm {{ types[contact.type]|lower }}</button></form>
     {% endif %}
-    <a class="button" href="{{ url_for('compose_page', to=contact.emails[0]) }}">Write email</a>
+    <a class="button" href="{{ url_for('write_start', to=contact.emails[0]) }}">Write email</a>
   </div>
 </header>
 

@@ -111,6 +111,10 @@ def handle(incoming: whatsapp.Incoming, clients: list | None = None) -> str:
                 except ConfigError:
                     pass
             return "Cancelled. Nothing was sent or deleted."
+        if pending.get("kind") == "send_new" and pending.get("session_id") and not _numbers(text) and not _asks_to_find_mail(text):
+            changed = _continue_writing(pending, text)
+            if changed is not None:
+                return changed
     text = _spoken_numbers(text)
     parsed = _interpret(text, waiting, incoming.context_id, clients)
     return _dispatch(parsed, text, waiting, clients)
@@ -537,7 +541,13 @@ def _compose_preview(parsed: dict, text: str = "", clients: list | None = None) 
     item = approvals.create_new(to_addr, subject, body, provider=provider or "gmail")
     for record in records:
         approvals.attach(item["id"], record)
-    set_state("wa_pending_action", {"kind": "send_new", "approval_id": item["id"], "to": to_addr, "subject": subject, "body": body})
+    from gmail_auto import writer
+
+    session = writer.from_approval(approvals.get(item["id"]) or item)
+    set_state(
+        "wa_pending_action",
+        {"kind": "send_new", "approval_id": item["id"], "session_id": session["id"], "to": to_addr, "subject": subject, "body": body},
+    )
     lines = [f"Ready to send (#{item['id']}):", f"To: {to_addr}", f"Subject: {subject}", "", body]
     if records:
         lines += ["", "Attached: " + ", ".join(record["name"] for record in records)]
@@ -545,6 +555,25 @@ def _compose_preview(parsed: dict, text: str = "", clients: list | None = None) 
         lines += ["", "Not attached:"] + [f"- {note}" for note in missing]
     lines += ["", "Reply YES to send, NO to cancel, or tell me what to change. It is also on the Approvals page."]
     return "\n".join(lines)
+
+
+def _continue_writing(pending: dict, text: str) -> str | None:
+    """A change to the email waiting for YES ("also attach the price list"). None when it is about something else."""
+    from gmail_auto import writer
+
+    try:
+        session = writer.say(pending["session_id"], text, load_profile())
+    except ConfigError:
+        return None
+    if session.get("off_topic"):
+        return None
+    answer = session["messages"][-1]["text"] if session["messages"] else ""
+    item = approvals.get(pending.get("approval_id") or "") or {}
+    set_state(
+        "wa_pending_action",
+        {**pending, "to": item.get("to") or session["to"], "subject": session["subject"], "body": session["body"]},
+    )
+    return f"{answer}\n\n{writer.preview(session)}\n\nReply YES to send, NO to cancel, or tell me what else to change."
 
 
 def _address_for(name: str) -> str:
