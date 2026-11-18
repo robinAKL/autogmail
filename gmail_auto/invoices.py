@@ -16,8 +16,9 @@ from gmail_auto.storage import LOCK, load_doc, save_doc
 TEMPLATE_FIELDS = (
     "business_name", "address", "email", "phone", "gst_number", "bank_name", "bank_account",
     "payment_terms_days", "prefix", "next_number", "gst_rate", "gst_registered", "prices_include_gst",
-    "currency", "notes",
+    "currency", "notes", "quote_prefix", "quote_next_number", "quote_valid_days",
 )
+KINDS = {"invoice": "Invoice", "quote": "Quote"}
 DEFAULT_TEMPLATE = {
     "business_name": "",
     "address": "",
@@ -34,6 +35,9 @@ DEFAULT_TEMPLATE = {
     "prices_include_gst": False,
     "currency": "NZD",
     "notes": "",
+    "quote_prefix": "Q-",
+    "quote_next_number": 1,
+    "quote_valid_days": 30,
 }
 MAX_ITEMS = 30
 _ID = re.compile(r"^[a-f0-9]{12}$")
@@ -72,8 +76,13 @@ def _clean_template(values: dict, current: dict) -> dict:
     for key in ("address", "notes"):
         if key in values:
             out[key] = _text(values.get(key), 600)
-    if "prefix" in values:
-        out["prefix"] = re.sub(r"[^A-Za-z0-9/_-]", "", str(values.get("prefix") or ""))[:12]
+    for key in ("prefix", "quote_prefix"):
+        if key in values:
+            out[key] = re.sub(r"[^A-Za-z0-9/_-]", "", str(values.get(key) or ""))[:12]
+    if "quote_next_number" in values:
+        out["quote_next_number"] = _whole(values.get("quote_next_number"), current["quote_next_number"], 1, 9_999_999)
+    if "quote_valid_days" in values:
+        out["quote_valid_days"] = _whole(values.get("quote_valid_days"), current["quote_valid_days"], 1, 365)
     if "payment_terms_days" in values:
         out["payment_terms_days"] = _whole(values.get("payment_terms_days"), current["payment_terms_days"], 0, 365)
     if "next_number" in values:
@@ -116,19 +125,25 @@ def template_from_text(text: str, complete=None) -> dict:
 # ---- invoices ----------------------------------------------------------------------
 
 
-def list_invoices() -> list[dict]:
-    items = list(_all().values())
+def list_invoices(kind: str | None = None) -> list[dict]:
+    """Invoices and quotes, newest first. kind="invoice" or "quote" keeps only that kind."""
+    items = [item for item in _all().values() if kind is None or kind_of(item) == kind]
     items.sort(key=lambda item: item.get("created_at", 0), reverse=True)
     return items
+
+
+def kind_of(invoice: dict) -> str:
+    return "quote" if invoice.get("kind") == "quote" else "invoice"
 
 
 def get(invoice_id: str) -> dict | None:
     return _all().get(invoice_id) if _ID.match(invoice_id or "") else None
 
 
-def create(fields: dict, mail_key: str = "") -> dict:
+def create(fields: dict, mail_key: str = "", kind: str = "invoice") -> dict:
     invoice = {
         "id": secrets.token_hex(6),
+        "kind": "quote" if kind == "quote" else "invoice",
         "status": "draft",
         "number": "",
         "created_at": time.time(),
@@ -158,7 +173,7 @@ def delete(invoice_id: str) -> None:
         if invoice is None:
             return
         if invoice.get("status") != "draft":
-            raise ConfigError("An issued invoice is kept for your records. It cannot be deleted.")
+            raise ConfigError(f"An issued {kind_of(invoice)} is kept for your records. It cannot be deleted.")
         data.pop(invoice_id)
         save_doc("invoices", data)
 
@@ -172,19 +187,41 @@ def issue(invoice_id: str, today: date | None = None) -> dict:
         if problems:
             raise ConfigError("Before issuing: " + "; ".join(problems) + ".")
         template = load_template()
-        number = int(template["next_number"])
-        template["next_number"] = number + 1
+        quote = kind_of(invoice) == "quote"
+        counter, prefix, days = ("quote_next_number", "quote_prefix", "quote_valid_days") if quote else ("next_number", "prefix", "payment_terms_days")
+        number = int(template[counter])
+        template[counter] = number + 1
         save_doc("invoice_template", template)
         day = today or _today()
-        invoice["number"] = f"{template['prefix']}{number:04d}"
+        invoice["number"] = f"{template[prefix]}{number:04d}"
         invoice["status"] = "issued"
         invoice["issue_date"] = invoice.get("issue_date") or day.isoformat()
         start = date.fromisoformat(invoice["issue_date"])
-        invoice["due_date"] = invoice.get("due_date") or (start + timedelta(days=int(template["payment_terms_days"]))).isoformat()
+        # For a quote, due_date is the date the price is valid until.
+        invoice["due_date"] = invoice.get("due_date") or (start + timedelta(days=int(template[days]))).isoformat()
         invoice["issued_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         invoice["template"] = {key: template[key] for key in TEMPLATE_FIELDS}
         _store(invoice)
         return invoice
+
+
+def quote_to_invoice(quote_id: str) -> dict:
+    """The client said yes: a draft invoice with the quote's client and lines."""
+    quote = get(quote_id)
+    if quote is None or kind_of(quote) != "quote":
+        raise ConfigError("That quote was not found.")
+    if quote.get("status") != "issued":
+        raise ConfigError("Issue the quote first.")
+    fields = {key: quote.get(key) for key in ("client_name", "client_email", "client_address", "notes")}
+    fields["reference"] = f"Quote {quote['number']}" + (f" - {quote['reference']}" if quote.get("reference") else "")
+    fields["items"] = quote.get("items") or []
+    invoice = create(fields, mail_key=quote.get("mail_key") or "", kind="invoice")
+    with LOCK:
+        data = _all()
+        if quote_id in data:
+            data[quote_id]["invoice_id"] = invoice["id"]
+            save_doc("invoices", data)
+    return invoice
 
 
 def set_file(invoice_id: str, file_id: str) -> None:
@@ -202,7 +239,7 @@ def missing_for_issue(invoice: dict, template: dict) -> list[str]:
     if template.get("gst_registered") and not (template.get("gst_number") or "").strip():
         problems.append("add your GST number (or untick GST registered)")
     if not (invoice.get("client_name") or "").strip():
-        problems.append("add who the invoice is for")
+        problems.append(f"add who the {kind_of(invoice)} is for")
     lines = [item for item in invoice.get("items") or [] if (item.get("description") or "").strip()]
     if not lines:
         problems.append("add at least one line")
@@ -364,14 +401,17 @@ def render_pdf(invoice: dict) -> bytes:
     left_bottom = pdf.get_y()
 
     pdf.set_xy(18 + width * 0.6, top)
-    title = "TAX INVOICE" if template.get("gst_registered") else "INVOICE"
+    quote = kind_of(invoice) == "quote"
+    title = "QUOTE" if quote else ("TAX INVOICE" if template.get("gst_registered") else "INVOICE")
     pdf.set_font("Helvetica", "B", 17)
     pdf.set_text_color(*ink)
     pdf.cell(width * 0.4, 8, title, align="R", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     facts = [
-        ("Invoice no.", invoice.get("number") or "DRAFT"),
+        ("Quote no." if quote else "Invoice no.", invoice.get("number") or "DRAFT"),
         ("Date", _nice_date(invoice.get("issue_date")) or "on issue"),
-        ("Due", _nice_date(invoice.get("due_date")) or f"{template.get('payment_terms_days')} days after issue"),
+        ("Valid until", _nice_date(invoice.get("due_date")) or f"{template.get('quote_valid_days', 30)} days after issue")
+        if quote
+        else ("Due", _nice_date(invoice.get("due_date")) or f"{template.get('payment_terms_days')} days after issue"),
     ]
     if invoice.get("reference"):
         facts.append(("Reference", invoice["reference"]))
@@ -431,13 +471,21 @@ def render_pdf(invoice: dict) -> bytes:
     pdf.ln(8)
 
     pay = []
+    if quote:
+        write("ACCEPTING THIS QUOTE", 8.5, "B", (110, 102, 92))
+        write(
+            f"To go ahead, reply to accept quote {invoice.get('number') or ''}"
+            + (f" before {_nice_date(invoice['due_date'])}." if invoice.get("due_date") else "."),
+            10,
+        )
+        pdf.ln(4)
     if template.get("bank_account"):
         account = template["bank_account"] + (f" ({template['bank_name']})" if template.get("bank_name") else "")
         pay.append(f"Please pay to {account}")
         pay.append(f"Use {invoice.get('number') or 'the invoice number'} as the reference.")
     if invoice.get("due_date"):
         pay.append(f"Payment due by {_nice_date(invoice['due_date'])}.")
-    if pay:
+    if pay and not quote:
         write("PAYMENT", 8.5, "B", muted)
         write("\n".join(pay), 10)
         pdf.ln(4)
@@ -450,7 +498,7 @@ def render_pdf(invoice: dict) -> bytes:
 
 def file_name(invoice: dict) -> str:
     who = re.sub(r"[^A-Za-z0-9]+", "-", invoice.get("client_name") or "").strip("-")[:30]
-    return f"{invoice.get('number') or 'draft-invoice'}{'-' + who if who else ''}.pdf"
+    return f"{invoice.get('number') or 'draft-' + kind_of(invoice)}{'-' + who if who else ''}.pdf"
 
 
 # ---- helpers --------------------------------------------------------------------------

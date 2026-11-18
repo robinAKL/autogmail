@@ -521,7 +521,14 @@ def _compose_preview(parsed: dict, text: str = "", clients: list | None = None) 
     except ConfigError as exc:
         return str(exc)
     wanted = [str(item) for item in parsed.get("attach") or [] if str(item).strip()]
-    for word, label in ((r"发票|invoice", "invoice"), (r"合同|协议|contract|agreement", "contract"), (r"价目|价格表|price ?list", "price list")):
+    for word, label in (
+        (r"发票|invoice", "invoice"),
+        (r"报价单|附上报价|发报价|quotation|attach (?:the |a |our )?quote", "quote"),
+        (r"合同|协议|contract|agreement", "contract"),
+        (r"价目|价格表|price ?list", "price list"),
+        (r"公司介绍|公司简介|company (?:profile|introduction)|about us", "company introduction"),
+        (r"产品介绍|课程介绍|服务介绍|product (?:deck|info|brochure)|ppt", "product introduction"),
+    ):
         if re.search(word, text or "", flags=re.IGNORECASE) and not any(re.search(word, item, flags=re.IGNORECASE) for item in wanted):
             wanted.append(label)
     records, missing = outgoing.find_attachments(wanted, to_addr, text)

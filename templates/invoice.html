@@ -1,11 +1,13 @@
 {% extends "base.html" %}
-{% block title %}{{ invoice.number or 'Draft invoice' }}{% endblock %}
+{% block title %}{{ invoice.number or ('Draft quote' if invoice.kind == 'quote' else 'Draft invoice') }}{% endblock %}
 {% block body %}
+{% set word = 'quote' if invoice.kind == 'quote' else 'invoice' %}
 <header class="page-head">
   <div>
-    <p class="kicker"><a href="{{ url_for('invoices_page') }}">Invoices</a></p>
-    <h1>{% if invoice.number %}Invoice {{ invoice.number }}{% else %}Draft invoice{% endif %}</h1>
-    <p class="sub">{% if invoice.status == 'draft' %}Check every line and price. The number is given when you issue it.{% else %}Issued {{ invoice.issued_at }}. An issued invoice is kept as it is.{% endif %}</p>
+    <p class="kicker"><a href="{{ url_for('documents_page', tab=word ~ 's') }}">Documents</a></p>
+    <h1>{% if invoice.number %}{{ word|title }} {{ invoice.number }}{% else %}Draft {{ word }}{% endif %}</h1>
+    <p class="sub">{% if invoice.status == 'draft' %}Check every line and price. The number is given when you issue it.{% else %}Issued {{ invoice.issued_at }}. An issued {{ word }} is kept as it is.{% endif %}
+      {% if invoice.kind == 'quote' and invoice.invoice_id %}<a href="{{ url_for('invoice_page', invoice_id=invoice.invoice_id) }}">Turned into an invoice</a>.{% endif %}</p>
   </div>
   <div class="head-actions">
     <a class="button quiet" href="{{ url_for('invoice_pdf', invoice_id=invoice.id) }}" target="_blank" rel="noopener">{% if invoice.status == 'draft' %}Preview PDF{% else %}Open PDF{% endif %}</a>
@@ -34,9 +36,9 @@
     <label>Reference <input name="reference" value="{{ invoice.reference or '' }}" maxlength="120"></label>
     <div class="grid-2">
       <label>Date <input type="date" name="issue_date" value="{{ invoice.issue_date or '' }}"><span class="hint">Empty: the day it is issued</span></label>
-      <label>Due <input type="date" name="due_date" value="{{ invoice.due_date or '' }}"><span class="hint">Empty: {{ details.payment_terms_days }} days later</span></label>
+      <label>{% if word == 'quote' %}Valid until{% else %}Due{% endif %} <input type="date" name="due_date" value="{{ invoice.due_date or '' }}"><span class="hint">Empty: {{ details.quote_valid_days if word == 'quote' else details.payment_terms_days }} days later</span></label>
     </div>
-    <label>Note on this invoice <textarea name="notes" rows="2" maxlength="600">{{ invoice.notes or '' }}</textarea></label>
+    <label>Note on this {{ word }} <textarea name="notes" rows="2" maxlength="600">{{ invoice.notes or '' }}</textarea></label>
   </section>
 </div>
 
@@ -81,10 +83,10 @@
 <div class="button-row">
   <button type="submit">Save</button>
   {% if invoice.mail_key %}
-  <button type="submit" formaction="{{ url_for('invoice_act', invoice_id=invoice.id, action='issue_attach') }}" data-confirm="Give this invoice its number and attach it to the reply? An issued invoice cannot be changed." data-busy="Issuing…" {% if not files_ready %}disabled title="Set up R2 file storage to attach files"{% endif %}>Issue and attach to reply</button>
+  <button type="submit" formaction="{{ url_for('invoice_act', invoice_id=invoice.id, action='issue_attach') }}" data-confirm="Give this {{ word }} its number and attach it to the reply? An issued {{ word }} cannot be changed." data-busy="Issuing…" {% if not files_ready %}disabled title="Set up R2 file storage to attach files"{% endif %}>Issue and attach to reply</button>
   {% endif %}
-  <button class="quiet" type="submit" formaction="{{ url_for('invoice_act', invoice_id=invoice.id, action='issue') }}" data-confirm="Give this invoice its number? An issued invoice cannot be changed." data-busy="Issuing…">Issue</button>
-  <button class="quiet danger-text" type="submit" formaction="{{ url_for('invoice_act', invoice_id=invoice.id, action='delete') }}" data-confirm="Delete this draft invoice?" formnovalidate>Delete draft</button>
+  <button class="quiet" type="submit" formaction="{{ url_for('invoice_act', invoice_id=invoice.id, action='issue') }}" data-confirm="Give this {{ word }} its number? An issued {{ word }} cannot be changed." data-busy="Issuing…">Issue</button>
+  <button class="quiet danger-text" type="submit" formaction="{{ url_for('invoice_act', invoice_id=invoice.id, action='delete') }}" data-confirm="Delete this draft {{ word }}?" formnovalidate>Delete draft</button>
 </div>
 </form>
 {% else %}
@@ -97,7 +99,7 @@
     </div>
     <div>
       <p class="kicker">Dates</p>
-      <p>Issued {{ invoice.issue_date }} · due {{ invoice.due_date }}</p>
+      <p>Issued {{ invoice.issue_date }} · {% if word == 'quote' %}valid until{% else %}due{% endif %} {{ invoice.due_date }}</p>
       {% if invoice.reference %}<p class="muted">{{ invoice.reference }}</p>{% endif %}
     </div>
   </div>
@@ -125,6 +127,9 @@
   </form>
   {% endif %}
   <a class="button {% if invoice.mail_key %}quiet{% endif %}" href="{{ url_for('compose_page', invoice=invoice.id) }}">Send in a new email</a>
+  {% if word == 'quote' and not invoice.invoice_id %}
+  <form method="post" action="{{ url_for('invoice_act', invoice_id=invoice.id, action='to_invoice') }}" data-confirm="Make a draft invoice from this quote?"><button class="quiet" type="submit">Accepted: make the invoice</button></form>
+  {% endif %}
   {% if invoice.mail_key %}<a class="quiet-link" href="{{ url_for('home', open=invoice.mail_key) }}">Open the letter</a>{% endif %}
   </div>
 </section>

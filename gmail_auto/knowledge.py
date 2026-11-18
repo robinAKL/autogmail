@@ -224,9 +224,13 @@ def add_document(title: str, text: str, source: str, origin: str = "", meta: dic
 ROLES = {
     "reference": "Reference",
     "price_list": "Price list",
+    "brochure": "Company introduction",
+    "product_info": "Product or service info",
     "invoice_template": "Invoice template",
     "contract_template": "Contract template",
 }
+# Files the owner sends to people as they are. They are facts for replies too (unlike templates).
+SEND_ROLES = ("brochure", "product_info", "price_list")
 # A template is an example of a document, not facts: an old invoice names another client and their amounts.
 TEMPLATE_ROLES = {"invoice_template", "contract_template"}
 
@@ -262,6 +266,8 @@ _CONTRACT_HINT = re.compile(
     r"(?i)\b(this agreement|agreement between|the parties|hereby|terms and conditions|in witness|signed by|"
     r"governing law|termination|indemnif\w+|confidentiality|commencement date)\b|合同|协议|甲方|乙方"
 )
+_BROCHURE_HINT = re.compile(r"(?i)\b(company profile|about us|capability statement|who we are|our story|company introduction)\b|公司介绍|公司简介|关于我们")
+_PRODUCT_HINT = re.compile(r"(?i)\b(product (?:overview|brochure|sheet|deck)|course outline|service overview|spec(?:ification)? sheet|features and benefits|catalogue)\b|产品介绍|课程介绍|服务介绍")
 _PRICE_HINT = re.compile(r"(?i)\b(price list|pricing|our rates|fee schedule|rate card|per hour|per session|per person)\b|价目|报价单|收费标准")
 
 
@@ -276,10 +282,13 @@ def classify(title: str, text: str, complete=None) -> str:
         try:
             raw = complete(
                 "You sort a document the owner uploaded to their business knowledge base. Answer with JSON only: "
-                '{"role": "invoice_template" | "contract_template" | "price_list" | "reference"}. '
+                '{"role": "invoice_template" | "contract_template" | "price_list" | "brochure" | "product_info" | "reference"}. '
                 "invoice_template: an invoice or tax invoice the owner sent (or a blank one), useful as a layout. "
                 "contract_template: an agreement, contract or terms the owner uses with clients, filled or blank. "
-                "price_list: mainly the owner's prices, rates or packages. reference: anything else.",
+                "price_list: mainly the owner's prices, rates or packages. "
+                "brochure: an introduction to the owner's company (about us, capability statement, company profile). "
+                "product_info: a description of one of the owner's products, services or courses (deck, flyer, "
+                "spec sheet, course outline) meant for clients. reference: anything else, including internal papers.",
                 head,
                 max_tokens=60,
                 temperature=0,
@@ -295,6 +304,10 @@ def classify(title: str, text: str, complete=None) -> str:
         return "contract_template"
     if _PRICE_HINT.search(head):
         return "price_list"
+    if _BROCHURE_HINT.search(head):
+        return "brochure"
+    if _PRODUCT_HINT.search(head):
+        return "product_info"
     return "reference"
 
 
@@ -306,7 +319,10 @@ def _complete_for_classify():
 
 def attachable_documents() -> list[dict]:
     """Knowledge documents whose original file was kept, so they can be attached to a reply."""
-    return [item for item in list_documents() if (item.get("meta") or {}).get("file_id")]
+    # Templates are left out: an old invoice or contract names another client.
+    kept = [item for item in list_documents() if (item.get("meta") or {}).get("file_id") and not is_template(item)]
+    kept.sort(key=lambda item: 0 if role_of(item) in SEND_ROLES else 1)
+    return kept
 
 
 def _forget_file(entry: dict, keep: str = "") -> None:

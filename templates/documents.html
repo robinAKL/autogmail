@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+{% block title %}Documents{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <h1>Documents</h1>
+    <p class="sub">Everything you send to people: files you send as they are, and the quotes, invoices and contracts made from your templates. Any of them can go into an email.</p>
+  </div>
+  <div class="head-actions">
+    <a class="button quiet" href="{{ url_for('compose_page') }}">Write email</a>
+  </div>
+</header>
+
+<nav class="tabs-row" aria-label="Documents">
+  <a class="tab {% if tab == 'files' %}on{% endif %}" href="{{ url_for('documents_page', tab='files') }}">Files to send<span>{{ sendable|length }}</span></a>
+  <a class="tab {% if tab == 'quotes' %}on{% endif %}" href="{{ url_for('documents_page', tab='quotes') }}">Quotes<span>{{ quotes|length }}</span></a>
+  <a class="tab {% if tab == 'invoices' %}on{% endif %}" href="{{ url_for('documents_page', tab='invoices') }}">Invoices<span>{{ bills|length }}</span></a>
+  <a class="tab {% if tab == 'contracts' %}on{% endif %}" href="{{ url_for('documents_page', tab='contracts') }}">Contracts<span>{{ drafts|length }}</span></a>
+  <a class="tab {% if tab == 'templates' %}on{% endif %}" href="{{ url_for('documents_page', tab='templates') }}">Templates<span>{{ invoice_templates|length + contract_templates|length }}</span></a>
+</nav>
+
+{% if tab == 'files' %}
+<div class="grid-2 wide-left">
+<section class="card">
+  <h2 class="card-title">Files you send as they are</h2>
+  {% if sendable %}
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>File</th><th>Type</th><th>Added</th><th></th></tr></thead>
+      <tbody>
+      {% for doc in sendable %}
+      {% set kept = (doc.meta or {}).get('file_id') %}
+      <tr>
+        <td><strong>{{ doc.title }}</strong>{% if (doc.meta or {}).get('size') %}<br><span class="muted">{{ human_size(doc.meta.size) }}</span>{% endif %}</td>
+        <td><span class="chip tiny role-{{ role_of(doc) }}">{{ roles[role_of(doc)] }}</span></td>
+        <td class="nowrap">{{ doc.added_at }}</td>
+        <td class="actions">
+          {% if kept %}
+          <a class="button quiet small" href="{{ url_for('compose_page', doc=doc.id) }}">Send</a>
+          <a class="button quiet small" href="{{ url_for('document_file', doc_id=doc.id) }}">Download</a>
+          {% else %}<span class="hint">Not kept: upload again to attach it</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">Nothing yet. Upload your company introduction, product or course decks, brochures and price list.</p>
+  {% endif %}
+</section>
+
+<section class="card">
+  <h2 class="card-title">Add files</h2>
+  <form method="post" action="{{ url_for('knowledge_upload') }}" enctype="multipart/form-data" class="stack" data-busy="Uploading…">
+    <input type="hidden" name="next" value="{{ url_for('documents_page', tab='files') }}">
+    <label>Files <input type="file" name="files" multiple required><span class="hint">{{ file_types }}. Up to 3 MB each to be attachable.</span></label>
+    <label>What are they?
+      <select name="role">
+        <option value="">Work it out for me</option>
+        {% for key in send_roles %}<option value="{{ key }}">{{ roles[key] }}</option>{% endfor %}
+        <option value="invoice_template">{{ roles.invoice_template }}</option>
+        <option value="contract_template">{{ roles.contract_template }}</option>
+      </select>
+    </label>
+    <div class="button-row"><button type="submit">Upload</button></div>
+  </form>
+  <p class="hint">They also go into Knowledge, so replies can use what they say. Old invoices and contracts are kept as templates only, never as facts.</p>
+  {% if not files_ready %}<p class="hint">Set up R2 file storage to keep files for attaching on the hosted site.</p>{% endif %}
+</section>
+</div>
+
+{% elif tab in ('quotes', 'invoices') %}
+{% set rows = quotes if tab == 'quotes' else bills %}
+{% set word = 'quote' if tab == 'quotes' else 'invoice' %}
+<section class="card">
+  <div class="card-head">
+    <h2 class="card-title">{{ word|title }}s</h2>
+    <form method="post" action="{{ url_for('invoices_new') }}" data-busy="Starting…">
+      <input type="hidden" name="kind" value="{{ word }}">
+      <button class="quiet small" type="submit">New blank {{ word }}</button>
+    </form>
+  </div>
+  {% if not ready %}<p class="banner warn">Fill in your business details under Templates first. They go on every quote and invoice.</p>{% endif %}
+  {% if rows %}
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Number</th><th>For</th><th>Date</th><th>{% if word == 'quote' %}Valid until{% else %}Due{% endif %}</th><th style="text-align:right">Total</th><th></th></tr></thead>
+      <tbody>
+      {% for item in rows %}
+      <tr>
+        <td>{% if item.number %}<strong>{{ item.number }}</strong>{% else %}<span class="tag drafted">Draft</span>{% endif %}{% if item.invoice_id %}<br><span class="muted">invoiced</span>{% endif %}</td>
+        <td>{{ item.client_name or '—' }}{% if item.reference %}<br><span class="muted">{{ item.reference }}</span>{% endif %}</td>
+        <td class="nowrap">{{ item.issue_date or '—' }}</td>
+        <td class="nowrap">{{ item.due_date or '—' }}</td>
+        <td class="num">{{ money(sums[item.id].total, sums[item.id].currency) }}</td>
+        <td class="actions"><a class="button quiet small" href="{{ url_for('invoice_page', invoice_id=item.id) }}">{% if item.status == 'draft' %}Edit{% else %}Open{% endif %}</a></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No {{ word }}s yet. Open a letter and press Create {{ word }}, or start a blank one.</p>
+  {% endif %}
+</section>
+
+{% elif tab == 'contracts' %}
+<section class="card">
+  <h2 class="card-title">Contracts</h2>
+  {% if drafts %}
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Contract</th><th>Started</th><th></th></tr></thead>
+      <tbody>
+      {% for item in drafts %}
+      <tr>
+        <td><strong>{{ item.template_title }}</strong>{% for field in item.fields[:2] %}{% if item['values'][field.name] %}<br><span class="muted">{{ field.name }}: {{ item['values'][field.name] }}</span>{% endif %}{% endfor %}</td>
+        <td class="nowrap">{{ item.created_text }}</td>
+        <td class="actions"><a class="button quiet small" href="{{ url_for('contract_page', contract_id=item.id) }}">Open</a></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No contracts yet. Open a letter and press Create contract.</p>
+  {% endif %}
+</section>
+
+{% else %}
+<div class="grid-2">
+<section class="card">
+  <h2 class="card-title">Quote and invoice details</h2>
+  {% if ready %}
+  <p><strong>{{ details.business_name }}</strong>{% if details.gst_number %} · GST {{ details.gst_number }}{% endif %}</p>
+  <p class="muted">Invoices {{ details.prefix }}{{ '%04d'|format(details.next_number) }} next, paid within {{ details.payment_terms_days }} days. Quotes {{ details.quote_prefix }}{{ '%04d'|format(details.quote_next_number) }} next, valid {{ details.quote_valid_days }} days.</p>
+  {% else %}
+  <p class="banner warn">Not filled in yet.</p>
+  {% endif %}
+  <a class="button quiet small" href="{{ url_for('invoices_page') }}#template">Edit details</a>
+  {% if invoice_templates %}<p class="hint">Read from: {{ invoice_templates|map(attribute='title')|join(', ') }}</p>{% endif %}
+</section>
+<section class="card">
+  <h2 class="card-title">Contract templates</h2>
+  {% if contract_templates %}
+  <ul class="plain-list template-list">
+    {% for item in contract_templates %}
+    {% set fields = (item.meta or {}).get('fields') or [] %}
+    <li><strong>{{ item.title }}</strong>
+      {% if not item.title.lower().endswith('.docx') %}<span class="hint">Upload the Word (.docx) version to draft from it.</span>
+      {% elif fields %}<span class="hint">Fills in: {{ fields|map(attribute='name')|join(', ') }}</span>
+      {% else %}<span class="hint">No parts to fill in found. Mark them like {{ '{{Client name}}' }} in Word and upload again.</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">None yet. Upload a contract you use (Word) under Files to send, choosing Contract template.</p>
+  {% endif %}
+</section>
+</div>
+{% endif %}
+{% endblock %}

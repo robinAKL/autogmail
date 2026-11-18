@@ -26,9 +26,9 @@
     <p class="hint">To attach files, set up R2 file storage (R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET).</p>
     {% else %}
     {% if issued %}
-    <label>Invoice
+    <label>Quote or invoice
       <select name="invoice">
-        <option value="">No invoice</option>
+        <option value="">None</option>
         {% for item in issued %}<option value="{{ item.id }}" {% if item.id == chosen_invoice %}selected{% endif %}>{{ item.number }} · {{ item.client_name }} · {{ money(sums[item.id].total, sums[item.id].currency) }}</option>{% endfor %}
       </select>
     </label>
@@ -45,7 +45,7 @@
     <fieldset class="doc-picks">
       <legend>From the knowledge base</legend>
       {% for doc in docs %}
-      <label class="check"><input type="checkbox" name="doc" value="{{ doc.id }}"><span>{{ doc.title }}</span></label>
+      <label class="check"><input type="checkbox" name="doc" value="{{ doc.id }}" {% if doc.id in chosen_docs %}checked{% endif %}><span>{{ doc.title }}{% if role_of(doc) != 'reference' %} <span class="muted">· {{ roles[role_of(doc)] }}</span>{% endif %}</span></label>
       {% endfor %}
     </fieldset>
     {% endif %}

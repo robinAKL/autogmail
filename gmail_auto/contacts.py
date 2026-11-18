@@ -215,11 +215,31 @@ Return JSON only:
  "language": "en|zh|", "tone": "formal|casual|", "salutation": "how the owner should greet them, e.g. Hi Lee"}]}"""
 
 
-def sort_pending(limit: int = 40, complete=None) -> int:
-    """Ask the model to suggest a type (and company, tone...) for contacts not sorted yet. Returns how many."""
+BATCH = 12
+
+
+def sort_pending(limit: int = 24, complete=None) -> int:
+    """Ask the model to suggest a type (and company, tone...) for contacts not sorted yet, a few at a time.
+
+    Returns how many were sorted. Raises ConfigError when the model answered but nothing could be read,
+    so the page can say so instead of quietly sorting nobody.
+    """
+    todo = [item for item in all_contacts() if not item.get("type")][:limit]
+    done = 0
+    failure = ""
+    for start in range(0, len(todo), BATCH):
+        try:
+            done += _sort_batch(todo[start : start + BATCH], complete)
+        except ConfigError as exc:
+            failure = str(exc)
+    if failure and not done:
+        raise ConfigError(failure)
+    return done
+
+
+def _sort_batch(todo: list[dict], complete=None) -> int:
     from gmail_auto.llm import model_ready, parse_json
 
-    todo = [item for item in all_contacts() if not item.get("type")][:limit]
     if not todo:
         return 0
     if complete is None:
@@ -236,9 +256,12 @@ def sort_pending(limit: int = 40, complete=None) -> int:
             + "\n".join(f"  - {line}" for line in lines)
         )
     try:
-        data = parse_json(complete(_SORT_SYSTEM, "\n\n".join(blocks), max_tokens=2500, temperature=0)) or {}
-    except ReplyError:
-        return 0
+        raw = complete(_SORT_SYSTEM, "\n\n".join(blocks), max_tokens=4000, temperature=0)
+    except ReplyError as exc:
+        raise ConfigError(f"Sorting contacts failed: {exc}") from exc
+    data = parse_json(raw)
+    if not isinstance(data, dict) or not isinstance(data.get("people"), list):
+        raise ConfigError("Sorting contacts failed: the model's answer could not be read. Press Scan mail again.")
     done = 0
     with LOCK:
         stored = _load()

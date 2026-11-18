@@ -80,6 +80,18 @@ class ContactStoreTests(WebCase):
         contacts.build([_record("a9", "lee@abcbuild.co.nz", "Lee Wong-Smith")])
         self.assertEqual(contacts.get(lee["id"])["name"], "Lee W.")
 
+        contacts.build([_record(f"z{index}", f"person{index}@example.org", f"Person {index}") for index in range(30)])
+        calls = []
+
+        def batches(_system, user, **_):
+            calls.append(user.count("id="))
+            return "not json"
+
+        with self.assertRaises(Exception) as caught:
+            contacts.sort_pending(complete=batches)
+        self.assertIn("could not be read", str(caught.exception))
+        self.assertEqual(calls, [12, 12])
+
         contacts.hide(mum["id"])
         contacts.build([_record("e2", "mum@gmail.com", "Mum")])
         self.assertIsNone(contacts.find("mum@gmail.com"))

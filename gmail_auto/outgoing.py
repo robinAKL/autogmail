@@ -101,7 +101,7 @@ def invoice_file(invoice: dict) -> dict:
     from gmail_auto import invoices
 
     if invoice.get("status") != "issued":
-        raise ConfigError("Issue the invoice before sending it.")
+        raise ConfigError(f"Issue the {invoices.kind_of(invoice)} before sending it.")
     record = files.get(invoice.get("file_id") or "")
     if record is None:
         record = files.save(invoices.render_pdf(invoice), invoices.file_name(invoice), "application/pdf", origin="invoice")
@@ -144,13 +144,14 @@ def find_attachments(wanted: list[str], to: str = "", text: str = "") -> tuple[l
         if not lowered:
             continue
         try:
-            if re.search(r"invoice|发票|账单", lowered):
-                issued = [item for item in invoices.list_invoices() if item.get("status") == "issued"]
+            if re.search(r"invoice|发票|账单|quote|quotation|报价单|报价", lowered):
+                kind = "quote" if re.search(r"quote|quotation|报价", lowered) else "invoice"
+                issued = [item for item in invoices.list_invoices(kind) if item.get("status") == "issued"]
                 match = next((item for item in issued if (item.get("client_email") or "").lower() in addresses and addresses), None)
                 if match is None:
                     match = next((item for item in issued if _mentions(text, item.get("client_name"))), None)
                 if match is None:
-                    missing.append(f"{name}: no issued invoice for this person. Make one on the Invoices page first.")
+                    missing.append(f"{name}: no issued {kind} for this person. Make one under Documents first.")
                     continue
                 records.append(invoice_file(match))
             elif re.search(r"contract|agreement|合同|协议", lowered):
@@ -181,7 +182,12 @@ def _best_document(name: str) -> dict | None:
     for doc in knowledge.attachable_documents():
         title = (doc.get("title") or "").lower()
         points = sum(1 for word in words if word in title)
-        if knowledge.role_of(doc) == "price_list" and re.search(r"price|pricing|rate|价目|报价", name):
+        role = knowledge.role_of(doc)
+        if role == "price_list" and re.search(r"price|pricing|rate|价目|价格", name):
+            points += 2
+        if role == "brochure" and re.search(r"company|about|introduction|profile|brochure|公司|简介|介绍", name):
+            points += 2
+        if role == "product_info" and re.search(r"product|service|course|deck|ppt|catalogue|产品|课程|服务|介绍", name):
             points += 2
         if points > score:
             best, score = doc, points

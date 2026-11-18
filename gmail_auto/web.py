@@ -347,6 +347,58 @@ def configure_app(app: Flask) -> None:
         _forget_inbox()
         return back
 
+    # ---- documents -----------------------------------------------------------
+
+    @app.get("/documents")
+    def documents_page():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import contracts, invoices
+
+        tab = request.args.get("tab", "files")
+        if tab not in ("files", "templates", "invoices", "quotes", "contracts"):
+            tab = "files"
+        docs = knowledge.list_documents()
+        sendable = [doc for doc in docs if knowledge.role_of(doc) in knowledge.SEND_ROLES]
+        bills = invoices.list_invoices("invoice")
+        quotes = invoices.list_invoices("quote")
+        return _render(
+            "documents.html",
+            tab=tab,
+            sendable=sendable,
+            roles=knowledge.ROLES,
+            send_roles=knowledge.SEND_ROLES,
+            role_of=knowledge.role_of,
+            invoice_templates=knowledge.templates("invoice_template"),
+            contract_templates=knowledge.templates("contract_template"),
+            details=invoices.load_template(),
+            ready=invoices.template_ready(),
+            bills=bills,
+            quotes=quotes,
+            drafts=contracts.list_drafts(),
+            sums={item["id"]: invoices.totals(item) for item in bills + quotes},
+            money=invoices.money,
+            files_ready=files.ready(),
+            file_types=", ".join(sorted(item.lstrip(".") for item in SUPPORTED)),
+            human_size=files.human_size,
+        )
+
+    @app.get("/documents/file/<doc_id>")
+    def document_file(doc_id):
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        doc = next((item for item in knowledge.attachable_documents() if item["id"] == doc_id), None)
+        record = files.get(((doc or {}).get("meta") or {}).get("file_id") or "") if doc else None
+        if record is None:
+            abort(404)
+        response = Response(files.read(record["id"]), mimetype=record.get("mime") or "application/octet-stream")
+        safe = re.sub(r'[^A-Za-z0-9._ -]', "_", record.get("name") or "file")
+        response.headers["Content-Disposition"] = f'attachment; filename="{safe}"'
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
     # ---- contacts ------------------------------------------------------------
 
     @app.get("/contacts")
@@ -407,10 +459,14 @@ def configure_app(app: Flask) -> None:
                 continue
         try:
             result = contacts.build(list_processed(3000), sent, own)
-            sorted_now = contacts.sort_pending(40)
         except (ConfigError, ReplyError) as exc:
             flash(str(exc), "error")
             return redirect(url_for("contacts_page"))
+        try:
+            sorted_now = contacts.sort_pending()
+        except (ConfigError, ReplyError) as exc:
+            sorted_now = 0
+            flash(str(exc), "error")
         left = sum(1 for item in contacts.all_contacts() if not item.get("type"))
         message = f"{result['added']} new and {result['updated']} updated from your mail; {result['total']} contacts in all."
         if sorted_now:
@@ -500,6 +556,9 @@ def configure_app(app: Flask) -> None:
             issued=issued,
             ready_contracts=ready,
             chosen_invoice=request.args.get("invoice", ""),
+            chosen_docs=request.args.getlist("doc"),
+            roles=knowledge.ROLES,
+            role_of=knowledge.role_of,
             chosen_contract=request.args.get("contract", ""),
             files_ready=files.ready(),
             has_model=model_ready(),
@@ -617,9 +676,12 @@ def configure_app(app: Flask) -> None:
         if key and mail is None:
             flash("This letter could not be loaded right now. Try again in a moment.", "error")
             return redirect(url_for("home", open=key))
+        kind = "quote" if request.form.get("kind") == "quote" else "invoice"
         wanted = request.form.get("request", "").strip()
+        if mail is not None and not wanted and kind == "quote":
+            wanted = "Make a quote for what this letter asks for."
         fields = invoices.fill_from(wanted, mail) if mail is not None or wanted else {}
-        invoice = invoices.create(fields, mail_key=mail.key if mail is not None else "")
+        invoice = invoices.create(fields, mail_key=mail.key if mail is not None else "", kind=kind)
         return redirect(url_for("invoice_page", invoice_id=invoice["id"]))
 
     @app.get("/invoices/<invoice_id>")
@@ -657,22 +719,27 @@ def configure_app(app: Flask) -> None:
             if action in ("save", "issue", "issue_attach"):
                 if (invoices.get(invoice_id) or {}).get("status") == "draft":
                     invoices.update(invoice_id, _invoice_form())
+            word = invoices.KINDS[invoices.kind_of(invoices.get(invoice_id) or {})]
             if action == "save":
-                flash("Invoice saved.")
+                flash(f"{word} saved.")
             elif action in ("issue", "issue_attach"):
                 invoice = invoices.issue(invoice_id)
                 if action == "issue_attach":
                     return _attach_invoice(invoice)
-                flash(f"Invoice {invoice['number']} issued. Download it, or attach it to a reply.")
+                flash(f"{word} {invoice['number']} issued. Download it, or attach it to a reply.")
             elif action == "attach":
                 invoice = invoices.get(invoice_id)
                 if invoice is None or invoice.get("status") != "issued":
-                    raise ConfigError("Issue the invoice first.")
+                    raise ConfigError(f"Issue the {word.lower()} first.")
                 return _attach_invoice(invoice)
+            elif action == "to_invoice":
+                made = invoices.quote_to_invoice(invoice_id)
+                flash("Draft invoice made from the quote. Check it, then issue it.")
+                return redirect(url_for("invoice_page", invoice_id=made["id"]))
             elif action == "delete":
                 invoices.delete(invoice_id)
-                flash("Draft invoice deleted.")
-                return redirect(url_for("invoices_page"))
+                flash(f"Draft {word.lower()} deleted.")
+                return redirect(url_for("documents_page", tab="quotes" if word == "Quote" else "invoices"))
             else:
                 abort(404)
         except (ConfigError, ReplyError) as exc:
@@ -890,7 +957,8 @@ def configure_app(app: Flask) -> None:
                     summarize=False,
                 )
                 added += 1
-                note = _apply_role(entry, knowledge.classify(name, text), text)
+                chosen = request.form.get("role", "")
+                note = _apply_role(entry, chosen if chosen in knowledge.ROLES else knowledge.classify(name, text), text)
                 if note:
                     flash(note)
             except ConfigError as exc:
@@ -907,6 +975,9 @@ def configure_app(app: Flask) -> None:
             if added:
                 return {"ok": True, "added": added, "errors": problems}
             return {"ok": False, "error": problems[0] if problems else "Choose at least one file."}, 400
+        back = request.form.get("next", "")
+        if back.startswith("/documents"):
+            return redirect(back)
         return redirect(url_for("knowledge_page") + "#documents")
 
     @app.post("/knowledge/note")
@@ -1607,7 +1678,15 @@ def _apply_role(entry: dict, role: str, text: str) -> str:
         else:
             note += "No parts to fill in were found. Mark them in the Word file like {{Client name}} and upload it again."
     elif role == "price_list":
-        note = f"{title} looks like a price list. Replies and invoices will use its prices."
+        note = f"{title} looks like a price list. Replies, quotes and invoices will use its prices, and you can send it as it is."
+    elif role in ("brochure", "product_info"):
+        label = knowledge.ROLES[role].lower()
+        kept = bool((entry.get("meta") or {}).get("file_id"))
+        note = f"{title} is kept as your {label}. " + (
+            "It is under Documents, ready to attach to any email, and replies can use what it says."
+            if kept
+            else "Replies can use what it says, but the file itself was not kept (too large or no file storage), so it cannot be attached."
+        )
     knowledge.update_meta(entry["id"], changes)
     return note
 
@@ -1696,13 +1775,20 @@ def _attach_invoice(invoice: dict):
             raise ConfigError("The letter for this invoice could not be loaded right now. Try again in a moment.")
         sums = invoices.totals(invoice)
         points = (
-            f"Say that invoice {invoice['number']} for {invoices.money(sums['total'], sums['currency'])} is attached, "
-            f"due {invoice.get('due_date')}. Keep it short and friendly."
+            (
+                f"Say that quote {invoice['number']} for {invoices.money(sums['total'], sums['currency'])} is attached, "
+                f"valid until {invoice.get('due_date')}, and ask them to reply to accept. Keep it short and friendly."
+            )
+            if invoices.kind_of(invoice) == "quote"
+            else (
+                f"Say that invoice {invoice['number']} for {invoices.money(sums['total'], sums['currency'])} is attached, "
+                f"due {invoice.get('due_date')}. Keep it short and friendly."
+            )
         )
         item = draft_now(mail, points, load_profile())
     approvals.attach(item["id"], record)
     _forget_inbox()
-    flash(f"Invoice {invoice['number']} is attached to the reply. Check it, then send.")
+    flash(f"{invoices.KINDS[invoices.kind_of(invoice)]} {invoice['number']} is attached to the reply. Check it, then send.")
     return redirect(url_for("home", show="todo", open=invoice["mail_key"]))
 
 

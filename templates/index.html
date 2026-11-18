@@ -143,7 +143,8 @@
         <input type="hidden" name="key" value="{{ opened.key }}">
         <input type="hidden" name="next" value="{{ url_for('home', show=show, open=opened.key) }}">
         <button class="quiet small" type="submit">Add to calendar</button>
-        <button class="quiet small" type="submit" formaction="{{ url_for('invoices_new') }}" data-busy="Filling in the invoice…">Create invoice</button>
+        <button class="quiet small" type="submit" formaction="{{ url_for('invoices_new') }}" name="kind" value="quote" data-busy="Filling in the quote…">Create quote</button>
+        <button class="quiet small" type="submit" formaction="{{ url_for('invoices_new') }}" name="kind" value="invoice" data-busy="Filling in the invoice…">Create invoice</button>
         {% if contract_templates %}
         {% if contract_templates|length > 1 %}
         <select name="template" aria-label="Contract template" class="small-select">
