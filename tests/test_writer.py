@@ -76,6 +76,40 @@ class WriterPageTests(WebCase):
         late = self.client.post(f"/write/{session_id}/say", data={"text": "one more thing"}, follow_redirects=True)
         self.assertIn("already sent", late.get_data(as_text=True))
 
+    def test_email_language_is_kept_apart_from_the_chat_language(self):
+        started = self.client.get("/write?to=ann@b.example")
+        session_id = started.headers["Location"].rsplit("/", 1)[1]
+        self.assertEqual(writer.get(session_id)["language"], "en")
+        _, page = self.page(f"/write/{session_id}")
+        self.assertIn('<option value="en" selected>English</option>', page)
+
+        prompts = []
+        english = json.dumps({"reply": "好的，已写好英文邮件。", "subject": "Workshop on Friday", "body": "Hi Ann,\n\nSee you on Friday at 2pm.\n\nRobin"})
+        with patch("gmail_auto.llm.model_ready", return_value=True), patch(
+            "gmail_auto.llm.complete", side_effect=lambda system, user, **_: prompts.append(user) or english
+        ):
+            self.client.post(f"/write/{session_id}/say", data={"text": "告诉她周五下午两点见"})
+        self.assertIn("EMAIL LANGUAGE: Write the email (subject and body) in English only, even when the owner talks to you in Chinese.", prompts[-1])
+        self.assertEqual(writer.get(session_id)["messages"][-1]["text"], "好的，已写好英文邮件。")
+
+        chinese = json.dumps({"reply": "Rewritten in Chinese.", "subject": "周五工作坊", "body": "Ann 你好，\n\n周五下午两点见。\n\nRobin"})
+        with patch("gmail_auto.llm.model_ready", return_value=True), patch(
+            "gmail_auto.llm.complete", side_effect=lambda system, user, **_: prompts.append(user) or chinese
+        ):
+            self.client.post(
+                f"/write/{session_id}/language",
+                data={"to": "ann@b.example", "subject": "Workshop on Friday", "body": "Hi Ann,\n\nSee you on Friday at 2pm.\n\nRobin", "language": "zh"},
+            )
+        session = writer.get(session_id)
+        self.assertEqual((session["language"], session["subject"]), ("zh", "周五工作坊"))
+        self.assertIn("Write the email (subject and body) in Chinese only", prompts[-1])
+        self.assertIn("Rewrite the whole email in Chinese", prompts[-1])
+
+        contacts.build([_record("c1", "ann@b.example", "Ann")])
+        contacts.save_edit(contacts.find("ann@b.example")["id"], {"language": "bilingual"})
+        self.assertIn("Chinese first", writer.language_rule({"language": "auto", "to": "ann@b.example"}))
+        self.assertIn("in English", writer.language_rule({"language": "auto", "to": "nobody@x.example"}))
+
     def test_without_a_model_the_owner_types_the_email(self):
         started = self.client.get("/write?to=ann@b.example")
         session_id = started.headers["Location"].rsplit("/", 1)[1]

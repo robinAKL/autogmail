@@ -15,6 +15,12 @@ from gmail_auto.errors import ConfigError, ReplyError
 from gmail_auto.storage import LOCK, load_doc, save_doc
 
 _KEEP = 25
+LANGUAGES = {"auto": "Match the person", "en": "English", "zh": "Chinese", "bilingual": "Chinese and English"}
+_LANGUAGE_RULE = {
+    "en": "Write the email (subject and body) in English only, even when the owner talks to you in Chinese.",
+    "zh": "Write the email (subject and body) in Chinese only, even when the owner talks to you in English.",
+    "bilingual": "Write the email body in two parts: Chinese first, then a blank line, then the same in English. The subject in English.",
+}
 _ID = re.compile(r"^[a-f0-9]{10}$")
 _REF = re.compile(r"^(doc|invoice|contract):([A-Za-z0-9]{6,32})$")
 
@@ -30,6 +36,8 @@ Do what the owner asks in their latest message:
 - If they want a quote, invoice or contract that does not exist yet, ask for it with "make"; it becomes a
   draft the owner checks and issues before it can be attached. Never pretend it is attached.
 - Keep "reply" short (one to three sentences), in the language the owner writes in.
+- The email's language is set separately (see EMAIL LANGUAGE) and you must follow it, whatever language the
+  owner chats in. When it changes, rewrite the whole email in the new language with the same content.
 
 If the owner's latest message is clearly about something else (not this email), return only
 {"off_topic": true}.
@@ -47,10 +55,11 @@ Return JSON only:
 # ---- sessions ---------------------------------------------------------------------------
 
 
-def start(to: str = "", subject: str = "", body: str = "", refs: list[str] | None = None, source: str = "web") -> dict:
+def start(to: str = "", subject: str = "", body: str = "", refs: list[str] | None = None, source: str = "web", language: str = "") -> dict:
     session = {
         "id": secrets.token_hex(5),
         "source": source,
+        "language": language if language in LANGUAGES else default_language(),
         "to": (to or "").strip(),
         "subject": " ".join((subject or "").split())[:200],
         "body": (body or "").strip(),
@@ -84,13 +93,40 @@ def from_approval(item: dict, source: str = "whatsapp") -> dict:
     return session
 
 
+def default_language() -> str:
+    """The reply-language setting: English, both, or match the person ("auto")."""
+    try:
+        from gmail_auto.settings import load_settings
+
+        setting = load_settings().get("reply_language")
+    except Exception:
+        setting = "en"
+    return {"en": "en", "bilingual": "bilingual"}.get(setting, "auto")
+
+
+def language_rule(session: dict) -> str:
+    language = session.get("language") or "auto"
+    if language in _LANGUAGE_RULE:
+        return _LANGUAGE_RULE[language]
+    address = (session.get("to") or "").split(",")[0].strip()
+    person = contacts.find(address) if "@" in address else None
+    preferred = (person or {}).get("language") or ""
+    if preferred in _LANGUAGE_RULE:
+        return _LANGUAGE_RULE[preferred] + " (This person prefers it.)"
+    return "Write the email in the language the recipient uses with the owner; if that is not known, in English."
+
+
 def get(session_id: str) -> dict | None:
     return _all().get(session_id) if _ID.match(session_id or "") else None
 
 
-def edit(session_id: str, to: str | None = None, subject: str | None = None, body: str | None = None, detach: str = "") -> dict:
-    """The owner typed into the draft directly."""
+def edit(
+    session_id: str, to: str | None = None, subject: str | None = None, body: str | None = None, detach: str = "", language: str | None = None
+) -> dict:
+    """The owner typed into the draft directly. A new language is stored; see relanguage()."""
     session = _open(session_id)
+    if language in LANGUAGES:
+        session["language"] = language
     if to is not None:
         session["to"] = to.strip()
     if subject is not None:
@@ -141,6 +177,16 @@ def say(session_id: str, text: str, profile: dict, complete=None) -> dict:
     _store(session)
     _sync(session)
     return session
+
+
+def relanguage(session_id: str, profile: dict, complete=None) -> dict:
+    """The email language was switched: rewrite the draft in it, keeping what it says."""
+    session = _open(session_id)
+    if not session["body"].strip():
+        return session
+    label = LANGUAGES.get(session.get("language") or "auto", "")
+    wanted = "the language that fits the person" if session.get("language") == "auto" else label
+    return say(session_id, f"Rewrite the whole email in {wanted}. Keep the content the same.", profile, complete=complete)
 
 
 def queue(session_id: str, provider: str = "") -> dict:
@@ -226,6 +272,7 @@ def _prompt(session: dict, profile: dict) -> str:
     person = contacts.find(session["to"].split(",")[0].strip()) if "@" in session["to"] else None
     if person:
         parts.append("ABOUT THE RECIPIENT:\n" + contacts.card(person))
+    parts.append("EMAIL LANGUAGE: " + language_rule(session))
     parts.append(
         "CURRENT DRAFT:\n"
         f"To: {session['to'] or '(not set)'}\nSubject: {session['subject'] or '(not set)'}\n"

@@ -25,6 +25,7 @@
           <li>Make it shorter and more formal</li>
           <li>Also attach the price list</li>
         </ul>
+        <p>Chat in Chinese or English. The email itself is written in the language chosen on the right.</p>
         {% if not has_model %}<p class="banner warn">No AI model is set, so the assistant cannot write. Type the email on the right.</p>{% endif %}
       </div>
       {% endif %}
@@ -46,11 +47,18 @@
   </section>
 
   <section class="card write-draft" aria-label="Draft">
-    <form method="post" action="{{ url_for('write_act', session_id=session.id, action='edit') }}" class="stack">
-      <label>To <input name="to" value="{{ session.to }}" maxlength="600" list="people" placeholder="Name or email address"></label>
+    <form method="post" action="{{ url_for('write_act', session_id=session.id, action='edit') }}" class="draft-form" data-busy="Saving…">
+      <div class="draft-top">
+        <label>To <input name="to" value="{{ session.to }}" maxlength="600" list="people" placeholder="Name or email address"></label>
+        <label>Email language
+          <select name="language" onchange="this.form.requestSubmit(this.form.querySelector('[data-language]'))">
+            {% for key, label in languages.items() %}<option value="{{ key }}" {% if (session.language or 'auto') == key %}selected{% endif %}>{{ label }}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
       <datalist id="people">{% for item in people %}<option value="{{ item.emails[0] }}">{{ item.name }}{% if item.company %} · {{ item.company }}{% endif %}</option>{% endfor %}</datalist>
       <label>Subject <input name="subject" value="{{ session.subject }}" maxlength="200"></label>
-      <label>Email <textarea name="body" rows="14" maxlength="6000">{{ session.body }}</textarea></label>
+      <label class="draft-body">Email <textarea name="body" rows="14" maxlength="6000">{{ session.body }}</textarea></label>
       {% if session.attachments %}
       <ul class="attach-list">
         {% for item in session.attachments %}
@@ -61,7 +69,8 @@
       {% elif not files_ready %}
       <p class="hint">Set up R2 file storage to attach files.</p>
       {% endif %}
-      <div class="button-row">
+      <div class="button-row draft-actions">
+        <button hidden type="submit" formaction="{{ url_for('write_act', session_id=session.id, action='language') }}" data-language data-busy="Rewriting in the new language…">Change language</button>
         <button class="quiet" type="submit">Save changes</button>
         <button class="quiet" type="submit" formaction="{{ url_for('write_act', session_id=session.id, action='queue') }}">Put in Approvals</button>
         <button type="submit" formaction="{{ url_for('write_act', session_id=session.id, action='send') }}" data-confirm="Send this email to {{ session.to or 'them' }} now?" data-busy="Sending…">Send</button>

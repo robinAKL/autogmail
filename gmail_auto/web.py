@@ -572,8 +572,11 @@ def configure_app(app: Flask) -> None:
         if session is None:
             flash("That draft is no longer here. Start a new email.", "error")
             return redirect(url_for("write_start"))
+        from gmail_auto.writer import LANGUAGES
+
         return _render(
             "write.html",
+            languages=LANGUAGES,
             session=session,
             people=_people_for_compose(),
             has_model=model_ready(),
@@ -591,14 +594,18 @@ def configure_app(app: Flask) -> None:
         try:
             if action == "say":
                 writer.say(session_id, request.form.get("text", ""), load_profile())
-            elif action == "edit":
-                writer.edit(
+            elif action in ("edit", "language"):
+                before = (writer.get(session_id) or {}).get("language")
+                session = writer.edit(
                     session_id,
                     to=request.form.get("to"),
                     subject=request.form.get("subject"),
                     body=request.form.get("body"),
                     detach=request.form.get("detach", ""),
+                    language=request.form.get("language"),
                 )
+                if session.get("language") != before and session["body"].strip():
+                    writer.relanguage(session_id, load_profile())
             elif action == "queue":
                 writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"))
                 item = writer.queue(session_id)
