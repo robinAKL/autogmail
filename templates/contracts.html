@@ -39,9 +39,8 @@
     {% set fields = (item.meta or {}).get('fields') or [] %}
     <li>
       <strong>{{ item.title }}</strong>
-      {% if not item.title.lower().endswith('.docx') %}<span class="hint">Upload the Word (.docx) version to draft from it.</span>
-      {% elif fields %}<span class="hint">Fills in: {{ fields|map(attribute='name')|join(', ') }}</span>
-      {% else %}<span class="hint">No parts to fill in found. Mark them like {{ '{{Client name}}' }} in Word and upload again.</span>{% endif %}
+      {% if fields %}<span class="hint">Fills in: {{ fields|map(attribute='name')|join(', ') }}{% if item.title.lower().rsplit('.', 1)[-1] not in ('docx', 'pptx', 'xlsx') %}. Comes out as a plain PDF; upload the Word, PowerPoint or Excel version to keep your layout.{% endif %}</span>
+      {% else %}<span class="hint">No parts to fill in found. Mark them like {{ '{{Client name}}' }} in the file and upload again.</span>{% endif %}
       {% if fields %}
       <form method="post" action="{{ url_for('contracts_new') }}" class="button-row" data-busy="Starting…">
         <input type="hidden" name="template" value="{{ item.id }}">
@@ -54,7 +53,7 @@
   {% else %}
   <p class="muted">Upload a contract you use to <a href="{{ url_for('knowledge_page') }}#documents">Knowledge</a>. It is recognised as a contract template and kept out of the facts replies use.</p>
   {% endif %}
-  <p class="hint">Best: a Word file with the client parts written as {{ '{{Client name}}' }}, {{ '{{Fee}}' }}, {{ '{{Start date}}' }}. A contract filled in for an earlier client also works; the client's details in it are found for you.</p>
+  <p class="hint">Best: a Word, PowerPoint or Excel file with the client parts written as {{ '{{Client name}}' }}, {{ '{{Fee}}' }}, {{ '{{Start date}}' }}. A contract filled in for an earlier client also works; the client's details in it are found for you.</p>
 </section>
 </div>
 {% endblock %}

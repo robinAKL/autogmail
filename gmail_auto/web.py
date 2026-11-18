@@ -109,7 +109,39 @@ def configure_app(app: Flask) -> None:
             "nav_mode_label": _MODES[mode][0],
             "user": session.get("user", ""),
             "hosted": bool(os.environ.get("VERCEL")),
+            "ui_lang": _ui_language(),
         }
+
+    @app.after_request
+    def interface_language(response):
+        """Pages are written in English; in 中文 mode each page is translated on its way out.
+        The letter view (/mail/body) is someone's email and is never touched."""
+        if (
+            response.mimetype == "text/html"
+            and response.status_code == 200
+            and not response.direct_passthrough
+            and not request.path.startswith(("/mail/body", "/static/"))
+            and _ui_language() == "zh"
+        ):
+            from gmail_auto.i18n import translate_page
+
+            response.set_data(translate_page(response.get_data(as_text=True), "zh"))
+        return response
+
+    @app.post("/language")
+    def switch_language():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        wanted = "zh" if request.form.get("language") == "zh" else "en"
+        try:
+            save_settings({"ui_language": wanted})
+        except ConfigError as exc:
+            flash(str(exc), "error")
+        back = request.form.get("next") or ""
+        if not back.startswith("/") or back.startswith("//"):
+            back = url_for("home")
+        return redirect(back)
 
     # ---- sign-in -------------------------------------------------------------
 
@@ -1199,7 +1231,7 @@ def configure_app(app: Flask) -> None:
         template = next((item for item in found if item["id"] == request.form.get("template", "")), found[0] if found else None)
         key = request.form.get("key", "")
         if template is None:
-            flash("Upload a contract you use (a Word file) to the knowledge base first.", "error")
+            flash("Upload a contract you use (Word, PowerPoint, Excel or PDF) to the knowledge base first.", "error")
             return redirect(url_for("knowledge_page") + "#documents")
         if not (template.get("meta") or {}).get("fields"):
             flash(f"No parts to fill in were found in {template['title']}. Mark them like {{{{Client name}}}} and upload it again.", "error")
@@ -1263,12 +1295,12 @@ def configure_app(app: Flask) -> None:
         if contract is None:
             abort(404)
         try:
-            data = contracts.render_docx(contracts.original(contract), contract)
+            data, mime, name = contracts.render(contract)
         except ConfigError as exc:
             flash(str(exc), "error")
             return redirect(url_for("contract_page", contract_id=contract_id))
-        response = Response(data, mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-        response.headers["Content-Disposition"] = f'attachment; filename="{contracts.file_name(contract)}"'
+        response = Response(data, mimetype=mime)
+        response.headers["Content-Disposition"] = f'attachment; filename="{name}"'
         response.headers["Cache-Control"] = "private, no-store"
         return response
 
@@ -1791,10 +1823,18 @@ def _apply_role(entry: dict, role: str, text: str) -> str:
     elif role == "contract_template":
         fields = contracts.find_fields(text)
         changes["fields"] = fields
-        word = (title.lower().endswith(".docx")) and bool((entry.get("meta") or {}).get("file_id"))
+        layout = contracts.layout_kept(title)
+        kept = bool((entry.get("meta") or {}).get("file_id"))
         note = f"{title} looks like a contract. It is kept as a contract template, not as facts for replies. "
-        if not word:
-            note += "Upload the Word (.docx) version to draft contracts from it."
+        if layout and not kept:
+            note += "The file itself was not kept (too large or no file storage), so upload it again to draft contracts."
+        elif not fields:
+            note += "No parts to fill in were found. Mark them like {{Client name}} in the file and upload it again."
+        elif not layout:
+            note += (
+                f"{len(fields)} parts to fill in were found. Contracts from it come out as a plain PDF; "
+                "upload the Word, PowerPoint or Excel version to keep your layout."
+            )
         elif fields:
             note += f"{len(fields)} parts to fill in per client were found: " + ", ".join(field["name"] for field in fields[:6]) + "."
         else:
@@ -1831,6 +1871,13 @@ def _person_for(opened: dict | None) -> dict | None:
         return find(opened["email"])
     except ConfigError:
         return None
+
+
+def _ui_language() -> str:
+    try:
+        return load_settings().get("ui_language") or "en"
+    except Exception:
+        return "en"
 
 
 def _contract_templates() -> list[dict]:

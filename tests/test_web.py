@@ -111,7 +111,9 @@ class PageTests(WebCase):
             response, text = self.page(path)
             self.assertEqual(response.status_code, 200, path)
             self.assertIn(marker, text, path)
-            self.assertIsNone(re.search(r"[一-鿿]", text), path)
+            # The language switch offers 中文; everything else is English until it is chosen.
+            outside_switch = re.sub(r'(?s)<form[^>]*class="lang-switch".*?</form>', "", text)
+            self.assertIsNone(re.search(r"[一-鿿]", outside_switch), path)
             self.assertIn('lang="en"', text)
             if path != "/login":
                 self.assertIn('class="side"', text, path)

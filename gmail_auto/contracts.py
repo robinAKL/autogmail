@@ -18,11 +18,28 @@ from gmail_auto.errors import ConfigError, ReplyError
 from gmail_auto.storage import LOCK, load_doc, save_doc
 
 MAX_FIELDS = 25
-DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 _ID = re.compile(r"^[a-f0-9]{12}$")
 _BRACES = re.compile(r"\{\{\s*([^{}\n]{1,60}?)\s*\}\}")
 _BRACKETS = re.compile(r"\[([A-Z][A-Za-z0-9 /'&-]{1,40})\]")
-_PARTS = re.compile(r"^word/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$")
+# Office files are zip archives of XML. For each format: which parts hold text, the paragraph tag, the text
+# tag, and whether the text tag takes xml:space (PowerPoint's a:t does not).
+FORMATS = {
+    "docx": {
+        "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "parts": [(re.compile(r"^word/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$"), "w:p", "w:t", True)],
+    },
+    "pptx": {
+        "mime": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "parts": [(re.compile(r"^ppt/(slides/slide\d+|notesSlides/notesSlide\d+)\.xml$"), "a:p", "a:t", False)],
+    },
+    "xlsx": {
+        "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "parts": [
+            (re.compile(r"^xl/sharedStrings\.xml$"), "si", "t", True),
+            (re.compile(r"^xl/worksheets/sheet\d+\.xml$"), "is", "t", True),
+        ],
+    },
+}
 
 
 # ---- reading a template -------------------------------------------------------------
@@ -180,39 +197,93 @@ def fill_from(template: dict, request: str, mail=None, complete=None) -> tuple[d
     return {field["name"]: _value(values.get(field["name"])) for field in fields}, list(data.get("missing") or [])
 
 
-# ---- the Word file ----------------------------------------------------------------------
+# ---- the finished file -------------------------------------------------------------------
 
 
-def render_docx(original: bytes, contract: dict) -> bytes:
-    """The template with each field's old text replaced by the new value. Fields left empty keep a marker."""
-    swaps = []
-    for field in contract["fields"]:
-        value = (contract["values"].get(field["name"]) or "").strip() or f"[{field['name']}]"
-        swaps.append((field["example"], value))
-    swaps.sort(key=lambda pair: len(pair[0]), reverse=True)
+def format_of(title: str) -> str:
+    """docx / pptx / xlsx keep the owner's layout; anything else (PDF, text...) becomes a plain new PDF."""
+    ext = (title or "").rsplit(".", 1)[-1].lower() if "." in (title or "") else ""
+    return ext if ext in FORMATS else "pdf"
+
+
+def layout_kept(title: str) -> bool:
+    return format_of(title) in FORMATS
+
+
+def render(contract: dict) -> tuple[bytes, str, str]:
+    """The finished contract as (file bytes, MIME type, file name), in the template's own format when it can be."""
+    kind = format_of(contract.get("template_title") or "")
+    if kind in FORMATS:
+        return render_office(original(contract), contract, kind), FORMATS[kind]["mime"], file_name(contract)
+    return render_pdf(template_text(contract), contract), "application/pdf", file_name(contract)
+
+
+def render_docx(original_bytes: bytes, contract: dict) -> bytes:
+    return render_office(original_bytes, contract, "docx")
+
+
+def render_office(original_bytes: bytes, contract: dict, kind: str) -> bytes:
+    """The Office file with each field's old text replaced by the new value. Empty fields keep a [marker]."""
+    swaps = _swaps(contract)
     try:
-        source = zipfile.ZipFile(io.BytesIO(original))
+        source = zipfile.ZipFile(io.BytesIO(original_bytes))
     except zipfile.BadZipFile as exc:
-        raise ConfigError("The contract template is not a Word (.docx) file. Upload the Word version to draft contracts.") from exc
+        raise ConfigError(f"The contract template is not a valid .{kind} file. Upload it again.") from exc
+    parts = FORMATS[kind]["parts"]
     out = io.BytesIO()
     with source, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as target:
         for info in source.infolist():
             data = source.read(info.filename)
-            if _PARTS.match(info.filename):
-                data = _swap_xml(data.decode("utf-8"), swaps).encode("utf-8")
+            for pattern, para, text, preserve in parts:
+                if pattern.match(info.filename):
+                    data = _swap_xml(data.decode("utf-8"), swaps, para, text, preserve).encode("utf-8")
+                    break
             target.writestr(info, data)
     return out.getvalue()
 
 
+def render_pdf(text: str, contract: dict) -> bytes:
+    """A PDF template cannot be edited in place: write its text, with the fields filled in, as a new PDF."""
+    from gmail_auto.pdffonts import PdfText, has_cjk
+
+    for old, new in _swaps(contract):
+        words = old.split()
+        if words:
+            text = re.sub(r"\s+".join(re.escape(word) for word in words), lambda _m, value=new: value, text)
+    doc = PdfText(chinese=has_cjk(text + (contract.get("template_title") or "")))
+    doc.heading((contract.get("template_title") or "Contract").rsplit(".", 1)[0])
+    for block in re.split(r"\n\s*\n", text.strip()):
+        doc.paragraph(" ".join(line.strip() for line in block.splitlines() if line.strip()))
+    return doc.output()
+
+
+def template_text(contract: dict) -> str:
+    from gmail_auto import knowledge
+
+    doc = knowledge.get_document(contract.get("template_id") or "")
+    if doc is None or not (doc.get("text") or "").strip():
+        raise ConfigError("The text of this contract template is gone. Upload it again.")
+    return doc["text"]
+
+
 def original(contract: dict) -> bytes:
-    """The template's Word file, as uploaded to the knowledge base."""
+    """The template's file as uploaded to the knowledge base (Word, PowerPoint or Excel)."""
     from gmail_auto import files, knowledge
 
     template = next((item for item in knowledge.list_documents() if item["id"] == contract.get("template_id")), None)
     file_id = ((template or {}).get("meta") or {}).get("file_id") or ""
     if not file_id or files.get(file_id) is None:
-        raise ConfigError("The Word file of this contract template is not kept. Upload it to the knowledge base again.")
+        raise ConfigError("The file of this contract template is not kept. Upload it to the knowledge base again.")
     return files.read(file_id)
+
+
+def _swaps(contract: dict) -> list[tuple[str, str]]:
+    swaps = []
+    for field in contract["fields"]:
+        value = (contract["values"].get(field["name"]) or "").strip() or f"[{field['name']}]"
+        swaps.append((field["example"], value))
+    swaps.sort(key=lambda pair: len(pair[0]), reverse=True)
+    return swaps
 
 
 def file_name(contract: dict) -> str:
@@ -223,15 +294,16 @@ def file_name(contract: dict) -> str:
             if who:
                 break
     stem = re.sub(r"[^A-Za-z0-9]+", "-", f"{contract.get('template_title', 'Contract').rsplit('.', 1)[0]} {who}").strip("-")
-    return f"{stem[:70] or 'Contract'}.docx"
+    return f"{stem[:70] or 'Contract'}.{format_of(contract.get('template_title') or '')}"
 
 
-def _swap_xml(xml: str, swaps: list[tuple[str, str]]) -> str:
-    """Replace text inside each paragraph, even when Word split it across several runs."""
-    spans = _innermost_paragraphs(xml)
+def _swap_xml(xml: str, swaps: list[tuple[str, str]], para_tag: str = "w:p", text_tag: str = "w:t", preserve: bool = True) -> str:
+    """Replace text inside each paragraph, even when the program split it across several runs."""
+    spans = _innermost_paragraphs(xml, para_tag)
+    run_pattern = re.compile(rf"(<{re.escape(text_tag)}(?:\s[^>]*)?>)(.*?)(</{re.escape(text_tag)}>)", re.S)
     for start, end in reversed(spans):
         para = xml[start:end]
-        runs = list(re.finditer(r"(<w:t(?:\s[^>]*)?>)(.*?)(</w:t>)", para, flags=re.S))
+        runs = list(run_pattern.finditer(para))
         if not runs:
             continue
         texts = [html.unescape(run.group(2)) for run in runs]
@@ -256,7 +328,7 @@ def _swap_xml(xml: str, swaps: list[tuple[str, str]]) -> str:
         for run, text in zip(runs, texts):
             pieces.append(para[last : run.start()])
             opening = run.group(1)
-            if "xml:space" not in opening:
+            if preserve and "xml:space" not in opening:
                 opening = opening[:-1] + ' xml:space="preserve">'
             pieces.append(opening + html.escape(text, quote=False) + run.group(3))
             last = run.end()
@@ -290,12 +362,13 @@ def _replace_across(texts: list[str], begin: int, finish: int, new: str) -> None
     texts[j] = texts[j][end_in:]
 
 
-def _innermost_paragraphs(xml: str) -> list[tuple[int, int]]:
+def _innermost_paragraphs(xml: str, tag: str = "w:p") -> list[tuple[int, int]]:
     spans = []
     stack: list[list] = []
-    for match in re.finditer(r"<w:p(?=[\s>/])[^>]*?(/?)>|</w:p>", xml):
+    closing = f"</{tag}>"
+    for match in re.finditer(rf"<{re.escape(tag)}(?=[\s>/])[^>]*?(/?)>|</{re.escape(tag)}>", xml):
         token = match.group(0)
-        if token == "</w:p>":
+        if token == closing:
             if stack:
                 start, has_child = stack.pop()
                 if not has_child:

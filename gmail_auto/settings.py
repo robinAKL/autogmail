@@ -45,6 +45,7 @@ DEFAULTS = {
     "cleanup_skipped": True,
     "cleanup_pack": 0,
     "auto_calendar": True,
+    "ui_language": "en",
 }
 
 
@@ -145,6 +146,7 @@ def _clean(data: dict, strict: bool = False) -> dict:
         "cleanup_skipped": bool(data.get("cleanup_skipped")),
         "cleanup_pack": pack,
         "auto_calendar": bool(data.get("auto_calendar")),
+        "ui_language": "zh" if data.get("ui_language") == "zh" else "en",
     }
 
 

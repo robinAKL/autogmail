@@ -335,7 +335,7 @@
     <article class="card doc">
       <div class="doc-head">
         <div>
-          <h3><a href="{{ url_for('knowledge_doc', doc_id=doc.id) }}">{{ doc.title }}</a></h3>
+          <h3 translate="no"><a href="{{ url_for('knowledge_doc', doc_id=doc.id) }}">{{ doc.title }}</a></h3>
           {% set role = role_of(doc) %}
           <p class="meta"><span class="chip tiny src-{{ doc.source }}">{{ sources.get(doc.source, doc.source) }}</span>
             {% if role != 'reference' %}<span class="chip tiny role-{{ role }}">{{ roles[role] }}</span>{% endif %}

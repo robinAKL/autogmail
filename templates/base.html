@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="{{ 'zh-CN' if ui_lang == 'zh' else 'en' }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -63,6 +63,11 @@
       {% elif not hosted %}
       <p class="who">This computer</p>
       {% endif %}
+      <form method="post" action="{{ url_for('switch_language') }}" class="lang-switch" translate="no">
+        <input type="hidden" name="next" value="{{ request.full_path if request.query_string else request.path }}">
+        <button class="quiet small {% if ui_lang != 'zh' %}on{% endif %}" type="submit" name="language" value="en" title="English">EN</button>
+        <button class="quiet small {% if ui_lang == 'zh' %}on{% endif %}" type="submit" name="language" value="zh" title="中文">中文</button>
+      </form>
     </div>
   </aside>
   <main class="content">

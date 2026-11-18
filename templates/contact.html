@@ -4,7 +4,7 @@
 <header class="page-head">
   <div>
     <p class="kicker"><a href="{{ url_for('contacts_page') }}">Contacts</a></p>
-    <h1>{{ contact.name or contact.emails[0] }}</h1>
+    <h1 translate="no">{{ contact.name or contact.emails[0] }}</h1>
     <p class="sub">
       {% if contact.type %}<span class="chip tiny type-{{ contact.type }}">{{ types[contact.type] }}</span>{% if contact.type_status == 'suggested' %} suggested{% if contact.type_reason %}: {{ contact.type_reason }}{% endif %}{% endif %}{% endif %}
       {% if contact.company %} · {{ contact.company }}{% endif %}

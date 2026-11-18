@@ -429,6 +429,9 @@ a.story-who:hover { text-decoration: underline; }
   .chat-log { max-height: 50vh; }
   .draft-top { grid-template-columns: 1fr; }
 }
+.lang-switch { display: flex; gap: 4px; margin-top: 10px; }
+.lang-switch button { min-height: 26px; padding: 2px 9px; font-size: 12.5px; }
+.lang-switch button.on { background: var(--ink); color: #fff; border-color: var(--ink); }
 .tab-side { margin-left: auto; font-size: 13px; color: var(--muted); align-self: center; white-space: nowrap; }
 .reply-head { display: grid; gap: 2px; }
 .reply-text { white-space: pre-wrap; overflow-wrap: anywhere; background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; max-height: 26rem; overflow: auto; }

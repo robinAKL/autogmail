@@ -83,11 +83,11 @@
     {% for row in rows %}
     <a class="row {% if opened and opened.key == row.key %}on{% endif %} {% if row.unread %}unread{% endif %}" href="{{ url_for('home', show=show, open=row.key) }}" data-thread="{{ row.thread_id or '' }}" data-story="{{ row.story_id or '' }}" {% if opened and opened.key == row.key %}aria-current="true" data-current{% endif %}>
       <span class="row-top">
-        <span class="row-who">{{ row.who }}</span>
+        <span class="row-who" translate="no">{{ row.who }}</span>
         <span class="row-date">{{ row.short_date }}</span>
       </span>
-      <span class="row-subject">{{ row.subject }}</span>
-      <span class="row-snippet">{{ row.snippet }}</span>
+      <span class="row-subject" translate="no">{{ row.subject }}</span>
+      <span class="row-snippet" translate="no">{{ row.snippet }}</span>
       <span class="row-foot">
         <span class="tag {{ row.kind }}">{{ row.status }}</span>
         {% if row.story_size and row.story_size > 1 %}<span class="chip tiny story" title="{{ row.story_size }} letters in this matter">{{ row.story_size }}</span>{% endif %}
@@ -118,11 +118,11 @@
     {% if opened %}
     <header class="reader-head">
       <div class="reader-title">
-        <h2>{{ opened.subject }}</h2>
+        <h2 translate="no">{{ opened.subject }}</h2>
         <span class="tag {{ opened.kind }}">{{ opened.status }}</span>
       </div>
       <p class="meta">
-        <strong>{{ opened.who }}</strong>{% if opened.email and opened.email != opened.who %} &lt;{{ opened.email }}&gt;{% endif %}
+        <strong translate="no">{{ opened.who }}</strong>{% if opened.email and opened.email != opened.who %} &lt;{{ opened.email }}&gt;{% endif %}
         <span class="dot">·</span> {{ opened.date }}
         <span class="dot">·</span> <span class="chip tiny {{ opened.provider }}">{{ opened.provider_label }}</span>
         {% if person %}<span class="dot">·</span> <a class="chip tiny type-{{ person.type or 'none' }}" href="{{ url_for('contact_page', contact_id=person.id) }}" title="Open contact">{{ person.type|title if person.type else 'Contact' }}{% if person.company %} · {{ person.company }}{% endif %}</a>{% endif %}
@@ -200,7 +200,7 @@
         <h3>{% if opened.kind == 'sent' %}Reply that was sent{% else %}Drafted reply{% endif %}</h3>
         {% if opened.reason %}<p class="hint">{{ opened.reason }}</p>{% endif %}
       </div>
-      <div class="reply-text">{{ opened.reply }}</div>
+      <div class="reply-text" translate="no">{{ opened.reply }}</div>
       {% if opened.sources %}
       <p class="sources">Written using {% for title in opened.sources %}<span class="chip tiny">{{ title }}</span>{% endfor %}</p>
       {% endif %}
@@ -236,7 +236,7 @@
     {% for card in stories %}
     <a class="story-card {% if matter and matter.id == card.id %}on{% endif %}" href="{{ url_for('home', show=show, open=card.open_key, story=card.id) }}">
       <span class="story-card-top">
-        <span class="story-card-title">{{ card.title }}</span>
+        <span class="story-card-title" translate="no">{{ card.title }}</span>
         <span class="tag {{ card.status }}">{{ card.label }}</span>
       </span>
       <span class="story-card-who">{{ card.who }}</span>
@@ -272,7 +272,7 @@
       <a class="story-who" href="{{ url_for('home', show=show, open=step.key, story=matter.id) }}">{{ step.who }}</a>
       {% endif %}
       <span class="story-date">{{ step.date }}</span>
-      <span class="story-summary">{{ step.summary }}</span>
+      <span class="story-summary" translate="no">{{ step.summary }}</span>
     </li>
     {% endfor %}
   </ol>

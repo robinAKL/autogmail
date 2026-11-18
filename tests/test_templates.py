@@ -79,6 +79,61 @@ class RecogniseTests(WebCase):
         self.assertEqual(grown.count("John Smith Jr"), 2)
 
 
+def _zip(parts: dict) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as archive:
+        for name, text in parts.items():
+            archive.writestr(name, text)
+    return buf.getvalue()
+
+
+class OtherFormatTests(WebCase):
+    contract = {
+        "template_title": "Proposal.pptx",
+        "fields": [{"name": "Client name", "example": "{{Client name}}"}, {"name": "Fee", "example": "{{Fee}}"}],
+        "values": {"Client name": "Lee Wong 李", "Fee": "NZD 2,400"},
+    }
+
+    def test_powerpoint_keeps_its_layout_and_never_gets_xml_space(self):
+        slide = (
+            '<p:sld xmlns:a="a" xmlns:p="p"><p:cSld><p:spTree><p:sp><p:txBody>'
+            "<a:p><a:r><a:rPr b=\"1\"/><a:t>Prepared for </a:t></a:r><a:r><a:t>{{Client</a:t></a:r><a:r><a:t> name}}</a:t></a:r></a:p>"
+            "</p:txBody></p:sp></p:spTree></p:cSld></p:sld>"
+        )
+        out = contracts.render_office(_zip({"ppt/slides/slide1.xml": slide, "ppt/presentation.xml": "<p/>"}), self.contract, "pptx")
+        xml = zipfile.ZipFile(io.BytesIO(out)).read("ppt/slides/slide1.xml").decode("utf-8")
+        self.assertIn('<a:rPr b="1"/><a:t>Prepared for </a:t>', xml)
+        self.assertIn("<a:t>Lee Wong 李</a:t>", xml)
+        self.assertNotIn("xml:space", xml)
+        self.assertNotIn("{{", xml)
+
+    def test_excel_fills_shared_and_inline_strings(self):
+        shared = '<sst xmlns="x"><si><t>Fee: {{Fee}}</t></si><si><r><t>Client: </t></r><r><t>{{Client name}}</t></r></si></sst>'
+        sheet = '<worksheet xmlns="x"><sheetData><row><c t="inlineStr"><is><t>{{Fee}}</t></is></c></row></sheetData></worksheet>'
+        out = contracts.render_office(_zip({"xl/sharedStrings.xml": shared, "xl/worksheets/sheet1.xml": sheet}), self.contract, "xlsx")
+        archive = zipfile.ZipFile(io.BytesIO(out))
+        self.assertIn("Fee: NZD 2,400", archive.read("xl/sharedStrings.xml").decode("utf-8"))
+        self.assertIn("Lee Wong 李", archive.read("xl/sharedStrings.xml").decode("utf-8"))
+        self.assertIn(">NZD 2,400</t>", archive.read("xl/worksheets/sheet1.xml").decode("utf-8"))
+
+    def test_formats_names_and_a_pdf_template_becomes_a_plain_pdf(self):
+        self.assertEqual([contracts.format_of(name) for name in ("a.docx", "b.PPTX", "c.xlsx", "d.pdf", "e.txt")], ["docx", "pptx", "xlsx", "pdf", "pdf"])
+        self.assertTrue(contracts.layout_kept("a.xlsx"))
+        self.assertFalse(contracts.layout_kept("a.pdf"))
+        self.assertEqual(contracts.file_name({**self.contract, "template_title": "Agreement.pdf"}), "Agreement-Lee-Wong.pdf")
+        pdf = contracts.render_pdf("SERVICES AGREEMENT\n\nBetween Kiwi Sample and {{Client name}}.\n\n费用：{{Fee}}", self.contract)
+        self.assertTrue(pdf.startswith(b"%PDF"))
+
+    def test_pdfs_with_chinese_text_are_made_with_or_without_the_chinese_font(self):
+        from gmail_auto import pdffonts
+
+        invoices.save_template({"business_name": "奇异果知识有限公司", "gst_number": "123"})
+        draft = invoices.create({"client_name": "李先生", "items": [{"description": "三个月辅导课程", "qty": 1, "unit_price": 2400}]})
+        self.assertTrue(invoices.render_pdf(invoices.issue(draft["id"])).startswith(b"%PDF"))
+        self.assertEqual(pdffonts.clean("李 — Lee", False), "? - Lee")
+        self.assertEqual(pdffonts.clean("李 — Lee", True), "李 — Lee")
+
+
 class TemplatePageTests(WebCase):
     def test_uploaded_invoice_is_kept_as_a_template_not_facts(self):
         page = self.client.post(

@@ -5,7 +5,7 @@
   <ul class="attach-list">
     {% for file in item.attachments %}
     <li>
-      <span class="attach-name">📎 {{ file.name }}</span>
+      <span class="attach-name" translate="no">📎 {{ file.name }}</span>
       <span class="muted">{{ (file.size / 1000)|round|int }} KB</span>
       <button class="quiet small danger-text" type="submit" name="file" value="{{ file.id }}"
               formaction="{{ url_for('approvals_act', item_id=item.id, action='detach') }}" data-skip-confirm formnovalidate>Remove</button>

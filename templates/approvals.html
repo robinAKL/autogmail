@@ -18,12 +18,12 @@
     <header class="approval-head">
       <div>
         <p class="kicker">#{{ item.id }} · asked {{ item.created_text }}</p>
-        <h2>{{ item.subject or '(no subject)' }}</h2>
+        <h2 translate="no">{{ item.subject or '(no subject)' }}</h2>
         {% if item.mode == 'new' %}
-        <p class="meta"><span class="chip tiny">New email</span> to <strong>{{ item.to }}</strong>
+        <p class="meta"><span class="chip tiny">New email</span> to <strong translate="no">{{ item.to }}</strong>
           <span class="dot">·</span> {{ item.date }}
         {% else %}
-        <p class="meta"><strong>{{ item.from_name or item.from_email }}</strong>{% if item.from_name %} &lt;{{ item.from_email }}&gt;{% endif %}
+        <p class="meta"><strong translate="no">{{ item.from_name or item.from_email }}</strong>{% if item.from_name %} &lt;{{ item.from_email }}&gt;{% endif %}
           <span class="dot">·</span> {{ item.date }}
         {% endif %}
           <span class="dot">·</span> <span class="chip tiny {{ item.provider }}">{{ item.provider|title }}</span></p>
@@ -37,7 +37,7 @@
         {% if item.reason %}<p class="ai-note ask"><b>Why it is asking</b> {{ item.reason }}</p>{% endif %}
         <details class="original">
           <summary>Show the original letter</summary>
-          <div class="reply-text">{{ item.body }}</div>
+          <div class="reply-text" translate="no">{{ item.body }}</div>
         </details>
         {% endif %}
         <form class="rewrite" method="post" action="{{ url_for('approvals_act', item_id=item.id, action='rewrite') }}" data-busy="Rewriting…">

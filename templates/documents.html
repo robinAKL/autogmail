@@ -31,7 +31,7 @@
       {% for doc in sendable %}
       {% set kept = (doc.meta or {}).get('file_id') %}
       <tr>
-        <td><strong>{{ doc.title }}</strong>{% if (doc.meta or {}).get('size') %}<br><span class="muted">{{ human_size(doc.meta.size) }}</span>{% endif %}</td>
+        <td translate="no"><strong>{{ doc.title }}</strong>{% if (doc.meta or {}).get('size') %}<br><span class="muted">{{ human_size(doc.meta.size) }}</span>{% endif %}</td>
         <td><span class="chip tiny role-{{ role_of(doc) }}">{{ roles[role_of(doc)] }}</span></td>
         <td class="nowrap">{{ doc.added_at }}</td>
         <td class="actions">
@@ -148,14 +148,13 @@
     {% for item in contract_templates %}
     {% set fields = (item.meta or {}).get('fields') or [] %}
     <li><strong>{{ item.title }}</strong>
-      {% if not item.title.lower().endswith('.docx') %}<span class="hint">Upload the Word (.docx) version to draft from it.</span>
-      {% elif fields %}<span class="hint">Fills in: {{ fields|map(attribute='name')|join(', ') }}</span>
-      {% else %}<span class="hint">No parts to fill in found. Mark them like {{ '{{Client name}}' }} in Word and upload again.</span>{% endif %}
+      {% if fields %}<span class="hint">Fills in: {{ fields|map(attribute='name')|join(', ') }}{% if item.title.lower().rsplit('.', 1)[-1] not in ('docx', 'pptx', 'xlsx') %}. Comes out as a plain PDF; upload the Word, PowerPoint or Excel version to keep your layout.{% endif %}</span>
+      {% else %}<span class="hint">No parts to fill in found. Mark them like {{ '{{Client name}}' }} in the file and upload again.</span>{% endif %}
     </li>
     {% endfor %}
   </ul>
   {% else %}
-  <p class="muted">None yet. Upload a contract you use (Word) under Files to send, choosing Contract template.</p>
+  <p class="muted">None yet. Upload a contract you use (Word, PowerPoint, Excel or PDF) under Files to send, choosing Contract template.</p>
   {% endif %}
 </section>
 </div>

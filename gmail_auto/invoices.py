@@ -381,13 +381,22 @@ def render_pdf(invoice: dict) -> bytes:
     pdf.set_auto_page_break(True, margin=18)
     pdf.set_margins(18, 18, 18)
     pdf.add_page()
+    from gmail_auto.pdffonts import clean, has_cjk, setup
+
+    import json as _json
+
+    family, unicode = setup(pdf, has_cjk(_json.dumps([invoice, template], ensure_ascii=False, default=str)))
+
+    def _latin(text) -> str:
+        return clean(text, unicode)
+
     pdf.set_title(_latin(f"Invoice {invoice.get('number') or 'draft'}"))
     width = pdf.w - 36
     ink = (34, 30, 26)
     muted = (110, 102, 92)
 
     def write(text, size=10, style="", color=ink, align="L", w=0, h=5):
-        pdf.set_font("Helvetica", style, size)
+        pdf.set_font(family, style, size)
         pdf.set_text_color(*color)
         pdf.multi_cell(w or width, h, _latin(text), align=align, new_x=XPos.LMARGIN, new_y=YPos.NEXT)
 
@@ -403,7 +412,7 @@ def render_pdf(invoice: dict) -> bytes:
     pdf.set_xy(18 + width * 0.6, top)
     quote = kind_of(invoice) == "quote"
     title = "QUOTE" if quote else ("TAX INVOICE" if template.get("gst_registered") else "INVOICE")
-    pdf.set_font("Helvetica", "B", 17)
+    pdf.set_font(family, "B", 17)
     pdf.set_text_color(*ink)
     pdf.cell(width * 0.4, 8, title, align="R", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     facts = [
@@ -417,10 +426,10 @@ def render_pdf(invoice: dict) -> bytes:
         facts.append(("Reference", invoice["reference"]))
     for label, value in facts:
         pdf.set_x(18 + width * 0.6)
-        pdf.set_font("Helvetica", "", 9.5)
+        pdf.set_font(family, "", 9.5)
         pdf.set_text_color(*muted)
         pdf.cell(width * 0.16, 5.5, label)
-        pdf.set_font("Helvetica", "B", 9.5)
+        pdf.set_font(family, "B", 9.5)
         pdf.set_text_color(*ink)
         pdf.multi_cell(width * 0.24, 5.5, _latin(value), align="R", new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_y(max(left_bottom, pdf.get_y()) + 8)
@@ -430,7 +439,7 @@ def render_pdf(invoice: dict) -> bytes:
     write("\n".join(line for line in client if line), 10.5)
     pdf.ln(6)
 
-    pdf.set_font("Helvetica", "", 10)
+    pdf.set_font(family, "", 10)
     pdf.set_text_color(*ink)
     price_label = "Unit price" + (" (incl. GST)" if template.get("prices_include_gst") and template.get("gst_registered") else "")
     with pdf.table(
@@ -463,7 +472,7 @@ def render_pdf(invoice: dict) -> bytes:
     for index, (label, value) in enumerate(rows):
         last = index == len(rows) - 1
         pdf.set_x(18 + width * 0.55)
-        pdf.set_font("Helvetica", "B" if last else "", 11.5 if last else 10)
+        pdf.set_font(family, "B" if last else "", 11.5 if last else 10)
         pdf.set_text_color(*ink if last else muted)
         pdf.cell(width * 0.25, 7, label)
         pdf.set_text_color(*ink)

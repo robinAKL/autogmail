@@ -115,8 +115,8 @@ def contract_file(contract: dict) -> dict:
     empty = contracts.empty_fields(contract)
     if empty:
         raise ConfigError("Fill in every part of the contract first: " + ", ".join(empty) + ".")
-    data = contracts.render_docx(contracts.original(contract), contract)
-    record = files.save(data, contracts.file_name(contract), contracts.DOCX, origin="contract")
+    data, mime, name = contracts.render(contract)
+    record = files.save(data, name, mime, origin="contract")
     contracts.set_file(contract["id"], record["id"])
     return record
 

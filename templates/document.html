@@ -22,6 +22,6 @@
 {% endif %}
 <section class="card">
   <h2 class="card-title">Text that replies can draw on</h2>
-  {% if doc.source == 'email' %}<div class="prose">{{ doc.text|md }}</div>{% else %}<div class="reply-text tall">{{ doc.text }}</div>{% endif %}
+  {% if doc.source == 'email' %}<div class="prose">{{ doc.text|md }}</div>{% else %}<div class="reply-text tall" translate="no">{{ doc.text }}</div>{% endif %}
 </section>
 {% endblock %}

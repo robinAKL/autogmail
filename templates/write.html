@@ -31,7 +31,7 @@
       {% endif %}
       {% for message in session.messages %}
       <div class="chat-msg {{ message.who }}">
-        <div class="bubble">{{ message.text }}</div>
+        <div class="bubble" translate="no">{{ message.text }}</div>
         <span class="chat-time">{{ message.at }}</span>
       </div>
       {% endfor %}
@@ -62,7 +62,7 @@
       {% if session.attachments %}
       <ul class="attach-list">
         {% for item in session.attachments %}
-        <li><span class="attach-name">📎 {{ item.name }}</span><span class="muted">{{ ((item.size or 0) / 1000)|round|int }} KB</span>
+        <li><span class="attach-name" translate="no">📎 {{ item.name }}</span><span class="muted">{{ ((item.size or 0) / 1000)|round|int }} KB</span>
           <button class="quiet small danger-text" type="submit" name="detach" value="{{ item.ref }}">Remove</button></li>
         {% endfor %}
       </ul>

@@ -42,7 +42,7 @@
       <tbody>
       {% for item in shown %}
       <tr>
-        <td><a href="{{ url_for('contact_page', contact_id=item.id) }}"><strong>{{ item.name or item.emails[0] }}</strong></a><br><span class="muted">{{ item.emails[0] }}</span></td>
+        <td><a href="{{ url_for('contact_page', contact_id=item.id) }}"><strong translate="no">{{ item.name or item.emails[0] }}</strong></a><br><span class="muted">{{ item.emails[0] }}</span></td>
         <td>{% if item.company %}{{ item.company }}{% else %}<span class="muted">{{ item.emails[0].split('@')[-1] }}</span>{% endif %}{% if item.title %}<br><span class="muted">{{ item.title }}</span>{% endif %}</td>
         <td>
           {% if item.type %}<span class="chip tiny type-{{ item.type }}">{{ types[item.type] }}</span>{% if item.type_status == 'suggested' %} <span class="muted small-text" title="{{ item.type_reason }}">suggested</span>{% endif %}
