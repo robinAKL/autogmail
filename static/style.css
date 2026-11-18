@@ -183,6 +183,7 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .tag.drafted { color: var(--warn); background: var(--warn-bg); }
 .tag.waiting { color: #fff; background: var(--accent); }
 .tag.skipped, .tag.read { color: var(--muted); background: #eeeae2; }
+.tag.handled { color: var(--ok); background: var(--ok-bg); }
 .tag.pending { color: var(--info); background: var(--info-bg); }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); font-size: 13px; color: var(--ink-2); }
 .chip.tiny { padding: 1px 8px; font-size: 12px; }

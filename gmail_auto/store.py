@@ -82,6 +82,25 @@ def update_processed(key: str, changes: dict) -> dict | None:
         return record
 
 
+def set_handled(key: str, handled: bool, record: dict | None = None) -> dict | None:
+    """Mark a letter as dealt with (a bill paid, a notice read), or undo it.
+
+    record: a record to save first when the letter was never handled by the program.
+    """
+    with LOCK:
+        data = load_processed()
+        current = data.get(key)
+        if not isinstance(current, dict):
+            if record is None:
+                return None
+            current = dict(record)
+        current["handled"] = bool(handled)
+        current["handled_at"] = now_text() if handled else ""
+        data[key] = current
+        save_doc("processed", data)
+        return current
+
+
 def list_processed(limit: int = 25) -> list[dict]:
     rows = [item for item in load_processed().values() if isinstance(item, dict)]
     rows.sort(key=lambda item: item.get("processed_at", ""), reverse=True)

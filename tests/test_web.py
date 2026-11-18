@@ -522,6 +522,60 @@ class ApprovalPageTests(WebCase):
         self.assertIn("View as a table", board)
 
 
+class HandledTests(WebCase):
+    def test_a_notice_marked_handled_leaves_notices_and_can_come_back(self):
+        mark_processed(
+            {
+                "id": "bill",
+                "provider": "gmail",
+                "from_email": "noreply@mercury.co.nz",
+                "subject": "Your power bill is ready",
+                "summary": "Amount due $182 by 30 November.",
+                "date": "2026-11-14 09:00",
+                "processed_at": "2026-11-14 09:00",
+                "action": "skipped",
+                "skip_code": "system",
+            }
+        )
+        box = Inbox([sample(id="bill", subject="Your power bill is ready", body="Amount due $182 by 30 November.", from_email="noreply@mercury.co.nz")])
+        with patch("gmail_auto.web.connected_clients", return_value=([], [])), patch("gmail_auto.web.client_for", return_value=box):
+            _, before = self.page("/?show=notices&open=bill")
+            self.assertIn('value="1" title="Paid, read or done', before)
+            done = self.client.post("/mail/handled", data={"key": "bill", "handled": "1", "show": "notices"}, follow_redirects=True)
+            self.assertIn("Marked as handled", done.get_data(as_text=True))
+            _, notices = self.page("/?show=notices")
+            self.assertNotIn("Your power bill is ready", notices)
+            _, every = self.page("/?show=all&open=bill")
+            self.assertIn("Handled 20", every)
+            self.assertIn("Not handled yet", every)
+            self.client.post("/mail/handled", data={"key": "bill", "handled": "0"})
+            _, again = self.page("/?show=notices")
+            self.assertIn("Your power bill is ready", again)
+
+    def test_closing_a_whatsapp_notice_counts_as_handled_not_declined(self):
+        from gmail_auto.models import Draft
+
+        mail = sample(id="n1", subject="Rates due", from_email="rates@council.example")
+        item = approvals.create(mail, Draft(action="skip", summary="Rates due Friday"), "en", role="notice", kind="invoice")
+        mark_processed({"id": "n1", "from_email": "rates@council.example", "subject": "Rates due", "action": "skipped", "approval_id": item["id"], "processed_at": "2026-11-14 09:00"})
+        approvals.reject(item["id"], "whatsapp")
+        from gmail_auto.store import get_processed
+
+        record = get_processed("n1")
+        self.assertEqual((record["action"], record["handled"]), ("skipped", True))
+        self.assertEqual(approvals.get(item["id"])["status"], "handled")
+
+    def test_a_letter_the_program_never_handled_can_be_marked_too(self):
+        box = Inbox([sample(id="fresh", subject="School trip form", body="Please sign by Friday.", label_ids=["INBOX", "UNREAD"])])
+        with patch("gmail_auto.web.connected_clients", return_value=([box], [])), patch("gmail_auto.web.client_for", return_value=box):
+            self.client.post("/mail/handled", data={"key": "fresh", "handled": "1"})
+            _, todo = self.page("/?show=todo")
+        self.assertNotIn("School trip form", todo)
+        from gmail_auto.store import get_processed
+
+        self.assertTrue(get_processed("fresh")["handled"])
+
+
 class ReplyButtonTests(WebCase):
     def test_reply_on_any_letter_writes_a_draft_that_waits_then_sends(self):
         letter = sample(id="r1", subject="Course price?", body="How much is the spring course?", label_ids=["INBOX"])

@@ -142,6 +142,12 @@
       <form method="post" action="{{ url_for('calendar_from_mail') }}" class="button-row" data-busy="Adding to calendar…">
         <input type="hidden" name="key" value="{{ opened.key }}">
         <input type="hidden" name="next" value="{{ url_for('home', show=show, open=opened.key) }}">
+        <input type="hidden" name="show" value="{{ show }}">
+        {% if opened.handled %}
+        <button class="quiet small" type="submit" formaction="{{ url_for('mail_handled') }}" name="handled" value="0">Not handled yet</button>
+        {% elif opened.bucket in ('notices', 'todo') and opened.kind not in ('waiting', 'drafted') %}
+        <button class="small" type="submit" formaction="{{ url_for('mail_handled') }}" name="handled" value="1" title="Paid, read or done: take it off Notices and To do">Mark handled</button>
+        {% endif %}
         <button class="quiet small" type="submit">Add to calendar</button>
         <button class="quiet small" type="submit" formaction="{{ url_for('invoices_new') }}" name="kind" value="quote" data-busy="Filling in the quote…">Create quote</button>
         <button class="quiet small" type="submit" formaction="{{ url_for('invoices_new') }}" name="kind" value="invoice" data-busy="Filling in the invoice…">Create invoice</button>

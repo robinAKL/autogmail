@@ -249,6 +249,39 @@ def configure_app(app: Flask) -> None:
         _forget_inbox()
         return redirect(url_for("home", show="todo", open=key))
 
+    @app.post("/mail/handled")
+    def mail_handled():
+        """Mark a letter as dealt with (a bill paid, a notice read), or undo it."""
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto.store import get_processed, set_handled
+
+        key = request.form.get("key", "")
+        handled = request.form.get("handled", "1") == "1"
+        show = _OLD_FILTERS.get(request.form.get("show", ""), request.form.get("show", ""))
+        try:
+            record = get_processed(key) if key else None
+            base = None
+            if record is None:
+                mail = _find_mail(key)
+                if mail is None:
+                    raise ConfigError("This letter could not be loaded right now. Try again in a moment.")
+                from gmail_auto.filters import detect_language
+                from gmail_auto.runner import _record
+
+                base = _record(mail, "skipped", "Marked as handled by you", "", detect_language(f"{mail.subject}\n{mail.body}"), False, skip_code="notification")
+            set_handled(key, handled, base)
+            approval_id = (record or {}).get("approval_id")
+            item = approvals.get(approval_id) if approval_id else None
+            if handled and item and item.get("role") == "notice" and item.get("status") == "pending":
+                approvals.reject(approval_id, "web")
+            flash("Marked as handled. It is out of Notices and To do; find it under All." if handled else "Marked as not handled yet.")
+        except ConfigError as exc:
+            flash(str(exc), "error")
+        _forget_inbox()
+        return redirect(url_for("home", show=show if show in _FILTERS else None, open=key or None))
+
     @app.post("/run")
     def run_now():
         blocked = _login_required()
@@ -2295,6 +2328,7 @@ def _row_from_mail(mail, record, user_email: str) -> dict:
         "approval_id": record.get("approval_id") or "",
         "needs_review": bool(record.get("needs_review")),
         "advice": "",
+        "handled": bool(record.get("handled")),
     }
 
 
@@ -2361,6 +2395,9 @@ def _bucket(row: dict, kinds: set[str]) -> str:
     kind = row.get("kind")
     if kind in ("waiting", "drafted"):
         return "todo"
+    if row.get("handled"):
+        # Dealt with: out of To do and Notices, still under All.
+        return "replied" if row.get("group") == "replied" else "all"
     if row.get("group") == "replied":
         return "replied"
     if _is_notice(row, kinds):
@@ -2430,6 +2467,7 @@ def _row_from_record(record: dict) -> dict:
         "outbox": record.get("outbox") or "",
         "approval_id": record.get("approval_id") or "",
         "needs_review": bool(record.get("needs_review")),
+        "handled": bool(record.get("handled")),
     }
 
 
@@ -2447,6 +2485,8 @@ def _describe(mail, record, user_email: str) -> tuple[str, str, str]:
 
 def _describe_record(record: dict) -> tuple[str, str, str]:
     action = record.get("action")
+    if record.get("handled") and action not in ("sent", "waiting", "drafted"):
+        return f"Handled{' ' + str(record.get('handled_at'))[:10] if record.get('handled_at') else ''}", "handled", "all"
     if action == "sent":
         return ("Replied after your OK" if record.get("approved") else "Replied automatically"), "sent", "replied"
     if action == "drafted":

@@ -298,6 +298,13 @@ def approve(item_id: str, via: str, client=None) -> dict:
 def reject(item_id: str, via: str) -> dict:
     with LOCK:
         _pending_item(_load(), item_id)
+    if (get(item_id) or {}).get("role") == "notice":
+        # A notice had nothing to send: closing it means the owner dealt with it, not that a reply was turned down.
+        item = _decide(item_id, "handled", via)
+        from gmail_auto.store import set_handled
+
+        set_handled(item["key"], True)
+        return item
     waited_from = float((get(item_id) or {}).get("created_at") or time.time())
     item = _decide(item_id, "rejected", via)
     update_processed(item["key"], {"action": "rejected", "via": via})
