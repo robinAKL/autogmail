@@ -16,12 +16,16 @@ class NewMailbox(FakeGmail):
     def __init__(self):
         super().__init__([])
         self.new = []
+        self.cc = []
 
     def send_notice(self, to, subject, body):
         self.new.append((to, subject, body, []))
 
-    def send_new(self, to, subject, body, attachments=None):
+    def send_new(self, to, subject, body, attachments=None, cc=""):
         self.new.append((to, subject, body, [name for name, _mime, _data in attachments or []]))
+        self.cc.append(cc)
+
+    cc: list
 
 
 def _issued_invoice(email_address="lee@client.example"):
@@ -120,6 +124,78 @@ class ComposeTests(WebCase):
         bad = self.client.post("/compose", data={"to": "nobody", "points": "Hi there"}, content_type="multipart/form-data", follow_redirects=True)
         self.assertIn("Not an email address: nobody", bad.get_data(as_text=True))
         self.assertIn("Hi there", bad.get_data(as_text=True))
+
+
+class CcTests(WebCase):
+    def test_cc_reaches_gmail_and_outlook(self):
+        from gmail_auto.gmail_client import GmailClient
+        from gmail_auto.outlook_client import OutlookClient
+
+        sent = []
+
+        class _Send:
+            def execute(self):
+                return {}
+
+        class _Messages:
+            def send(self, userId, body):
+                sent.append(body)
+                return _Send()
+
+        client = GmailClient.__new__(GmailClient)
+        client.service = type("S", (), {"users": lambda self: type("U", (), {"messages": lambda self: _Messages()})()})()
+        client.get_user_email = lambda: "me@example.com"
+        client.send_new("lee@a.example", "Quote", "Hi", cc="ann@b.example, tom@c.example")
+        parsed = email.message_from_bytes(base64.urlsafe_b64decode(sent[0]["raw"]), policy=email.policy.default)
+        self.assertEqual(parsed["Cc"], "ann@b.example, tom@c.example")
+
+        calls = []
+        with patch("gmail_auto.microsoft.graph", side_effect=lambda *a, **k: calls.append(k) or {}):
+            OutlookClient.__new__(OutlookClient).send_new("lee@a.example", "Quote", "Hi", cc="ann@b.example")
+        self.assertEqual(calls[0]["body"]["message"]["ccRecipients"], [{"emailAddress": {"address": "ann@b.example"}}])
+
+    def test_cc_on_the_form_the_queue_and_the_write_page(self):
+        from gmail_auto import contacts, writer
+
+        self.client.post("/compose", data={"to": "lee@a.example", "cc": "ann@b.example; ann@b.example", "subject": "Hi", "points": "See you Friday."}, content_type="multipart/form-data")
+        item = approvals.pending()[0]
+        self.assertEqual(item["cc"], "ann@b.example")
+        _, queue = self.page("/approvals")
+        self.assertIn('name="cc" value="ann@b.example"', queue)
+        bad = self.client.post(f"/approvals/{item['id']}/save", data={"to": "lee@a.example", "cc": "not an address", "subject": "Hi", "draft": "See you."}, follow_redirects=True)
+        self.assertIn("Not an email address", bad.get_data(as_text=True))
+        box = NewMailbox()
+        with patch("gmail_auto.mailboxes.client_for", return_value=box):
+            self.client.post(f"/approvals/{item['id']}/send", data={"to": "lee@a.example", "cc": "ann@b.example, tom@c.example", "subject": "Hi", "draft": "See you Friday."})
+        self.assertEqual(box.cc, ["ann@b.example, tom@c.example"])
+
+        contacts.build([_record_for("Ann Smith", "ann@b.example")])
+        started = self.client.get("/write?to=lee@a.example")
+        session_id = started.headers["Location"].rsplit("/", 1)[1]
+        answer = json.dumps({"reply": "Done.", "subject": "Workshop", "body": "Hi Lee, see you Friday.", "cc": "Ann Smith"})
+        with patch("gmail_auto.llm.model_ready", return_value=True), patch("gmail_auto.llm.complete", return_value=answer):
+            self.client.post(f"/write/{session_id}/say", data={"text": "cc Ann"})
+        self.assertEqual(writer.get(session_id)["cc"], "ann@b.example")
+        _, page = self.page(f"/write/{session_id}")
+        self.assertIn('name="cc" value="ann@b.example"', page)
+        queued = self.client.post(f"/write/{session_id}/queue", data={"to": "lee@a.example", "cc": "ann@b.example", "subject": "Workshop", "body": "Hi Lee, see you Friday."})
+        self.assertEqual(approvals.get(queued.headers["Location"].rsplit("#a", 1)[1])["cc"], "ann@b.example")
+
+    def test_whatsapp_compose_with_cc_by_name(self):
+        from gmail_auto import contacts
+
+        contacts.build([_record_for("Ann Smith", "ann@b.example")])
+        said = json.dumps({"intent": "compose", "to": "lee@a.example", "cc": "Ann", "subject": "Workshop", "body": "Hi Lee, see you Friday.", "attach": [], "numbers": [], "query": "", "instruction": "", "reply": ""})
+        box = NewMailbox()
+        with patch("gmail_auto.assistant.complete", return_value=said):
+            preview = assistant.handle(whatsapp.Incoming(sender="64210000001", text="写邮件给 lee@a.example，抄送 Ann"), clients=[box])
+        self.assertIn("Cc: ann@b.example", preview)
+        assistant.handle(whatsapp.Incoming(sender="64210000001", text="YES"), clients=[box])
+        self.assertEqual(box.cc, ["ann@b.example"])
+
+
+def _record_for(name, address):
+    return {"id": address, "from_email": address, "from_name": name, "action": "sent", "processed_at": "2026-11-01 09:00:00"}
 
 
 class WhatsAppComposeTests(WebCase):

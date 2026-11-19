@@ -112,13 +112,15 @@ class OutlookClient:
     def send_notice(self, to: str, subject: str, body: str) -> None:
         self.send_new(to, subject, body)
 
-    def send_new(self, to: str, subject: str, body: str, attachments: list | None = None) -> None:
-        """A new email (not a reply). to may hold several addresses separated by commas."""
+    def send_new(self, to: str, subject: str, body: str, attachments: list | None = None, cc: str = "") -> None:
+        """A new email (not a reply). to and cc may hold several addresses separated by commas."""
         message = {
             "subject": subject,
             "body": {"contentType": "Text", "content": body},
             "toRecipients": [{"emailAddress": {"address": address.strip()}} for address in to.split(",") if address.strip()],
         }
+        if cc:
+            message["ccRecipients"] = [{"emailAddress": {"address": address.strip()}} for address in cc.split(",") if address.strip()]
         if attachments:
             message["attachments"] = [
                 {

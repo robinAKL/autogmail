@@ -110,69 +110,16 @@ def format_report(report: RunReport) -> str:
     return text
 
 
-_DIGEST_UNREAD_LIMIT = 100
-_DIGEST_LINE_LIMIT = 15
-
-
-def _one_line(text: str, limit: int = 110) -> str:
-    cleaned = " ".join((text or "").split())
-    if len(cleaned) <= limit:
-        return cleaned
-    return cleaned[: limit - 3].rstrip() + "..."
-
-
-def _digest_summary(mail: Mail) -> str:
-    record = get_processed(mail.key) or {}
-    saved = (record.get("summary") or "").strip()
-    if saved:
-        return _one_line(saved)
-    subject = short_subject(mail.subject or "")
-    snippet = _one_line(mail.snippet or mail.body or "", limit=80)
-    if subject and snippet and snippet.lower() not in subject.lower():
-        return _one_line(f"{subject} — {snippet}")
-    return _one_line(subject or snippet or "Needs your attention")
-
-
-def _collect_digest_items(clients: list) -> list[str]:
-    from gmail_auto.importance import assess
-
-    unread: list[Mail] = []
-    for client in clients:
-        try:
-            unread.extend(client.list_unread(_DIGEST_UNREAD_LIMIT))
-        except ConfigError:
-            continue
-    unread.sort(key=lambda m: float(getattr(m, "received_ts", 0) or 0), reverse=True)
-    items: list[str] = []
-    for mail in unread[:_DIGEST_UNREAD_LIMIT]:
-        if not assess(mail).get("important"):
-            continue
-        sender = (mail.from_name or mail.from_email or "Unknown").strip()
-        items.append(f"- {sender}: {_digest_summary(mail)}")
-    return items
-
-
-def _digest_message(clients: list) -> str:
-    items = _collect_digest_items(clients)
-    if not items:
-        return "Good morning. No important unread emails need your attention today."
-    shown = items[:_DIGEST_LINE_LIMIT]
-    body = "Good morning. Important unread emails:\n" + "\n".join(shown)
-    if len(items) > len(shown):
-        body += f"\n...and {len(items) - len(shown)} more."
-    return body
-
-
 def send_daily_digest(now: datetime | None = None, clients: list | None = None) -> bool:
-    """Once a day, after the chosen hour, send a WhatsApp digest of important unread mail."""
-    from gmail_auto import whatsapp
+    """Once a day, at or after the chosen hour New Zealand time, send the morning report on WhatsApp."""
+    from gmail_auto import digest, whatsapp
 
-    now = now or datetime.now()
     settings = load_settings()
-    if not settings["daily_digest"] or not whatsapp.ready() or now.hour < settings["digest_hour"]:
-        return False
-    today = date.today().isoformat()
-    if get_state("digest_day") == today:
+    if now is None:
+        local = digest.now_local()
+    else:
+        local = now if now.tzinfo else now.replace(tzinfo=digest.ZONE)
+    if not whatsapp.ready() or not digest.due(settings, get_state("digest_day") or "", local):
         return False
     if clients is None:
         try:
@@ -181,11 +128,23 @@ def send_daily_digest(now: datetime | None = None, clients: list | None = None) 
             clients, _ = connected_clients()
         except (ConfigError, NotConnected):
             clients = []
-    set_state("digest_day", today)
+    text, records = digest.build(
+        clients,
+        since=get_state("digest_sent_at") or "",
+        language=settings.get("ui_language") or "en",
+        jobs=bool(settings.get("digest_jobs")),
+    )
+    set_state("digest_day", local.date().isoformat())
     try:
-        whatsapp.send_text(_digest_message(clients))
+        whatsapp.send_text(text)
     except ConfigError:
         return False
+    set_state("digest_sent_at", now_text())
+    if records:
+        # "1", "2"... on WhatsApp now open the letters in this report.
+        from gmail_auto.assistant import _save_mail_list
+
+        _save_mail_list(digest.as_mail_list(records))
     return True
 
 
@@ -331,7 +290,11 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
         if verdict is not None:
             remember_verdict(mail.key, verdict)
         if verdict is not None and verdict.disposition == "ignore":
-            _skip(client, mail, Skip(verdict.reason or "junk", code=verdict.code or "junk"), report)
+            # "No reply needed" is not "not important": a school letter or an IRD notice still reaches WhatsApp.
+            notice_id = ""
+            if (verdict.code or "") not in ("junk", "phishing", "ad"):
+                notice_id = _maybe_notice(mail, None, settings, report, summary=brief.get("summary") or "")
+            _skip(client, mail, Skip(verdict.reason or "junk", code=verdict.code or "junk"), report, approval_id=notice_id)
             continue
         try:
             from gmail_auto.contacts import note_letter
@@ -533,11 +496,19 @@ def _maybe_notice(mail: Mail, decision, settings: dict, report: RunReport, summa
     if decision is not None and (getattr(decision, "sensitive", False) or getattr(decision, "code", "") not in PING_SKIPS):
         return ""
     tag = _tag(mail)
+    contact = _ping_contact(mail)
+    if contact is not None:
+        from gmail_auto.contacts import TYPES
+
+        # A client, student, partner, friend or family member: always worth a ping.
+        tag = {**tag, "important": True, "kind": tag.get("kind") if tag.get("important") else "person",
+               "why": tag.get("why") or f"From your {TYPES[contact['type']].lower()} {contact.get('name') or ''}".strip(),
+               "label": tag.get("label") or TYPES[contact["type"]].lower()}
     if not tag.get("important"):
         return ""
     from gmail_auto.importance import ping_kinds
 
-    if tag.get("kind") not in ping_kinds(settings):
+    if contact is None and tag.get("kind") not in ping_kinds(settings):
         return ""
     from gmail_auto import whatsapp
 
@@ -550,6 +521,17 @@ def _maybe_notice(mail: Mail, decision, settings: dict, report: RunReport, summa
             pass
     report.lines.append(f"WhatsApp: important {tag['label']} — {short_subject(mail.subject)}")
     return item["id"]
+
+
+def _ping_contact(mail: Mail) -> dict | None:
+    try:
+        from gmail_auto.contacts import find
+        from gmail_auto.importance import PING_CONTACTS
+
+        person = find(mail.reply_email or mail.from_email)
+    except ConfigError:
+        return None
+    return person if person and person.get("type") in PING_CONTACTS else None
 
 
 def _skip(gmail, mail: Mail, decision: Skip, report: RunReport, approval_id: str = "") -> None:

@@ -372,7 +372,11 @@ def configure_app(app: Flask) -> None:
             if action in ("send", "save", "attach", "detach") and request.form.get("to") is not None:
                 from gmail_auto.outgoing import clean_recipients
 
-                approvals.set_new_fields(item_id, clean_recipients(request.form.get("to", "")), request.form.get("subject", ""))
+                cc = request.form.get("cc", "")
+                approvals.set_new_fields(
+                    item_id, clean_recipients(request.form.get("to", "")), request.form.get("subject", ""),
+                    cc=clean_recipients(cc) if cc.strip() else "",
+                )
             if action in ("send", "attach", "detach") and request.form.get("draft") is not None:
                 approvals.set_draft(item_id, request.form.get("draft"))
             if action == "send":
@@ -668,16 +672,17 @@ def configure_app(app: Flask) -> None:
                     body=request.form.get("body"),
                     detach=request.form.get("detach", ""),
                     language=request.form.get("language"),
+                    cc=request.form.get("cc"),
                 )
                 if session.get("language") != before and session["body"].strip():
                     writer.relanguage(session_id, load_profile())
             elif action == "queue":
-                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"))
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
                 item = writer.queue(session_id)
                 flash(f"The email to {item['to']} is waiting in Approvals. Send it from there, or on WhatsApp.")
                 return redirect(url_for("approvals_page") + f"#a{item['id']}")
             elif action == "send":
-                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"))
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
                 item = writer.send(session_id)
                 flash(f"Sent to {item['to']}.")
                 return redirect(url_for("home"))
@@ -742,7 +747,7 @@ def configure_app(app: Flask) -> None:
                     record = files.save(upload.read(), upload.filename, upload.mimetype, origin="reply")
                     uploaded.append(record)
                     records.append(record)
-            item = outgoing.start(to, request.form.get("points", ""), request.form.get("subject", ""), load_profile(), records)
+            item = outgoing.start(to, request.form.get("points", ""), request.form.get("subject", ""), load_profile(), records, cc=request.form.get("cc", ""))
         except (ConfigError, ReplyError) as exc:
             for record in uploaded:
                 files.remove(record["id"])
@@ -1643,6 +1648,7 @@ def configure_app(app: Flask) -> None:
                 changes["notify_calendar"] = request.form.get("notify_calendar") == "1"
                 changes["daily_digest"] = request.form.get("daily_digest") == "1"
                 changes["digest_hour"] = request.form.get("digest_hour", "8")
+                changes["digest_jobs"] = request.form.get("digest_jobs") == "1"
             else:
                 if "daily_digest" in request.form:
                     changes["daily_digest"] = request.form.get("daily_digest") == "1"

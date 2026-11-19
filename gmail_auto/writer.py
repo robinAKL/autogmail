@@ -45,6 +45,7 @@ If the owner's latest message is clearly about something else (not this email), 
 Return JSON only:
 {"reply": "what you tell the owner",
  "to": "email address(es) separated by commas, or a contact's name, or empty to keep",
+ "cc": "addresses or contact names to copy in, separated by commas; empty to keep; \"none\" to remove",
  "subject": "new subject or empty to keep",
  "body": "the whole email text, or empty to keep it unchanged",
  "attach": ["ref", ...], "detach": ["ref", ...],
@@ -61,6 +62,7 @@ def start(to: str = "", subject: str = "", body: str = "", refs: list[str] | Non
         "source": source,
         "language": language if language in LANGUAGES else default_language(),
         "to": (to or "").strip(),
+        "cc": "",
         "subject": " ".join((subject or "").split())[:200],
         "body": (body or "").strip(),
         "attachments": [],
@@ -86,6 +88,7 @@ def start(to: str = "", subject: str = "", body: str = "", refs: list[str] | Non
 def from_approval(item: dict, source: str = "whatsapp") -> dict:
     """A session for a new email that is already waiting in the queue, so it can be changed by talking."""
     session = start(to=item.get("to") or "", subject=item.get("subject") or "", body=item.get("draft") or "", source=source)
+    session["cc"] = item.get("cc") or ""
     session["attachments"] = [{"ref": f"file:{entry['id']}", **entry} for entry in item.get("attachments") or []]
     session["approval_id"] = item["id"]
     session["status"] = "queued"
@@ -121,12 +124,15 @@ def get(session_id: str) -> dict | None:
 
 
 def edit(
-    session_id: str, to: str | None = None, subject: str | None = None, body: str | None = None, detach: str = "", language: str | None = None
+    session_id: str, to: str | None = None, subject: str | None = None, body: str | None = None, detach: str = "", language: str | None = None,
+    cc: str | None = None,
 ) -> dict:
     """The owner typed into the draft directly. A new language is stored; see relanguage()."""
     session = _open(session_id)
     if language in LANGUAGES:
         session["language"] = language
+    if cc is not None:
+        session["cc"] = cc.strip()
     if to is not None:
         session["to"] = to.strip()
     if subject is not None:
@@ -193,14 +199,16 @@ def queue(session_id: str, provider: str = "") -> dict:
     """Put the finished email in the approvals queue (or update the one already there). Returns the item."""
     session = _open(session_id)
     to = outgoing.clean_recipients(_resolve_to(session["to"]))
+    cc = outgoing.clean_recipients(_resolve_to(session.get("cc") or "")) if (session.get("cc") or "").strip() else ""
     if not session["body"].strip():
         raise ConfigError("The email is empty.")
     subject = session["subject"] or "Hello"
     item = approvals.get(session["approval_id"]) if session.get("approval_id") else None
     if item is None or item.get("status") != "pending":
-        item = approvals.create_new(to, subject, session["body"], provider=provider or outgoing.default_provider())
+        item = approvals.create_new(to, subject, session["body"], provider=provider or outgoing.default_provider(), cc=cc)
         session["approval_id"] = item["id"]
     session["to"] = to
+    session["cc"] = cc
     session["status"] = "queued"
     _store(session)
     _sync(session)
@@ -224,7 +232,10 @@ def last_open(source: str) -> dict | None:
 
 
 def preview(session: dict) -> str:
-    lines = [f"To: {session['to'] or '(who?)'}", f"Subject: {session['subject'] or '(none yet)'}", "", session["body"] or "(no text yet)"]
+    lines = [f"To: {session['to'] or '(who?)'}"]
+    if session.get("cc"):
+        lines.append(f"Cc: {session['cc']}")
+    lines += [f"Subject: {session['subject'] or '(none yet)'}", "", session["body"] or "(no text yet)"]
     if session["attachments"]:
         lines += ["", "Attached: " + ", ".join(item["name"] for item in session["attachments"])]
     return "\n".join(lines)
@@ -275,7 +286,7 @@ def _prompt(session: dict, profile: dict) -> str:
     parts.append("EMAIL LANGUAGE: " + language_rule(session))
     parts.append(
         "CURRENT DRAFT:\n"
-        f"To: {session['to'] or '(not set)'}\nSubject: {session['subject'] or '(not set)'}\n"
+        f"To: {session['to'] or '(not set)'}\nCc: {session.get('cc') or '(none)'}\nSubject: {session['subject'] or '(not set)'}\n"
         f"Attached refs: {', '.join(item['ref'] for item in session['attachments']) or '(none)'}\n"
         f"Body:\n{session['body'] or '(empty)'}"
     )
@@ -289,6 +300,11 @@ def _apply(session: dict, data: dict) -> list[str]:
     to = " ".join(str(data.get("to") or "").split())
     if to:
         session["to"] = _resolve_to(to) or to
+    cc = " ".join(str(data.get("cc") or "").split())
+    if cc.lower() in ("none", "remove", "无"):
+        session["cc"] = ""
+    elif cc:
+        session["cc"] = _resolve_to(cc) or cc
     if str(data.get("subject") or "").strip():
         session["subject"] = " ".join(str(data["subject"]).split())[:200]
     if str(data.get("body") or "").strip():
@@ -394,7 +410,11 @@ def _sync(session: dict) -> None:
         to = outgoing.clean_recipients(_resolve_to(session["to"]))
     except ConfigError:
         to = item.get("to") or ""
-    approvals.set_new_fields(item_id, to, session["subject"] or item.get("subject") or "Hello")
+    try:
+        cc = outgoing.clean_recipients(_resolve_to(session.get("cc") or "")) if (session.get("cc") or "").strip() else ""
+    except ConfigError:
+        cc = item.get("cc") or ""
+    approvals.set_new_fields(item_id, to, session["subject"] or item.get("subject") or "Hello", cc=cc)
     if session["body"].strip() and session["body"] != item.get("draft"):
         approvals.set_draft(item_id, session["body"])
     have = {entry.get("id") for entry in item.get("attachments") or []}

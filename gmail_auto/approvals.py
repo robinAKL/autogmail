@@ -62,7 +62,7 @@ def create(mail: Mail, draft, language: str, role: str = "ask", kind: str = "") 
 NEW_EMAIL_NOTE = "(This is a new email the owner is writing, not a reply to a letter.)"
 
 
-def create_new(to: str, subject: str, body: str, provider: str = "gmail", language: str = "en", reason: str = "", sources=None) -> dict:
+def create_new(to: str, subject: str, body: str, provider: str = "gmail", language: str = "en", reason: str = "", sources=None, cc: str = "") -> dict:
     """A new email the owner asked for. It waits here like a reply, and is sent as a new message."""
     with LOCK:
         data = _load()
@@ -77,6 +77,7 @@ def create_new(to: str, subject: str, body: str, provider: str = "gmail", langua
             "mail_id": "",
             "thread_id": "",
             "to": to,
+            "cc": cc,
             "from_name": to,
             "from_email": to,
             "reply_email": to,
@@ -107,7 +108,7 @@ def create_new(to: str, subject: str, body: str, provider: str = "gmail", langua
         return item
 
 
-def set_new_fields(item_id: str, to: str, subject: str) -> dict:
+def set_new_fields(item_id: str, to: str, subject: str, cc: str | None = None) -> dict:
     with LOCK:
         data = _load()
         item = _pending_item(data, item_id)
@@ -118,6 +119,8 @@ def set_new_fields(item_id: str, to: str, subject: str) -> dict:
             item.update({"to": to, "from_name": to, "from_email": to, "reply_email": to, "summary": f"New email to {to}"})
         if subject:
             item["subject"] = subject[:200]
+        if cc is not None:
+            item["cc"] = cc.strip()
         _save(data)
         return item
 
@@ -265,7 +268,9 @@ def approve(item_id: str, via: str, client=None) -> dict:
         mail = _mail(item)
         attached = _attachment_bytes(item)
         if item.get("mode") == "new":
-            if attached:
+            if item.get("cc"):
+                client.send_new(item["to"], item.get("subject") or "", item["draft"], attachments=attached or None, cc=item["cc"])
+            elif attached:
                 client.send_new(item["to"], item.get("subject") or "", item["draft"], attachments=attached)
             else:
                 client.send_notice(item["to"], item.get("subject") or "", item["draft"])

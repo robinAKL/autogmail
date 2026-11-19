@@ -138,15 +138,19 @@
     </label>
     <label class="check">
       <input type="checkbox" name="daily_digest" value="1" {% if settings.daily_digest %}checked{% endif %}>
-      <span>Send me yesterday's numbers on WhatsApp every morning</span>
+      <span>Send me a morning report on WhatsApp: what needs me, mail from people, today's meetings, institutions and bookings</span>
     </label>
     <label>
-      Morning summary hour
+      Morning report time (New Zealand time)
       <select name="digest_hour">
         {% for hour in range(5, 13) %}
         <option value="{{ hour }}" {% if settings.digest_hour == hour %}selected{% endif %}>{{ '%02d'|format(hour) }}:00</option>
         {% endfor %}
       </select>
+    </label>
+    <label class="check">
+      <input type="checkbox" name="digest_jobs" value="1" {% if settings.digest_jobs %}checked{% endif %}>
+      <span>Include progress on my job applications (not job alerts)</span>
     </label>
     <details class="inline-details" {% if notify_preset == 'custom' %}open{% endif %}>
       <summary>Fine-tune kinds ({{ ping_rules|length }})</summary>

@@ -56,6 +56,7 @@
           </select>
         </label>
       </div>
+      <label>Cc <input name="cc" value="{{ session.cc or '' }}" maxlength="600" list="people" placeholder="Copy someone in (optional)"></label>
       <datalist id="people">{% for item in people %}<option value="{{ item.emails[0] }}">{{ item.name }}{% if item.company %} · {{ item.company }}{% endif %}</option>{% endfor %}</datalist>
       <label>Subject <input name="subject" value="{{ session.subject }}" maxlength="200"></label>
       <label class="draft-body">Email <textarea name="body" rows="14" maxlength="6000">{{ session.body }}</textarea></label>

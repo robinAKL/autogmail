@@ -113,10 +113,12 @@ class GmailClient:
     def send_notice(self, to: str, subject: str, body: str) -> None:
         self.send_new(to, subject, body)
 
-    def send_new(self, to: str, subject: str, body: str, attachments: list | None = None) -> None:
-        """A new email (not a reply). to may hold several addresses separated by commas."""
+    def send_new(self, to: str, subject: str, body: str, attachments: list | None = None, cc: str = "") -> None:
+        """A new email (not a reply). to and cc may hold several addresses separated by commas."""
         message = EmailMessage()
         message["To"] = to
+        if cc:
+            message["Cc"] = cc
         message["From"] = self.get_user_email()
         message["Subject"] = subject
         message.set_content(body, subtype="plain", charset="utf-8")

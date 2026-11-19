@@ -26,6 +26,10 @@ RULES = [
     ("meeting", "Appointments", "A real person inviting you to a meeting or appointment with a date that is still ahead."),
     ("person", "People you know", "Someone in your knowledge base or someone you have replied to before."),
     ("company", "Your company", "Mail about your own company and the organisations you work with."),
+    ("insurance", "Insurance and policies", "Policy schedules, renewals, claims and changes to your cover."),
+    ("account", "Accounts needing action", "A service asks you to verify, confirm or update something on your account, or a key or licence expired."),
+    ("booking", "Bookings and travel", "Confirmed bookings, reservations, tickets and itineraries."),
+    ("job", "Job applications", "Progress on jobs you applied for: next steps, screening questions, interviews. Not job alerts."),
 ]
 # Never sent, whatever it mentions, unless it falls in one of the first rules above.
 QUIET = [
@@ -36,10 +40,12 @@ QUIET = [
 ]
 KINDS = [key for key, _, _ in RULES]
 # Phone pings for a busy owner. Quotes, people and company mail go to Inbox / the morning digest.
-INTERRUPT = ("fine", "invoice", "action", "school", "institution", "health", "housing")
-DIGEST = ("enquiry", "meeting", "person", "company")
+INTERRUPT = ("fine", "invoice", "action", "account", "school", "institution", "health", "housing", "insurance", "meeting")
+DIGEST = ("enquiry", "person", "company", "booking", "job")
+# Contacts whose letters always reach WhatsApp, even when no reply is needed.
+PING_CONTACTS = ("client", "student", "partner", "friend", "family")
 PRESETS = ("urgent", "busy", "custom")
-_ANY_SENDER = {"fine", "invoice", "action", "school", "institution", "health", "housing"}
+_ANY_SENDER = {"fine", "invoice", "action", "account", "school", "institution", "health", "housing", "insurance"}
 LABELS = {
     "fine": "fine",
     "invoice": "bill",
@@ -52,7 +58,35 @@ LABELS = {
     "school": "school",
     "person": "person",
     "company": "company",
+    "insurance": "insurance",
+    "account": "account",
+    "booking": "booking",
+    "job": "job application",
 }
+# Read from the subject and sender only, so a word deep in a newsletter does not count.
+_INSURANCE = re.compile(
+    r"(?i)\b(policy (?:schedule|number|documents?|renewal|change|alteration)|your (?:insurance|policy|cover)|"
+    r"insurance (?:policy|renewal|claim)|claim (?:number|update|lodged)|premium (?:change|notice)|certificate of insurance)\b|"
+    r"partners ?life|provident ?insurance|southern ?cross|\baia\b|fidelity ?life|\bami\b|\bstate insurance|tower ?insurance|"
+    r"保单|保险"
+)
+_ACCOUNT = re.compile(
+    r"(?i)\b(action (?:may be )?required|verify your|verification (?:required|needed|pending)|continue (?:your )?(?:business )?verification|"
+    r"confirm your (?:email|account|identity|details)|update (?:your )?(?:primary )?email|(?:tokens?|keys?|licen[cs]e|certificate|domain) "
+    r"(?:has |have )?(?:expired|expiring|expires)|expired)\b"
+)
+_BOOKING = re.compile(
+    r"(?i)\b(booking (?:confirmation|confirmed|summary|reference)|your booking|reservation (?:confirmed|confirmation)|"
+    r"your (?:trip|itinerary|flight|reservation|e-?ticket)|e-?ticket|boarding pass|check-in (?:now|is open)|car hire|rental car)\b|预订确认|行程单"
+)
+_JOB_PROGRESS = re.compile(
+    r"(?i)\b(your application|application (?:for|received|submitted|update|status)|screening questions?|"
+    r"interview (?:invitation|request|confirmation|scheduled)|invite(?:d)? (?:you )?to (?:an )?interview|assessment invitation|"
+    r"offer of employment|next steps? (?:in|for) your application)\b"
+)
+_HEALTH_SENDER = re.compile(r"(?i)health|clinic|medical|hospital|pharmacy|doctor|dental|managemyhealth|healthpoint|\.health\.nz")
+# Clear on their own, whoever sends them. Vaguer words (clinic, hospital) on bulk mail need a health sender.
+_HEALTH_STRONG = re.compile(r"(?i)\b(test results?|lab results?|blood test|prescriptions?|referral|vaccinations?|immuni[sz]ations?)\b|检查结果|化验|处方")
 
 _FINE = re.compile(
     r"\b(infringement|penalty notice|parking (?:ticket|fine|notice)|speed(?:ing)? (?:camera|ticket|fine)|"
@@ -179,13 +213,16 @@ def assess(mail: Mail, lookups: bool = True) -> dict:
     selling = bool(_MARKETING.search(text) or re.search(r"退订|限时优惠|立即抢购|优惠券", text))
     if _AUTO_REPLY.search(mail.subject or ""):
         return dict(_NOT_IMPORTANT)
+    headline = f"{mail.subject or ''}\n{sender}"
+    if not selling and _JOB_PROGRESS.search(mail.subject or ""):
+        # Progress on the owner's own applications, checked before job alerts so it is not thrown away with them.
+        return _tag("job", "About a job you applied for.")
     if not _institution(mail) and (
         _JOB_ALERT.search(mail.subject or "") or _JOB_ALERT.search(sender) or (notice and _JOB_ALERT.search(text))
     ):
         return dict(_NOT_IMPORTANT)
     # Bulk and automated mail only counts as health or home when the subject or sender says so,
     # not because a word like "clinic" or "lease" appears somewhere in a long digest.
-    headline = f"{mail.subject or ''}\n{sender}"
     topic_text = headline if notice else text
 
     # These matter even when an automated system sends them, as long as it is not selling something.
@@ -200,10 +237,17 @@ def assess(mail: Mail, lookups: bool = True) -> dict:
         return _tag("school", "School or parent mail.")
     if _institution(mail) and not selling:
         return _tag("institution", "From a government office or other institution.")
-    if not selling and _HEALTH.search(topic_text):
+    # Automated mail is health mail only when the sender is health-related ("Nz Clinic Book" from an app builder is not).
+    if not selling and _HEALTH.search(topic_text) and (not notice or _HEALTH_SENDER.search(sender) or _HEALTH_STRONG.search(topic_text)):
         return _tag("health", "Health: results, prescriptions, referrals or clinic mail.")
     if not selling and _HOUSING.search(topic_text):
         return _tag("housing", "About your home, tenancy, rent or rates.")
+    if not selling and _INSURANCE.search(headline):
+        return _tag("insurance", "About your insurance or a policy.")
+    if not selling and _ACCOUNT.search(mail.subject or ""):
+        return _tag("account", "A service needs you to verify, confirm or update something.")
+    if not selling and _BOOKING.search(mail.subject or ""):
+        return _tag("booking", "A booking or travel confirmation.")
 
     if notice:
         return dict(_NOT_IMPORTANT)
@@ -248,7 +292,7 @@ def is_notification(mail: Mail) -> bool:
 def _receipt_only(text: str) -> bool:
     """A receipt for something already paid, with nothing left to pay."""
     lowered = text.lower()
-    if not re.search(r"\b(receipt|payment received|thank you for your payment|paid in full)\b", lowered):
+    if not re.search(r"\b(receipt|payment received|thank you for your payment|paid in full|refund(?:ed)?|refund confirmation|\(invoice paid\)|invoice paid)\b", lowered):
         return False
     return not re.search(r"\b(due|overdue|outstanding|amount owing|please pay)\b", lowered)
 

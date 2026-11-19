@@ -20,7 +20,7 @@
         <p class="kicker">#{{ item.id }} · asked {{ item.created_text }}</p>
         <h2 translate="no">{{ item.subject or '(no subject)' }}</h2>
         {% if item.mode == 'new' %}
-        <p class="meta"><span class="chip tiny">New email</span> to <strong translate="no">{{ item.to }}</strong>
+        <p class="meta"><span class="chip tiny">New email</span> to <strong translate="no">{{ item.to }}</strong>{% if item.cc %} · cc <span translate="no">{{ item.cc }}</span>{% endif %}
           <span class="dot">·</span> {{ item.date }}
         {% else %}
         <p class="meta"><strong translate="no">{{ item.from_name or item.from_email }}</strong>{% if item.from_name %} &lt;{{ item.from_email }}&gt;{% endif %}
@@ -51,6 +51,7 @@
       <form class="approval-main" method="post" action="{{ url_for('approvals_act', item_id=item.id, action='send') }}" enctype="multipart/form-data" data-busy="Sending…" data-confirm="Send this to {{ item.to or item.from_name or item.from_email }} now?">
         {% if item.mode == 'new' %}
         <label>To <input name="to" value="{{ item.to }}" maxlength="600" required></label>
+        <label>Cc <input name="cc" value="{{ item.cc or '' }}" maxlength="600" placeholder="Copy someone in (optional)"></label>
         <label>Subject <input name="subject" value="{{ item.subject }}" maxlength="200" required></label>
         <label for="draft{{ item.id }}">Email{% if item.edited %} <span class="muted">(edited)</span>{% endif %}</label>
         {% else %}

@@ -65,6 +65,7 @@ Return ONE JSON object:
 - number: first number as a string, or ""
 - query: search keyword, sender, or calendar range, else ""
 - to, subject, body: for compose (to is an email address, or the person's name if no address was given)
+- cc: for compose, who to copy in (addresses or names, comma separated; "抄送" means cc), else ""
 - attach: for compose, what to attach, e.g. ["invoice"], ["contract"], ["price list"]; else []
 - instruction: how to reply or revise
 - title, start, end, location: for calendar (start/end ISO 8601 in Pacific/Auckland if known, else "")
@@ -524,6 +525,12 @@ def _compose_preview(parsed: dict, text: str = "", clients: list | None = None) 
         to_addr = outgoing.clean_recipients(to_addr)
     except ConfigError as exc:
         return str(exc)
+    cc_parts = [part.strip() for part in re.split(r"[,;，、]", str(parsed.get("cc") or "")) if part.strip()]
+    cc_parts = [part if "@" in part else (_address_for(part) or part) for part in cc_parts]
+    try:
+        cc_addr = outgoing.clean_recipients(", ".join(cc_parts)) if cc_parts else ""
+    except ConfigError as exc:
+        return f"Cc: {exc}"
     wanted = [str(item) for item in parsed.get("attach") or [] if str(item).strip()]
     for word, label in (
         (r"发票|invoice", "invoice"),
@@ -538,7 +545,7 @@ def _compose_preview(parsed: dict, text: str = "", clients: list | None = None) 
     records, missing = outgoing.find_attachments(wanted, to_addr, text)
     found = _mail_clients(clients)
     provider = getattr(found[0], "provider", "") if found else ""
-    item = approvals.create_new(to_addr, subject, body, provider=provider or "gmail")
+    item = approvals.create_new(to_addr, subject, body, provider=provider or "gmail", cc=cc_addr)
     for record in records:
         approvals.attach(item["id"], record)
     from gmail_auto import writer
@@ -548,7 +555,7 @@ def _compose_preview(parsed: dict, text: str = "", clients: list | None = None) 
         "wa_pending_action",
         {"kind": "send_new", "approval_id": item["id"], "session_id": session["id"], "to": to_addr, "subject": subject, "body": body},
     )
-    lines = [f"Ready to send (#{item['id']}):", f"To: {to_addr}", f"Subject: {subject}", "", body]
+    lines = [f"Ready to send (#{item['id']}):", f"To: {to_addr}"] + ([f"Cc: {cc_addr}"] if cc_addr else []) + [f"Subject: {subject}", "", body]
     if records:
         lines += ["", "Attached: " + ", ".join(record["name"] for record in records)]
     if missing:

@@ -497,7 +497,18 @@ class ImportanceTests(TempHome):
         self.assertEqual(assess(health)["kind"], "health")
         self.assertEqual(assess(rent)["kind"], "housing")
         self.assertFalse(assess(promo)["important"])
-        self.assertEqual(set(KINDS), {"fine", "invoice", "action", "school", "institution", "health", "housing", "enquiry", "meeting", "person", "company"})
+        self.assertEqual(
+            set(KINDS),
+            {"fine", "invoice", "action", "school", "institution", "health", "housing", "enquiry", "meeting", "person", "company",
+             "insurance", "account", "booking", "job"},
+        )
+        app = sample(from_email="team@ship.emergent.sh", subject="Nz Clinic Book is almost done. Here's your next prompt", body="Unsubscribe")
+        self.assertNotEqual(assess(app)["kind"], "health")
+        self.assertEqual(assess(sample(from_email="service@partnerslife.co.nz", subject="PL Policy Schedule 2236127 E"))["kind"], "insurance")
+        self.assertEqual(assess(sample(from_email="noreply@klook.com", subject="Your booking confirmation for Car hire"))["kind"], "booking")
+        self.assertEqual(assess(sample(from_email="noreply@business.whatsapp.com", subject="Continue business verification for Kiwi Knowledge"))["kind"], "account")
+        self.assertEqual(assess(sample(from_email="no-reply@employmenthero.com", subject="Your application has been submitted"))["kind"], "job")
+        self.assertFalse(assess(sample(from_email="jobs@linkedin.com", subject="10 new jobs for you"))["important"])
 
     def test_settings_keep_only_known_kinds_and_busy_preset_pings_urgent_only(self):
         from gmail_auto.importance import INTERRUPT, inbox_kinds, ping_kinds
@@ -819,74 +830,104 @@ class WhatsAppTests(TempHome):
         self.assertTrue(whatsapp.meta_signature_ok(raw, good))
         self.assertFalse(whatsapp.meta_signature_ok(raw + b" ", good))
 
-    def test_morning_summary_goes_out_once_a_day(self):
-        from datetime import datetime
+    def test_morning_report_goes_out_once_a_day_on_new_zealand_time(self):
+        from datetime import datetime, timezone
 
-        save_settings({"daily_digest": True})
+        from gmail_auto import digest
+
+        save_settings({"daily_digest": True, "digest_hour": 8})
         self.sent.clear()
-        early = datetime.now().replace(hour=6, minute=0)
-        late = datetime.now().replace(hour=9, minute=0)
+        early = datetime(2026, 11, 19, 6, 0, tzinfo=digest.ZONE)
+        late = datetime(2026, 11, 19, 9, 0, tzinfo=digest.ZONE)
         self.assertFalse(send_daily_digest(early))
         self.assertTrue(send_daily_digest(late))
         self.assertFalse(send_daily_digest(late))
         self.assertEqual(len(self.sent), 1)
-        body = self.sent[0][1]["text"]["body"]
-        self.assertIn("Good morning.", body)
-        self.assertNotIn("new emails checked", body)
+        self.assertIn("Good morning.", self.sent[0][1]["text"]["body"])
+        # 20:00 UTC is 09:00 the next morning in Auckland (summer time); 08:00 UTC is 21:00 there.
+        settings = {"daily_digest": True, "digest_hour": 8}
+        self.assertTrue(digest.due(settings, "", datetime(2026, 11, 19, 20, 0, tzinfo=timezone.utc).astimezone(digest.ZONE)))
+        self.assertEqual(datetime(2026, 11, 19, 8, 0, tzinfo=timezone.utc).astimezone(digest.ZONE).hour, 21)
 
-    def test_morning_summary_caps_at_100_unread_and_lists_important_only(self):
-        from datetime import datetime
-        from gmail_auto.models import Mail
+    def test_morning_report_sections_open_items_and_numbers(self):
+        from datetime import datetime, timedelta
 
-        save_settings({"daily_digest": True})
+        from gmail_auto import approvals, contacts, digest, store
+        from gmail_auto.models import Draft
+
+        now = datetime.now()
+
+        def record(key, sender, name, subject, summary="", action="skipped", age_hours=2, **extra):
+            store.mark_processed(
+                {
+                    "id": key, "mail_id": key, "provider": "gmail", "from_email": sender, "from_name": name, "subject": subject,
+                    "summary": summary, "action": action, "processed_at": (now - timedelta(hours=age_hours)).strftime("%Y-%m-%d %H:%M:%S"),
+                    **extra,
+                }
+            )
+
+        record("bill", "billing@mercury.co.nz", "Mercury", "Your power bill is ready", "Amount due $182 by 30 November.", age_hours=24 * 5)
+        record("paid", "billing@phone.example", "Phone Co", "Your bill is ready", "Amount due $40.", age_hours=24 * 3, handled=True)
+        record("teacher", "a.cooper@school.example", "Mrs Anna Cooper", "Year 10 Visual Arts submission", "Final artwork due Friday.")
+        contacts.build([{"id": "teacher", "from_email": "a.cooper@school.example", "from_name": "Mrs Anna Cooper", "action": "sent", "processed_at": "2026-11-01 09:00:00"}])
+        record("ci", "notifications@github.com", "RobinAKL", "[robinAKL/superagent] Run failed: ci - main")
+        record("policy", "service@partnerslife.co.nz", "Partners Life", "PL Policy Schedule 2236127 E")
+        record("car", "noreply@klook.com", "Klook.com", "Your booking confirmation for Car hire - Toyota Corolla")
+        record("job", "no-reply@employmenthero.com", "Employment Hero", "Your application has been submitted")
+        record("verify", "noreply@business.whatsapp.com", "WhatsApp for Business", "Continue business verification for Kiwi Knowledge")
+        lee = sample(id="lee1", from_name="Lee Wong", from_email="lee@abc.example", subject="Price for coaching?")
+        approvals.create(lee, Draft(action="ask", reply="Our price is in the list.", summary="Asks about coaching prices"), "en")
+
+        text, numbered = digest.build([], language="en")
+        self.assertIn("Needs you", text)
+        self.assertIn("Mercury: Amount due $182 by 30 November. (still open since", text)
+        self.assertIn("WhatsApp for Business:", text)
+        self.assertIn("Mrs Anna Cooper: Final artwork due Friday. (not replied)", text)
+        self.assertIn("Lee Wong: Asks about coaching prices (draft waiting for your OK)", text)
+        self.assertIn("Partners Life: PL Policy Schedule 2236127 E", text)
+        self.assertIn("Klook.com:", text)
+        self.assertNotIn("Phone Co", text)
+        self.assertNotIn("Employment Hero", text)
+        self.assertIn("builds and code 1", text)
+        self.assertEqual(text.count("\n1. "), 1)
+        self.assertEqual(len(numbered), len([line for line in text.splitlines() if line[:1].isdigit()]))
+
+        with_jobs, _ = digest.build([], language="en", jobs=True)
+        self.assertIn("Job applications", with_jobs)
+
+        chinese, _ = digest.build([], language="zh")
+        self.assertIn("🔴 需要你处理", chinese)
+        self.assertIn("回复编号查看详情", chinese)
+
+        save_settings({"daily_digest": True, "digest_hour": 8})
         self.sent.clear()
-        letters = []
-        for idx in range(130):
-            # 120 newest are automated notifications; 10 oldest (beyond top 100) are real bills
-            # so only the single important letter placed inside the newest 100 should appear.
-            is_old_bill = idx < 10
-            letters.append(
-                Mail(
-                    id=f"m{idx}",
-                    thread_id=f"t{idx}",
-                    from_name="Billing" if is_old_bill else "Newsletter",
-                    from_email="billing@vendor.co.nz" if is_old_bill else "noreply@news.example.com",
-                    reply_email="",
-                    subject="Invoice due" if is_old_bill else f"Daily digest {idx}",
-                    date="2026-11-14",
-                    body="Please pay invoice #99" if is_old_bill else "Unsubscribe anytime",
-                    snippet="Please pay invoice #99" if is_old_bill else "Unsubscribe anytime",
-                    received_ts=1000.0 + idx,
-                )
-            )
-        letters.append(
-            Mail(
-                id="imp1",
-                thread_id="timp1",
-                from_name="Sarah Chen",
-                from_email="sarah@client.co.nz",
-                reply_email="",
-                subject="Quote for kitchen renovation",
-                date="2026-11-15",
-                body="Could you send a quote for next Tuesday?",
-                snippet="Could you send a quote for next Tuesday?",
-                received_ts=5000.0,
-            )
-        )
+        self.assertTrue(send_daily_digest(datetime(2026, 11, 19, 9, 0, tzinfo=digest.ZONE), clients=[]))
+        listed = store.get_state("wa_mail_list")
+        self.assertEqual(listed[0]["mail_id"], numbered[0]["mail_id"])
+        self.assertEqual(store.get_state("wa_last_list"), "mail")
 
-        class _Client:
-            def list_unread(self, limit=20):
-                ordered = sorted(letters, key=lambda m: m.received_ts, reverse=True)
-                return ordered[:limit]
+    def test_morning_report_model_can_reword_and_drop_items(self):
+        import json
+        from datetime import datetime, timedelta
 
-        late = datetime.now().replace(hour=9, minute=0)
-        self.assertTrue(send_daily_digest(late, clients=[_Client()]))
-        body = self.sent[0][1]["text"]["body"]
-        self.assertIn("Sarah Chen:", body)
-        self.assertIn("Quote for kitchen renovation", body)
-        self.assertNotIn("Daily digest", body)
-        self.assertNotIn("Invoice due", body)
-        self.assertNotIn("new emails checked", body)
+        from gmail_auto import digest, store
+
+        when = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+        store.mark_processed({"id": "v1", "mail_id": "v1", "from_email": "no-reply@aws.example", "from_name": "Amazon Web Services", "subject": "[Action May be Required] Reminder: Primary Email Address Update", "action": "skipped", "processed_at": when})
+        store.mark_processed({"id": "v2", "mail_id": "v2", "from_email": "noreply@klook.com", "from_name": "Klook", "subject": "Your booking confirmation for Car hire", "action": "skipped", "processed_at": when})
+        reply = json.dumps({"items": [{"n": 1, "section": "action", "line": "确认 AWS 账户的主邮箱地址"}, {"n": 2, "section": "ignore"}]})
+        text, numbered = digest.build([], language="zh", complete=lambda *a, **k: reply)
+        self.assertIn("1. Amazon Web Services: 确认 AWS 账户的主邮箱地址", text)
+        self.assertNotIn("Klook", text)
+        self.assertEqual(len(numbered), 1)
+
+        # Still open the next day until it is marked handled.
+        later, _ = digest.build([], since=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), language="en")
+        self.assertIn("Amazon Web Services:", later)
+        store.set_handled("v1", True)
+        empty_text, empty_list = digest.build([], since=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), language="en")
+        self.assertTrue(empty_text.startswith("Good morning. Nothing needs you today."))
+        self.assertEqual(empty_list, [])
 
     def test_whatsapp_search_finds_handled_letters_that_left_the_recent_inbox(self):
         from gmail_auto import store
@@ -1541,6 +1582,40 @@ class RealtimeScanTests(TempHome):
         self.assertIn("Client asks to confirm $200/hr consultation invoice by Friday.", sent_notices[0]["summary"])
         mocked_llm.assert_called_once()
         self.assertIn("$200/hr", mocked_llm.call_args[0][1])
+
+    def test_letters_the_model_calls_notices_still_ping_when_important(self):
+        import time
+        from gmail_auto import contacts, whatsapp
+        from gmail_auto.runner import run_once
+        from gmail_auto.screen import Screen
+        from gmail_auto.settings import save_settings
+        from gmail_auto.store import get_processed, set_state
+
+        now = int(time.time())
+        set_state("scan_since_ts", now - 300)
+        save_settings({"notify_important": True, "notify_preset": "busy", "whatsapp_to": "+64 21 123 4567"})
+        contacts.build([{"id": "x", "from_email": "sam@friend.example", "from_name": "Sam Lee", "action": "sent", "processed_at": "2026-11-01 09:00:00"}])
+        contacts.save_edit(contacts.find("sam@friend.example")["id"], {"type": "friend"})
+        letters = [
+            sample(id="school", from_name="Mrs Anna Cooper", from_email="a.cooper@westlakegirls.school.nz", subject="Final Year 10 Visual Arts Submission", body="Artwork is due on Friday.", received_ts=now - 50),
+            sample(id="verify", from_name="WhatsApp for Business", from_email="noreply@business.example", subject="Continue business verification for Kiwi Knowledge", body="Finish verifying your business.", received_ts=now - 40),
+            sample(id="friend", from_name="Sam Lee", from_email="sam@friend.example", subject="Photos from Saturday", body="Here are the photos!", received_ts=now - 30),
+            sample(id="promo", from_name="Shop", from_email="deals@shop.example", subject="Final notice: 50% off tonight", body="Unsubscribe", received_ts=now - 20),
+        ]
+        verdicts = {
+            "school": Screen(disposition="ignore", reason="Routine school notice", code="notification"),
+            "verify": Screen(disposition="ignore", reason="Account notice", code="notification"),
+            "friend": Screen(disposition="ignore", reason="Just sharing photos", code="person"),
+            "promo": Screen(disposition="ignore", reason="Advert", code="ad"),
+        }
+        pinged = []
+        with patch("gmail_auto.runner.screen_mail", side_effect=lambda mail, brief=None: verdicts[mail.id]), \
+             patch.object(whatsapp, "ready", return_value=True), \
+             patch.object(whatsapp, "send_notice", side_effect=lambda item: pinged.append(item["mail_id"]) or "wa-1"):
+            run_once(gmail=FakeGmail(letters), generate=lambda *_: Draft(action="skip", reason="no reply needed"))
+        self.assertEqual(sorted(pinged), ["friend", "school", "verify"])
+        self.assertTrue(get_processed("school")["approval_id"])
+        self.assertFalse(get_processed("promo").get("approval_id"))
 
 
 class ConversationalAgentTests(TempHome):

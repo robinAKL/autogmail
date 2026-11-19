@@ -73,11 +73,12 @@ def write(to: str, points: str, subject: str, profile: dict, attached: list[str]
     return subject or " ".join(str(data.get("subject") or "").split())[:120] or "Hello", body, _unique(hit["title"] for hit in hits)
 
 
-def start(to: str, points: str, subject: str, profile: dict, records: list[dict], provider: str = "", complete=None) -> dict:
+def start(to: str, points: str, subject: str, profile: dict, records: list[dict], provider: str = "", complete=None, cc: str = "") -> dict:
     """Write the email, put it in the queue and attach the files. Returns the waiting item."""
     to = clean_recipients(to)
+    cc = clean_recipients(cc) if (cc or "").strip() else ""
     subject, body, sources = write(to, points, subject, profile, [record["name"] for record in records], complete=complete)
-    item = approvals.create_new(to, subject, body, provider=provider or default_provider(), sources=sources)
+    item = approvals.create_new(to, subject, body, provider=provider or default_provider(), sources=sources, cc=cc)
     for record in records:
         approvals.attach(item["id"], record)
     return approvals.get(item["id"])

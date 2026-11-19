@@ -14,6 +14,7 @@
   <section class="card">
     <label>To <input name="to" value="{{ to }}" maxlength="600" required placeholder="lee@example.com (separate several with commas)" autocomplete="email" list="people"></label>
     <datalist id="people">{% for item in people %}<option value="{{ item.emails[0] }}">{{ item.name }}{% if item.company %} · {{ item.company }}{% endif %}</option>{% endfor %}</datalist>
+    <label>Cc <span class="hint">Optional</span><input name="cc" value="" maxlength="600" list="people" placeholder="Copy someone in (separate several with commas)"></label>
     <label>Subject <span class="hint">Optional{% if has_model %}: one is written for you{% endif %}</span><input name="subject" value="{{ subject }}" maxlength="200"></label>
     <label>What to say
       <textarea name="points" rows="7" maxlength="3000" {% if not has_model %}required{% endif %} placeholder="e.g. Confirm the workshop on 3 December at 2pm, Ponsonby. Price as in our price list. Ask how many people are coming.">{{ points }}</textarea>
