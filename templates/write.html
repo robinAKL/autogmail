@@ -90,7 +90,7 @@
           <button class="quiet small" type="submit" formaction="{{ url_for('write_act', session_id=session.id, action='pick') }}">Attach</button>
           {% endif %}
           <label class="button quiet small upload-button">Upload a file
-            <input type="file" name="files" multiple hidden onchange="this.form.requestSubmit(this.form.querySelector('[data-upload]'))">
+            <input type="file" name="files" multiple hidden data-attach onchange="this.form.requestSubmit(this.form.querySelector('[data-upload]'))">
           </label>
           <button hidden type="submit" formaction="{{ url_for('write_act', session_id=session.id, action='upload') }}" data-upload data-busy="Uploading…">Upload</button>
         </div>

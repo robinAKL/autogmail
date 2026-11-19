@@ -7,7 +7,7 @@
   <title>{% block title %}Mail Autopilot{% endblock %} · Mail Autopilot</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body>
+<body data-upload-total="{{ 4300000 if hosted else 28000000 }}" data-attach-max="3000000">
 {% block layout %}
 <div class="app">
   <aside class="side">

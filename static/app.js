@@ -1,4 +1,43 @@
 (function () {
+  // Files too big are stopped here, before the upload: the hosted site turns away anything over about 4.5 MB
+  // with a bare error page, and email attachments can be at most 3 MB each.
+  var total = parseInt(document.body.getAttribute("data-upload-total") || "0", 10);
+  var attachMax = parseInt(document.body.getAttribute("data-attach-max") || "0", 10);
+  var zh = (document.documentElement.getAttribute("lang") || "").indexOf("zh") === 0;
+  var mb = function (bytes) { return (bytes / 1000000).toFixed(1) + " MB"; };
+  var tooBig = function (form) {
+    var sum = 0;
+    var inputs = form.querySelectorAll("input[type=file]");
+    for (var i = 0; i < inputs.length; i++) {
+      var files = inputs[i].files || [];
+      for (var j = 0; j < files.length; j++) {
+        if (attachMax && inputs[i].hasAttribute("data-attach") && files[j].size > attachMax) {
+          return zh
+            ? files[j].name + " 有 " + mb(files[j].size) + "，邮件附件每个最多 " + mb(attachMax) + "。请压缩或拆分后再上传。"
+            : files[j].name + " is " + mb(files[j].size) + ". Email attachments can be up to " + mb(attachMax) + " each. Compress or split it, then try again.";
+        }
+        sum += files[j].size;
+      }
+    }
+    if (total && sum > total) {
+      return zh
+        ? "这次上传共 " + mb(sum) + "，超过了网站一次能收的 " + mb(total) + "。请一次少传几个，或压缩后再传。"
+        : "These files add up to " + mb(sum) + ", more than the site can take at once (" + mb(total) + "). Upload fewer at a time, or compress them.";
+    }
+    return "";
+  };
+  document.addEventListener("submit", function (event) {
+    var form = event.target;
+    // The Knowledge form sends its files one by one and checks each itself.
+    if (!form || form.getAttribute("enctype") !== "multipart/form-data" || form.hasAttribute("data-upload-max")) { return; }
+    var problem = tooBig(form);
+    if (!problem) { return; }
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    form.querySelectorAll("input[type=file]").forEach(function (input) { input.value = ""; });
+    window.alert(problem);
+  }, true);
+
   // Confirm before anything that sends or removes, and show that work is under way.
   document.querySelectorAll("form").forEach(function (form) {
     form.addEventListener("submit", function (event) {
