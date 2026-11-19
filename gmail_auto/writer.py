@@ -45,7 +45,12 @@ Do what the owner asks in their latest message:
   complete, tell the owner the number and total it would get and ask them to confirm; only after they
   clearly agree in their latest message, put its ref in "issue" (that gives it its number and attaches it).
 - Never pretend something is attached or issued when it is not.
-- Keep "reply" short (one to three sentences), in the language the owner writes in.
+- The body is only what the recipient reads. Never put notes to the owner, questions to the owner, refs,
+  ids or remarks about missing files in it. Talk to the owner only in "reply".
+- Never ask the owner for a ref or id: they do not know them. If a file they want is under TEXT ONLY, say in
+  "reply" which file it is and that it must be uploaded again ("Upload a file" below the email); write the
+  email without mentioning that file.
+- Keep "reply" short (one to three sentences), in the language the owner writes in (see OWNER WRITES IN).
 - The email's language is set separately (see EMAIL LANGUAGE) and you must follow it, whatever language the
   owner chats in. When it changes, rewrite the whole email in the new language with the same content.
 
@@ -190,7 +195,7 @@ def say(session_id: str, text: str, profile: dict, complete=None) -> dict:
         session["messages"].pop()
         session["off_topic"] = True
         return session
-    notes = _apply(session, data)
+    notes = _apply(session, data) + _missing_files(session)
     reply = " ".join(str(data.get("reply") or "").split()) or "Done."
     _say(session, "agent", reply + (("\n" + "\n".join(notes)) if notes else ""))
     _store(session)
@@ -406,6 +411,8 @@ def _prompt(session: dict, profile: dict) -> str:
     )
     talk = "\n".join(f"{'OWNER' if message['who'] == 'you' else 'YOU'}: {message['text']}" for message in session["messages"][-12:])
     parts.append("CONVERSATION:\n" + talk)
+    last = next((message["text"] for message in reversed(session["messages"]) if message["who"] == "you"), "")
+    parts.append("OWNER WRITES IN: " + ("Chinese (write \"reply\" in Chinese)" if _CJK.search(last) else "English"))
     return "\n\n".join(parts)
 
 
@@ -424,7 +431,7 @@ def _apply(session: dict, data: dict) -> list[str]:
     if str(data.get("body") or "").strip():
         from gmail_auto.generator import clean_reply
 
-        session["body"] = clean_reply(str(data["body"]))
+        session["body"] = _LEAKED_REF.sub("", clean_reply(str(data["body"])))
     for ref in data.get("detach") or []:
         session["attachments"] = [item for item in session["attachments"] if item.get("ref") != str(ref)]
     for ref in data.get("attach") or []:
@@ -592,6 +599,27 @@ def _attach(session: dict, ref: str) -> None:
             raise ConfigError("that contract is gone")
         record = outgoing.contract_file(contract)
     session["attachments"].append({"ref": ref, **{k: record.get(k) for k in ("id", "name", "mime", "size")}})
+
+
+_CJK = re.compile(r"[\u4e00-\u9fff]")
+_WANTS_FILE = re.compile(r"(?i)附|attach|enclos|send (?:the|our) |deck|brochure|ppt|pdf")
+# Refs and ids that must never reach the recipient.
+_LEAKED_REF = re.compile(r"\b(?:doc|invoice|contract|file|template):[A-Za-z0-9]{6,32}\b")
+
+
+def _missing_files(session: dict) -> list[str]:
+    """Say plainly when the file the owner asked for was kept as text only, so it cannot be attached."""
+    said = next((message["text"] for message in reversed(session["messages"]) if message["who"] == "you"), "")
+    if not _WANTS_FILE.search(said):
+        return []
+    text_only = {doc["id"]: doc for doc in knowledge.text_only_uploads()}
+    if not text_only:
+        return []
+    hits = [hit["doc_id"] for hit in knowledge.search(f"{session['subject']}\n{said}", 8) if hit["doc_id"] in text_only]
+    names = list(dict.fromkeys(text_only[doc_id]["title"] for doc_id in hits))[:2]
+    if _CJK.search(said):
+        return [f"（{name} 当初只保存了文字，没有原文件，所以附不上。请用下面的“上传文件”重新上传一次，就会附上。）" for name in names]
+    return [f"({name} was saved as text only, without its file, so it cannot be attached. Upload it again with “Upload a file” below and it will be attached.)" for name in names]
 
 
 def _about(doc: dict, deep: bool = False) -> str:

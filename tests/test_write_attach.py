@@ -72,6 +72,26 @@ class WritePageAttachTests(WebCase):
         refused = self.client.post(f"/write/{session_id}/pick", data={"ref": "text:abc123"}, follow_redirects=True).get_data(as_text=True)
         self.assertIn("is not one of your files", refused)
 
+    def test_a_text_only_deck_is_named_and_kept_out_of_the_email(self):
+        knowledge.add_document("Sales_Deck_v6.1_EN.pptx", "Mail Autopilot sales deck in English: product introduction for sales.", "upload", origin="Sales_Deck_v6.1_EN.pptx", summarize=False)
+        session_id = self._session()
+        answer = {
+            "reply": "Please provide the English deck file ref.",
+            "subject": "Mail Autopilot product introduction",
+            "body": "Hi team,\n\nEnglish version: please provide doc:abc123def to attach.\n\nRobin",
+        }
+        ready, model = _chat(answer)
+        with ready, model:
+            self.client.post(f"/write/{session_id}/say", data={"text": "给销售人员发 Mail Autopilot 英文版产品介绍，附上附件"})
+        with patch("gmail_auto.llm.model_ready", return_value=True), patch("gmail_auto.llm.complete", return_value=json.dumps(answer)) as model:
+            writer.say(session_id, "附上英文版", load_profile())
+        session = writer.get(session_id)
+        self.assertNotIn("doc:abc123def", session["body"])
+        self.assertIn("Sales_Deck_v6.1_EN.pptx 当初只保存了文字", session["messages"][-1]["text"])
+        prompt = model.call_args[0][1]
+        self.assertIn("OWNER WRITES IN: Chinese", prompt)
+        self.assertIn("- Sales_Deck_v6.1_EN.pptx", prompt)
+
     def test_documents_are_offered_by_what_they_are_about(self):
         self.client.post(
             "/knowledge/upload",
