@@ -102,6 +102,11 @@ def handle(incoming: whatsapp.Incoming, clients: list | None = None) -> str:
     pending = get_state("wa_pending_action")
     if isinstance(pending, dict) and pending.get("kind"):
         stance = _confirm_stance(text)
+        if stance == "yes" and _draft_waiting(pending):
+            # "Yes" to a quote or invoice the assistant asked about: issue and attach it, do not send yet.
+            changed = _continue_writing(pending, text)
+            if changed is not None:
+                return changed
         if stance == "yes":
             return _execute_pending(pending, clients)
         if stance == "no":
@@ -562,6 +567,44 @@ def _compose_preview(parsed: dict, text: str = "", clients: list | None = None) 
         lines += ["", "Not attached:"] + [f"- {note}" for note in missing]
     lines += ["", "Reply YES to send, NO to cancel, or tell me what to change. It is also on the Approvals page."]
     return "\n".join(lines)
+
+
+def _draft_waiting(pending: dict) -> bool:
+    """A quote or invoice started in the email being written that is ready but not yet issued."""
+    if pending.get("kind") != "send_new" or not pending.get("session_id"):
+        return False
+    from gmail_auto import writer
+
+    session = writer.get(pending["session_id"])
+    if not session:
+        return False
+    try:
+        return any(made["kind"] != "contract" and not made["attached"] and not made["missing"] for made in writer.drafts(session))
+    except ConfigError:
+        return False
+
+
+def attach_sent_file(incoming: whatsapp.Incoming) -> str:
+    """A file the owner sent on WhatsApp goes with the email being written."""
+    from gmail_auto import files, writer
+
+    pending = get_state("wa_pending_action")
+    if not (isinstance(pending, dict) and pending.get("kind") == "send_new" and pending.get("session_id")):
+        return "To send a file with an email, first tell me who to write to (\"write to Lee about Wednesday\"), then send the file."
+    if not files.ready():
+        return "Files cannot be kept yet: set up R2 file storage first."
+    data, name, mime = whatsapp.fetch_file(incoming)
+    record = files.save(data, name, mime, origin="reply")
+    try:
+        session = writer.attach_file(pending["session_id"], record)
+    except ConfigError:
+        files.remove(record["id"])
+        raise
+    if incoming.text:
+        changed = _continue_writing(pending, incoming.text)
+        if changed is not None:
+            return f"📎 Attached {record['name']}.\n\n{changed}"
+    return f"📎 Attached {record['name']}.\n\n{writer.preview(session)}\n\nReply YES to send, NO to cancel, or tell me what else to change."
 
 
 def _continue_writing(pending: dict, text: str) -> str | None:

@@ -641,8 +641,26 @@ def configure_app(app: Flask) -> None:
         if session is None:
             flash("That draft is no longer here. Start a new email.", "error")
             return redirect(url_for("write_start"))
+        from gmail_auto import contracts, invoices
         from gmail_auto.writer import LANGUAGES
 
+        attached = {item.get("ref") for item in session.get("attachments") or []}
+        choices = []
+        for doc in knowledge.attachable_documents():
+            choices.append({"ref": f"doc:{doc['id']}", "group": "Documents", "label": f"{doc['title']} · {knowledge.ROLES[knowledge.role_of(doc)]}"})
+        for item in invoices.list_invoices():
+            if item.get("status") == "issued":
+                sums = invoices.totals(item)
+                word = "Quote" if invoices.kind_of(item) == "quote" else "Invoice"
+                choices.append(
+                    {
+                        "ref": f"invoice:{item['id']}", "group": "Quotes and invoices",
+                        "label": f"{word} {item.get('number')} · {item.get('client_name') or ''} · {invoices.money(sums['total'], sums['currency'])}",
+                    }
+                )
+        for item in contracts.list_drafts():
+            if not contracts.empty_fields(item):
+                choices.append({"ref": f"contract:{item['id']}", "group": "Contracts", "label": contracts.file_name(item)})
         return _render(
             "write.html",
             languages=LANGUAGES,
@@ -650,6 +668,8 @@ def configure_app(app: Flask) -> None:
             people=_people_for_compose(),
             has_model=model_ready(),
             files_ready=files.ready(),
+            choices=[item for item in choices if item["ref"] not in attached],
+            drafts=writer.drafts(session),
         )
 
     @app.post("/write/<session_id>/<action>")
@@ -676,6 +696,26 @@ def configure_app(app: Flask) -> None:
                 )
                 if session.get("language") != before and session["body"].strip():
                     writer.relanguage(session_id, load_profile())
+            elif action == "upload":
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                if not files.ready():
+                    raise ConfigError("Set up R2 file storage to attach files.")
+                for upload in request.files.getlist("files"):
+                    if not upload or not upload.filename:
+                        continue
+                    record = files.save(upload.read(), upload.filename, upload.mimetype, origin="reply")
+                    try:
+                        writer.attach_file(session_id, record)
+                    except ConfigError:
+                        files.remove(record["id"])
+                        raise
+            elif action == "pick":
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                if request.form.get("ref"):
+                    writer.attach_ref(session_id, request.form["ref"])
+            elif action == "issue":
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                writer.issue_draft(session_id, request.form.get("invoice", ""))
             elif action == "queue":
                 writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
                 item = writer.queue(session_id)
@@ -1572,6 +1612,13 @@ def configure_app(app: Flask) -> None:
                 continue
             try:
                 if assistant.seen_before(incoming.message_id):
+                    continue
+                if whatsapp.has_file(incoming):
+                    try:
+                        whatsapp.send_text(assistant.attach_sent_file(incoming))
+                    except ConfigError as exc:
+                        whatsapp.send_text(f"Sorry, I couldn't attach that file. {exc}")
+                    set_state("wa_webhook_last", {"status": "ok", "detail": "file", "at": now_text()})
                     continue
                 if whatsapp.has_voice(incoming):
                     try:

@@ -8,6 +8,7 @@ import base64
 import hashlib
 import hmac
 import os
+import time
 from dataclasses import dataclass
 
 from gmail_auto.errors import ConfigError, NotConnected
@@ -29,6 +30,10 @@ class Incoming:
     audio_url: str = ""
     audio_type: str = ""
     heard: str = ""
+    file_id: str = ""
+    file_url: str = ""
+    file_type: str = ""
+    file_name: str = ""
 
 
 def provider() -> str:
@@ -154,7 +159,13 @@ def parse_meta(payload: dict) -> list[Incoming]:
                 text = ""
                 button = ""
                 audio = {}
-                if kind == "audio":
+                media = {}
+                if kind in ("document", "image"):
+                    media = message.get(kind) or {}
+                    if not media.get("id"):
+                        continue
+                    text = media.get("caption") or ""
+                elif kind == "audio":
                     audio = message.get("audio") or {}
                     if not audio.get("id"):
                         continue
@@ -179,6 +190,9 @@ def parse_meta(payload: dict) -> list[Incoming]:
                         message_id=str(message.get("id") or ""),
                         audio_id=str(audio.get("id") or ""),
                         audio_type=str(audio.get("mime_type") or ""),
+                        file_id=str(media.get("id") or ""),
+                        file_type=str(media.get("mime_type") or ""),
+                        file_name=str(media.get("filename") or ""),
                     )
                 )
     return found
@@ -189,17 +203,23 @@ def parse_twilio(form) -> list[Incoming]:
     body = str(form.get("Body") or "").strip()
     audio_url = ""
     audio_type = ""
+    file_url = ""
+    file_type = ""
     try:
         media_count = int(form.get("NumMedia") or 0)
     except (TypeError, ValueError):
         media_count = 0
     for index in range(media_count):
         kind = str(form.get(f"MediaContentType{index}") or "")
-        if kind.startswith("audio/"):
+        if kind.startswith("audio/") and not audio_url:
             audio_url = str(form.get(f"MediaUrl{index}") or "")
             audio_type = kind
-            break
-    if not sender or not (body or audio_url):
+        elif kind and not kind.startswith("audio/") and not file_url:
+            file_url = str(form.get(f"MediaUrl{index}") or "")
+            file_type = kind
+    if file_url:
+        audio_url = audio_type = ""
+    if not sender or not (body or audio_url or file_url):
         return []
     return [
         Incoming(
@@ -210,8 +230,27 @@ def parse_twilio(form) -> list[Incoming]:
             message_id=str(form.get("MessageSid") or ""),
             audio_url=audio_url,
             audio_type=audio_type,
+            file_url=file_url,
+            file_type=file_type,
         )
     ]
+
+
+def has_file(incoming: Incoming) -> bool:
+    return bool(incoming.file_id or incoming.file_url)
+
+
+def fetch_file(incoming: Incoming) -> tuple[bytes, str, str]:
+    """The file the owner sent: its bytes, a file name and its type."""
+    mime = (incoming.file_type or "application/octet-stream").split(";", 1)[0].strip()
+    data = _download(incoming.file_id, incoming.file_url, "file")
+    name = incoming.file_name.strip()
+    if not name:
+        import mimetypes
+
+        ext = {"image/jpeg": ".jpg"}.get(mime) or mimetypes.guess_extension(mime) or ""
+        name = f"{'photo' if mime.startswith('image/') else 'file'}-{time.strftime('%Y%m%d-%H%M')}{ext}"
+    return data, name, mime
 
 
 def has_voice(incoming: Incoming) -> bool:
@@ -225,7 +264,7 @@ def hear(incoming: Incoming) -> Incoming:
     from gmail_auto.llm import transcribe
 
     mime = (incoming.audio_type or "audio/ogg").split(";", 1)[0].strip() or "audio/ogg"
-    audio = _download_audio(incoming)
+    audio = _download(incoming.audio_id, incoming.audio_url, "voice message")
     ext = {"audio/ogg": "ogg", "audio/mpeg": "mp3", "audio/mp4": "m4a", "audio/aac": "m4a", "audio/amr": "amr", "audio/wav": "wav"}.get(mime, "ogg")
     text = transcribe(audio, f"voice.{ext}", mime)
     incoming.text = text.strip()
@@ -233,25 +272,26 @@ def hear(incoming: Incoming) -> Incoming:
     return incoming
 
 
-def _download_audio(incoming: Incoming) -> bytes:
+def _download(media_id: str, media_url: str, what: str) -> bytes:
+    """Fetch something the owner sent: by Meta media id, or a Twilio media URL."""
     import requests
 
     try:
-        if incoming.audio_id:
+        if media_id:
             version = os.getenv("WHATSAPP_API_VERSION", "").strip() or "v25.0"
             headers = {"Authorization": f"Bearer {os.getenv('WHATSAPP_TOKEN', '').strip()}"}
-            meta = requests.get(f"https://graph.facebook.com/{version}/{incoming.audio_id}", headers=headers, timeout=20)
+            meta = requests.get(f"https://graph.facebook.com/{version}/{media_id}", headers=headers, timeout=20)
             url = _json(meta).get("url") if meta.status_code < 400 else ""
             if not url:
-                raise ConfigError("WhatsApp would not hand over the voice message.")
+                raise ConfigError(f"WhatsApp would not hand over the {what}.")
             response = requests.get(url, headers=headers, timeout=30)
         else:
             auth = (os.getenv("TWILIO_ACCOUNT_SID", "").strip(), os.getenv("TWILIO_AUTH_TOKEN", "").strip())
-            response = requests.get(incoming.audio_url, auth=auth, timeout=30)
+            response = requests.get(media_url, auth=auth, timeout=30)
     except requests.RequestException as exc:
-        raise ConfigError("Could not download the voice message.") from exc
+        raise ConfigError(f"Could not download the {what}.") from exc
     if response.status_code >= 400 or not response.content:
-        raise ConfigError("Could not download the voice message.")
+        raise ConfigError(f"Could not download the {what}.")
     return response.content
 
 

@@ -35,9 +35,6 @@
         <span class="chat-time">{{ message.at }}</span>
       </div>
       {% endfor %}
-      {% for made in session.made %}
-      <a class="chip tiny made-link" href="{{ made.url }}" target="_blank" rel="noopener">Open the draft {{ made.kind }}</a>
-      {% endfor %}
       <span id="end"></span>
     </div>
     <form method="post" action="{{ url_for('write_act', session_id=session.id, action='say') }}" class="chat-input" data-busy="Writing…">
@@ -47,7 +44,7 @@
   </section>
 
   <section class="card write-draft" aria-label="Draft">
-    <form method="post" action="{{ url_for('write_act', session_id=session.id, action='edit') }}" class="draft-form" data-busy="Saving…">
+    <form method="post" action="{{ url_for('write_act', session_id=session.id, action='edit') }}" class="draft-form" enctype="multipart/form-data" data-busy="Saving…">
       <div class="draft-top">
         <label>To <input name="to" value="{{ session.to }}" maxlength="600" list="people" placeholder="Name or email address"></label>
         <label>Email language
@@ -60,16 +57,48 @@
       <datalist id="people">{% for item in people %}<option value="{{ item.emails[0] }}">{{ item.name }}{% if item.company %} · {{ item.company }}{% endif %}</option>{% endfor %}</datalist>
       <label>Subject <input name="subject" value="{{ session.subject }}" maxlength="200"></label>
       <label class="draft-body">Email <textarea name="body" rows="14" maxlength="6000">{{ session.body }}</textarea></label>
-      {% if session.attachments %}
-      <ul class="attach-list">
-        {% for item in session.attachments %}
-        <li><span class="attach-name" translate="no">📎 {{ item.name }}</span><span class="muted">{{ ((item.size or 0) / 1000)|round|int }} KB</span>
-          <button class="quiet small danger-text" type="submit" name="detach" value="{{ item.ref }}">Remove</button></li>
+      <div class="attach-box">
+        <span class="attach-title">Attachments</span>
+        {% if session.attachments %}
+        <ul class="attach-list">
+          {% for item in session.attachments %}
+          <li><span class="attach-name" translate="no">📎 {{ item.name }}</span><span class="muted">{{ ((item.size or 0) / 1000)|round|int }} KB</span>
+            <button class="quiet small danger-text" type="submit" name="detach" value="{{ item.ref }}">Remove</button></li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% for made in drafts if not made.attached %}
+        <div class="draft-made">
+          <span class="chip tiny">Draft {{ made.kind }}</span>
+          {% if made.total %}<span translate="no">{{ made.total }}</span>{% endif %}
+          {% if made.missing %}<span class="muted">Still needed: <span translate="no">{{ made.missing|join(', ') }}</span></span>{% endif %}
+          <a class="quiet-link" href="{{ made.url }}" target="_blank" rel="noopener">Open</a>
+          {% if made.kind != 'contract' and not made.missing %}
+          <button class="small" type="submit" name="invoice" value="{{ made.id }}" formaction="{{ url_for('write_act', session_id=session.id, action='issue') }}" data-confirm="Give this {{ made.kind }} its number and attach it?" data-busy="Issuing…">Issue and attach</button>
+          {% endif %}
+        </div>
         {% endfor %}
-      </ul>
-      {% elif not files_ready %}
-      <p class="hint">Set up R2 file storage to attach files.</p>
-      {% endif %}
+        {% if files_ready %}
+        <div class="attach-add">
+          {% if choices %}
+          <select name="ref" aria-label="Attach one of your files">
+            <option value="">Choose from your files…</option>
+            {% for group in choices|groupby('group') %}
+            <optgroup label="{{ group.grouper }}">{% for item in group.list %}<option value="{{ item.ref }}" translate="no">{{ item.label }}</option>{% endfor %}</optgroup>
+            {% endfor %}
+          </select>
+          <button class="quiet small" type="submit" formaction="{{ url_for('write_act', session_id=session.id, action='pick') }}">Attach</button>
+          {% endif %}
+          <label class="button quiet small upload-button">Upload a file
+            <input type="file" name="files" multiple hidden onchange="this.form.requestSubmit(this.form.querySelector('[data-upload]'))">
+          </label>
+          <button hidden type="submit" formaction="{{ url_for('write_act', session_id=session.id, action='upload') }}" data-upload data-busy="Uploading…">Upload</button>
+        </div>
+        <p class="hint">Or tell the assistant: "attach our company introduction", "make a quote for 3 months", "add the service contract".</p>
+        {% else %}
+        <p class="hint">Set up R2 file storage to attach files.</p>
+        {% endif %}
+      </div>
       <div class="button-row draft-actions">
         <button hidden type="submit" formaction="{{ url_for('write_act', session_id=session.id, action='language') }}" data-language data-busy="Rewriting in the new language…">Change language</button>
         <button class="quiet" type="submit">Save changes</button>

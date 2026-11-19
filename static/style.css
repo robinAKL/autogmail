@@ -417,6 +417,12 @@ a.story-who:hover { text-decoration: underline; }
 .chat-input textarea { flex: 1; min-width: 0; resize: none; min-height: 44px; }
 .chat-input button { align-self: stretch; }
 .made-link { align-self: flex-start; }
+.attach-box { display: grid; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
+.attach-title { font-size: 13px; font-weight: 600; color: var(--muted); }
+.attach-add { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.attach-add select { width: auto; flex: 1 1 220px; min-height: 32px; padding: 4px 8px; font-size: 13.5px; }
+.upload-button { cursor: pointer; margin: 0; }
+.draft-made { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 14px; background: #fffaf0; border: 1px dashed var(--line-strong); border-radius: 8px; padding: 6px 10px; }
 .draft-form { display: flex; flex-direction: column; gap: 12px; flex: 1 1 auto; }
 .draft-top { display: grid; grid-template-columns: minmax(0, 1fr) 200px; gap: 12px; align-items: end; }
 .draft-top input, .draft-top select { height: 42px; box-sizing: border-box; }

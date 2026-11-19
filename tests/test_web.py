@@ -771,7 +771,7 @@ class WhatsAppWebhookTests(WebCase):
 
     def test_voice_note_is_transcribed_and_handled_like_text(self):
         voice = {"from": "64211234567", "id": "wamid.voice1", "type": "audio", "audio": {"id": "media-1", "mime_type": "audio/ogg; codecs=opus"}}
-        with patch("gmail_auto.whatsapp._download_audio", return_value=b"OggS-fake") as download, patch(
+        with patch("gmail_auto.whatsapp._download", return_value=b"OggS-fake") as download, patch(
             "gmail_auto.llm.transcribe", return_value="help"
         ) as heard:
             self.assertEqual(self.deliver_payload(voice).status_code, 200)
@@ -781,7 +781,7 @@ class WhatsAppWebhookTests(WebCase):
         self.assertIn('I heard: "help"', body)
 
         self.out.clear()
-        with patch("gmail_auto.whatsapp._download_audio", side_effect=ConfigError("Could not download the voice message.")):
+        with patch("gmail_auto.whatsapp._download", side_effect=ConfigError("Could not download the voice message.")):
             self.deliver_payload({**voice, "id": "wamid.voice2"})
         self.assertIn("couldn't make out that voice message", self.out[-1]["text"]["body"])
 
