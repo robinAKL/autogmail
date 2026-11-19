@@ -54,7 +54,7 @@
   <h2 class="card-title">Add files</h2>
   <form method="post" action="{{ url_for('knowledge_upload') }}" enctype="multipart/form-data" class="stack" data-busy="Uploading…">
     <input type="hidden" name="next" value="{{ url_for('documents_page', tab='files') }}">
-    <label>Files <input type="file" name="files" multiple required><span class="hint">{{ file_types }}. Up to 3 MB each to be attachable.</span></label>
+    <label>Files <input type="file" name="files" multiple required><span class="hint">{{ file_types }}. Up to 18 MB each to be attachable.</span></label>
     <label>What are they?
       <select name="role">
         <option value="">Work it out for me</option>

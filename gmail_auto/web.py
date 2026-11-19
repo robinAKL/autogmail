@@ -1,4 +1,5 @@
 import html
+import json
 import os
 import re
 import secrets
@@ -109,6 +110,8 @@ def configure_app(app: Flask) -> None:
             "nav_mode_label": _MODES[mode][0],
             "user": session.get("user", ""),
             "hosted": bool(os.environ.get("VERCEL")),
+            "direct_upload": bool(os.environ.get("VERCEL")) and files.direct_ready(),
+            "file_max": files.MAX_FILE_BYTES,
             "ui_lang": _ui_language(),
         }
 
@@ -453,6 +456,22 @@ def configure_app(app: Flask) -> None:
             human_size=files.human_size,
         )
 
+    @app.post("/files/direct")
+    def file_direct():
+        """Where the browser puts a file too big to send through the hosted site."""
+        blocked = _login_required()
+        if blocked:
+            return {"ok": False, "error": "Sign in again."}, 401
+        payload = request.get_json(silent=True) or {}
+        try:
+            ticket = files.start_direct(str(payload.get("name") or ""), str(payload.get("type") or ""), payload.get("size"))
+        except ConfigError as exc:
+            return {"ok": False, "error": str(exc)}, 400
+        origin = _public_origin()
+        if get_state("r2_cors_origin") != origin and files.allow_browser_uploads(origin):
+            set_state("r2_cors_origin", origin)
+        return {"ok": True, **ticket}
+
     @app.get("/documents/file/<doc_id>")
     def document_file(doc_id):
         blocked = _login_required()
@@ -462,6 +481,8 @@ def configure_app(app: Flask) -> None:
         record = files.get(((doc or {}).get("meta") or {}).get("file_id") or "") if doc else None
         if record is None:
             abort(404)
+        if int(record.get("size") or 0) > files.DIRECT_FROM and files.r2_ready():
+            return redirect(files.download_url(record))
         response = Response(files.read(record["id"]), mimetype=record.get("mime") or "application/octet-stream")
         safe = re.sub(r'[^A-Za-z0-9._ -]', "_", record.get("name") or "file")
         response.headers["Content-Disposition"] = f'attachment; filename="{safe}"'
@@ -648,6 +669,8 @@ def configure_app(app: Flask) -> None:
         choices = []
         for doc in knowledge.attachable_documents():
             choices.append({"ref": f"doc:{doc['id']}", "group": "Documents", "label": f"{doc['title']} · {knowledge.ROLES[knowledge.role_of(doc)]}"})
+        for doc in knowledge.text_only_uploads():
+            choices.append({"ref": f"text:{doc['id']}", "group": "Text only: upload the file again to attach it", "label": doc["title"], "disabled": True})
         for item in invoices.list_invoices():
             if item.get("status") == "issued":
                 sums = invoices.totals(item)
@@ -700,10 +723,7 @@ def configure_app(app: Flask) -> None:
                 writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
                 if not files.ready():
                     raise ConfigError("Set up R2 file storage to attach files.")
-                for upload in request.files.getlist("files"):
-                    if not upload or not upload.filename:
-                        continue
-                    record = files.save(upload.read(), upload.filename, upload.mimetype, origin="reply")
+                for record in _uploads("reply"):
                     try:
                         writer.attach_file(session_id, record)
                     except ConfigError:
@@ -782,11 +802,9 @@ def configure_app(app: Flask) -> None:
             contract = contracts.get(request.form.get("contract", ""))
             if contract is not None:
                 records.append(outgoing.contract_file(contract))
-            for upload in request.files.getlist("files"):
-                if upload and upload.filename:
-                    record = files.save(upload.read(), upload.filename, upload.mimetype, origin="reply")
-                    uploaded.append(record)
-                    records.append(record)
+            for record in _uploads("reply"):
+                uploaded.append(record)
+                records.append(record)
             item = outgoing.start(to, request.form.get("points", ""), request.form.get("subject", ""), load_profile(), records, cc=request.form.get("cc", ""))
         except (ConfigError, ReplyError) as exc:
             for record in uploaded:
@@ -1115,7 +1133,7 @@ def configure_app(app: Flask) -> None:
             editing=request.args.get("edit") == "brief",
             edit_item=request.args.get("item", ""),
             file_types=", ".join(sorted(item.lstrip(".") for item in SUPPORTED)),
-            upload_limit="4 MB" if os.environ.get("VERCEL") else "30 MB",
+            upload_limit=("18 MB" if files.direct_ready() else "4 MB") if os.environ.get("VERCEL") else "30 MB",
             upload_max_bytes=3_800_000 if os.environ.get("VERCEL") else 28_000_000,
             roles=knowledge.ROLES,
             role_of=knowledge.role_of,
@@ -1152,10 +1170,15 @@ def configure_app(app: Flask) -> None:
                     text,
                     "upload",
                     origin=name,
-                    meta={"file_id": kept["id"], "size": kept["size"]} if kept else None,
+                    meta={"file_id": kept["id"], "size": kept["size"]} if kept else {"size": len(raw)},
                     summarize=False,
                 )
                 added += 1
+                if not kept:
+                    if len(raw) > files.MAX_FILE_BYTES:
+                        flash(f"{name} is {files.human_size(len(raw))}, over the {files.human_size(files.MAX_FILE_BYTES)} an email attachment can be, so only its text was kept: the assistant can read it but not attach it. Upload a smaller copy to attach it.")
+                    else:
+                        flash(f"File storage is not set up, so only the text of {name} was kept: it can be read but not attached.")
                 chosen = request.form.get("role", "")
                 note = _apply_role(entry, chosen if chosen in knowledge.ROLES else knowledge.classify(name, text), text)
                 if note:
@@ -1165,9 +1188,27 @@ def configure_app(app: Flask) -> None:
                     files.remove(kept["id"])
                 problems.append(str(exc))
                 flash(str(exc), "error")
+        for stored in request.form.getlist("stored"):
+            record = None
+            try:
+                record = _finish_stored(stored, "knowledge")
+                text = extract_text(record["name"], files.read(record["id"]))
+                entry = knowledge.add_document(
+                    record["name"], text, "upload", origin=record["name"], meta={"file_id": record["id"], "size": record["size"]}, summarize=False
+                )
+                added += 1
+                chosen = request.form.get("role", "")
+                note = _apply_role(entry, chosen if chosen in knowledge.ROLES else knowledge.classify(record["name"], text), text)
+                if note:
+                    flash(note)
+            except ConfigError as exc:
+                if record:
+                    files.remove(record["id"])
+                problems.append(str(exc))
+                flash(str(exc), "error")
         if added:
             flash(f"Added {added} file{'s' if added != 1 else ''} to the knowledge base.")
-        elif not request.files.getlist("files"):
+        elif not request.files.getlist("files") and not request.form.getlist("stored"):
             problems.append("Choose at least one file.")
             flash("Choose at least one file.", "error")
         if "application/json" in (request.headers.get("Accept") or ""):
@@ -1799,7 +1840,7 @@ def configure_app(app: Flask) -> None:
 
     @app.errorhandler(413)
     def too_large(_exc):
-        flash("That file is too large for this hosted site. Keep each file under 4 MB, or split it and upload the parts.", "error")
+        flash("That file is too large for this hosted site. Keep each file under 18 MB, or split it and upload the parts.", "error")
         return redirect(url_for("knowledge_page") + "#sources")
 
 
@@ -2037,10 +2078,7 @@ def _attach_to(item_id: str) -> list[str]:
             raise ConfigError("That knowledge file is no longer kept. Upload it again.")
         approvals.attach(item_id, record)
         names.append(record["name"])
-    for upload in request.files.getlist("files"):
-        if not upload or not upload.filename:
-            continue
-        record = files.save(upload.read(), upload.filename, upload.mimetype, origin="reply")
+    for record in _uploads("reply"):
         try:
             approvals.attach(item_id, record)
         except ConfigError:
@@ -2048,6 +2086,33 @@ def _attach_to(item_id: str) -> list[str]:
             raise
         names.append(record["name"])
     return names
+
+
+def _finish_stored(value: str, origin: str) -> dict:
+    """A file the browser already put in R2 (see /files/direct), named in a hidden "stored" field."""
+    try:
+        data = json.loads(value)
+    except ValueError as exc:
+        raise ConfigError("That upload was not understood. Try again.") from exc
+    if not isinstance(data, dict):
+        raise ConfigError("That upload was not understood. Try again.")
+    return files.finish_direct(str(data.get("id") or ""), str(data.get("name") or ""), str(data.get("mime") or ""), origin=origin)
+
+
+def _uploads(origin: str) -> list[dict]:
+    """Every file sent with this form: through the site, or straight into R2 beforehand."""
+    kept = []
+    try:
+        for upload in request.files.getlist("files"):
+            if upload and upload.filename:
+                kept.append(files.save(upload.read(), upload.filename, upload.mimetype, origin=origin))
+        for stored in request.form.getlist("stored"):
+            kept.append(_finish_stored(stored, origin))
+    except ConfigError:
+        for record in kept:
+            files.remove(record["id"])
+        raise
+    return kept
 
 
 def _keep_original(raw: bytes, name: str, mime: str) -> dict | None:

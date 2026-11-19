@@ -84,7 +84,7 @@
           <select name="ref" aria-label="Attach one of your files">
             <option value="">Choose from your files…</option>
             {% for group in choices|groupby('group') %}
-            <optgroup label="{{ group.grouper }}">{% for item in group.list %}<option value="{{ item.ref }}" translate="no">{{ item.label }}</option>{% endfor %}</optgroup>
+            <optgroup label="{{ group.grouper }}">{% for item in group.list %}<option value="{{ item.ref }}" translate="no" {% if item.disabled %}disabled{% endif %}>{{ item.label }}</option>{% endfor %}</optgroup>
             {% endfor %}
           </select>
           <button class="quiet small" type="submit" formaction="{{ url_for('write_act', session_id=session.id, action='pick') }}">Attach</button>

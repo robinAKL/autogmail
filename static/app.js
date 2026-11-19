@@ -1,41 +1,99 @@
 (function () {
-  // Files too big are stopped here, before the upload: the hosted site turns away anything over about 4.5 MB
-  // with a bare error page, and email attachments can be at most 3 MB each.
+  // Uploads. The hosted site turns away any request over about 4.5 MB, so bigger files go from the browser
+  // straight into R2 file storage first (data-direct), and the form then names them in hidden "stored" fields.
+  // Without that, files too big are stopped here with a clear message instead of a bare error page.
   var total = parseInt(document.body.getAttribute("data-upload-total") || "0", 10);
-  var attachMax = parseInt(document.body.getAttribute("data-attach-max") || "0", 10);
+  var fileMax = parseInt(document.body.getAttribute("data-attach-max") || "0", 10);
+  var direct = document.body.getAttribute("data-direct") === "1";
   var zh = (document.documentElement.getAttribute("lang") || "").indexOf("zh") === 0;
   var mb = function (bytes) { return (bytes / 1000000).toFixed(1) + " MB"; };
-  var tooBig = function (form) {
+  var chosen = function (form) {
+    var list = [];
+    form.querySelectorAll("input[type=file]").forEach(function (input) {
+      Array.prototype.forEach.call(input.files || [], function (file) { list.push(file); });
+    });
+    return list;
+  };
+  var problemWith = function (list, alone) {
     var sum = 0;
-    var inputs = form.querySelectorAll("input[type=file]");
-    for (var i = 0; i < inputs.length; i++) {
-      var files = inputs[i].files || [];
-      for (var j = 0; j < files.length; j++) {
-        if (attachMax && inputs[i].hasAttribute("data-attach") && files[j].size > attachMax) {
-          return zh
-            ? files[j].name + " 有 " + mb(files[j].size) + "，邮件附件每个最多 " + mb(attachMax) + "。请压缩或拆分后再上传。"
-            : files[j].name + " is " + mb(files[j].size) + ". Email attachments can be up to " + mb(attachMax) + " each. Compress or split it, then try again.";
-        }
-        sum += files[j].size;
+    for (var i = 0; i < list.length; i++) {
+      if (fileMax && list[i].size > fileMax) {
+        return zh
+          ? list[i].name + " 有 " + mb(list[i].size) + "，每个文件最多 " + mb(fileMax) + "。请压缩或拆分后再上传。"
+          : list[i].name + " is " + mb(list[i].size) + ". Files can be up to " + mb(fileMax) + " each. Compress or split it, then try again.";
       }
+      sum += list[i].size;
     }
-    if (total && sum > total) {
+    if (!direct && total && (alone ? Math.max.apply(null, list.map(function (f) { return f.size; }).concat([0])) : sum) > total) {
       return zh
         ? "这次上传共 " + mb(sum) + "，超过了网站一次能收的 " + mb(total) + "。请一次少传几个，或压缩后再传。"
         : "These files add up to " + mb(sum) + ", more than the site can take at once (" + mb(total) + "). Upload fewer at a time, or compress them.";
     }
     return "";
   };
+  // Put one file straight into R2. Resolves to what the form names in a hidden "stored" field.
+  var putDirect = window.putDirect = function (file) {
+    return fetch("/files/direct", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ name: file.name, size: file.size, type: file.type }),
+    }).then(function (response) {
+      return response.json().then(function (ticket) {
+        if (!response.ok || !ticket.ok) { throw new Error(ticket.error || file.name); }
+        return fetch(ticket.url, { method: "PUT", body: file, headers: { "Content-Type": ticket.mime } }).then(function (put) {
+          if (!put.ok) { throw new Error(file.name + " (" + put.status + ")"); }
+          return JSON.stringify({ id: ticket.id, name: ticket.name, mime: ticket.mime });
+        }, function () {
+          throw new Error(zh
+            ? "浏览器没能把 " + file.name + " 传到 R2。请在 Cloudflare R2 → 你的存储桶 → Settings → CORS policy 里允许 " + location.origin + " 使用 PUT。"
+            : "The browser could not upload " + file.name + " to R2. In Cloudflare R2, open the bucket's Settings → CORS policy and allow PUT from " + location.origin + ".");
+        });
+      });
+    });
+  };
+  var directLimit = function () { return direct && total; };
   document.addEventListener("submit", function (event) {
     var form = event.target;
-    // The Knowledge form sends its files one by one and checks each itself.
+    // The Knowledge form sends its files one by one itself (below).
     if (!form || form.getAttribute("enctype") !== "multipart/form-data" || form.hasAttribute("data-upload-max")) { return; }
-    var problem = tooBig(form);
-    if (!problem) { return; }
+    var list = chosen(form);
+    if (!list.length) { return; }
+    var problem = problemWith(list, false);
+    var sum = list.reduce(function (acc, file) { return acc + file.size; }, 0);
+    if (!problem && !(directLimit() && sum > total)) { return; }
     event.preventDefault();
     event.stopImmediatePropagation();
-    form.querySelectorAll("input[type=file]").forEach(function (input) { input.value = ""; });
-    window.alert(problem);
+    if (problem) {
+      form.querySelectorAll("input[type=file]").forEach(function (input) { input.value = ""; });
+      window.alert(problem);
+      return;
+    }
+    var submitter = event.submitter;
+    if (submitter) {
+      submitter.classList.add("busy");
+      submitter.textContent = zh ? "正在上传…" : "Uploading…";
+    }
+    var inputs = Array.prototype.slice.call(form.querySelectorAll("input[type=file]"));
+    var step = function (index) {
+      if (index >= list.length) {
+        inputs.forEach(function (input) { input.value = ""; });
+        form.requestSubmit(submitter || undefined);
+        return;
+      }
+      if (submitter) { submitter.textContent = (zh ? "正在上传 " : "Uploading ") + (index + 1) + " / " + list.length + "…"; }
+      putDirect(list[index]).then(function (stored) {
+        var hidden = document.createElement("input");
+        hidden.type = "hidden";
+        hidden.name = "stored";
+        hidden.value = stored;
+        form.appendChild(hidden);
+        step(index + 1);
+      }).catch(function (error) {
+        window.alert(error.message);
+        window.location.reload();
+      });
+    };
+    step(0);
   }, true);
 
   // Confirm before anything that sends or removes, and show that work is under way.
@@ -132,10 +190,12 @@
     if (form && max) {
       form.addEventListener("submit", function (event) {
         var files = input.files ? Array.prototype.slice.call(input.files) : [];
-        var oversized = files.filter(function (file) { return file.size > max; });
+        var oversized = files.filter(function (file) { return file.size > (direct ? fileMax : max); });
         if (oversized.length) {
           event.preventDefault();
-          window.alert(oversized[0].name + " is larger than " + limitLabel + ". Split the file or upload a smaller one. Vercel cannot accept a request over 4.5 MB.");
+          window.alert(direct
+            ? oversized[0].name + " is larger than " + mb(fileMax) + ". Split the file or upload a smaller one."
+            : oversized[0].name + " is larger than " + limitLabel + ". Split the file or upload a smaller one. Vercel cannot accept a request over 4.5 MB.");
           return;
         }
         if (!files.length) { return; }
@@ -152,15 +212,22 @@
             button.textContent = "Saving " + (index + 1) + " of " + files.length + "…";
           }
           var body = new FormData();
-          body.append("files", files[index], files[index].name);
+          var role = form.querySelector("[name=role]");
+          if (role) { body.append("role", role.value); }
           var controller = window.AbortController ? new AbortController() : null;
-          var timer = controller ? window.setTimeout(function () { controller.abort(); }, 25000) : null;
-          fetch(form.action, {
-            method: "POST",
-            body: body,
-            headers: { Accept: "application/json" },
-            redirect: "manual",
-            signal: controller ? controller.signal : undefined,
+          var timer = null;
+          var ready = direct && files[index].size > max
+            ? putDirect(files[index]).then(function (stored) { body.append("stored", stored); })
+            : Promise.resolve(body.append("files", files[index], files[index].name));
+          ready.then(function () {
+            timer = controller ? window.setTimeout(function () { controller.abort(); }, 55000) : null;
+            return fetch(form.action, {
+              method: "POST",
+              body: body,
+              headers: { Accept: "application/json" },
+              redirect: "manual",
+              signal: controller ? controller.signal : undefined,
+            });
           }).then(function (response) {
             if (timer) { window.clearTimeout(timer); }
             return response.json().then(function (payload) {
@@ -172,7 +239,7 @@
           }).catch(function (error) {
             if (timer) { window.clearTimeout(timer); }
             var name = files[index].name;
-            window.alert("Could not add " + name + (error && error.name === "AbortError" ? " (it took too long to read)." : ". Keep each file under " + limitLabel + "."));
+            window.alert(error && error.name === "AbortError" ? "Could not add " + name + " (it took too long to read)." : (error && error.message && error.message !== name ? error.message : "Could not add " + name + "."));
             if (button) {
               button.classList.remove("busy");
               button.textContent = "Add to knowledge";

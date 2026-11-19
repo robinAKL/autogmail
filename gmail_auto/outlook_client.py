@@ -94,18 +94,7 @@ class OutlookClient:
             f"/me/messages/{draft_id}",
             body={"body": {"contentType": "HTML", "content": mine + quoted}},
         )
-        for filename, mime, data in attachments or []:
-            microsoft.graph(
-                "outlook",
-                "POST",
-                f"/me/messages/{draft_id}/attachments",
-                body={
-                    "@odata.type": "#microsoft.graph.fileAttachment",
-                    "name": filename,
-                    "contentType": mime or "application/octet-stream",
-                    "contentBytes": base64.b64encode(data).decode("ascii"),
-                },
-            )
+        _add_attachments(draft_id, attachments)
         microsoft.graph("outlook", "POST", f"/me/messages/{draft_id}/send")
         return draft_id
 
@@ -121,6 +110,15 @@ class OutlookClient:
         }
         if cc:
             message["ccRecipients"] = [{"emailAddress": {"address": address.strip()}} for address in cc.split(",") if address.strip()]
+        if any(len(data) > _INLINE_BYTES for _, _, data in attachments or []) or sum(len(data) for _, _, data in attachments or []) > _INLINE_BYTES:
+            # Too big to send in one call: make a draft, add the files (big ones through an upload session), send it.
+            draft = microsoft.graph("outlook", "POST", "/me/messages", body=message)
+            draft_id = draft.get("id")
+            if not draft_id:
+                raise ConfigError("Outlook did not create the email.")
+            _add_attachments(draft_id, attachments)
+            microsoft.graph("outlook", "POST", f"/me/messages/{draft_id}/send")
+            return
         if attachments:
             message["attachments"] = [
                 {
@@ -289,3 +287,57 @@ def _timestamp(value: str) -> float:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
     return moment.timestamp()
+
+
+# Graph takes a file inside one request up to 3 MB; bigger ones go through an upload session in pieces.
+_INLINE_BYTES = 3_000_000
+_CHUNK = 320 * 1024 * 12  # pieces must be multiples of 320 KiB
+
+
+def _add_attachments(message_id: str, attachments: list | None) -> None:
+    for filename, mime, data in attachments or []:
+        if len(data) <= _INLINE_BYTES:
+            microsoft.graph(
+                "outlook",
+                "POST",
+                f"/me/messages/{message_id}/attachments",
+                body={
+                    "@odata.type": "#microsoft.graph.fileAttachment",
+                    "name": filename,
+                    "contentType": mime or "application/octet-stream",
+                    "contentBytes": base64.b64encode(data).decode("ascii"),
+                },
+            )
+        else:
+            _upload_large(message_id, filename, mime, data)
+
+
+def _upload_large(message_id: str, filename: str, mime: str, data: bytes) -> None:
+    import requests
+
+    session = microsoft.graph(
+        "outlook",
+        "POST",
+        f"/me/messages/{message_id}/attachments/createUploadSession",
+        body={"AttachmentItem": {"attachmentType": "file", "name": filename, "size": len(data), "contentType": mime or "application/octet-stream"}},
+    )
+    url = session.get("uploadUrl")
+    if not url:
+        raise ConfigError(f"Outlook would not take {filename}.")
+    start = 0
+    while start < len(data):
+        piece = data[start : start + _CHUNK]
+        end = start + len(piece) - 1
+        try:
+            # The upload address carries its own permission; sending the sign-in token to it is refused.
+            response = requests.put(
+                url,
+                data=piece,
+                headers={"Content-Length": str(len(piece)), "Content-Range": f"bytes {start}-{end}/{len(data)}"},
+                timeout=60,
+            )
+        except requests.RequestException as exc:
+            raise ConfigError(f"Could not upload {filename} to Outlook.") from exc
+        if response.status_code >= 400:
+            raise ConfigError(f"Outlook refused {filename} ({response.status_code}).")
+        start = end + 1

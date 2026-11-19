@@ -51,6 +51,27 @@ class WritePageAttachTests(WebCase):
         self.client.post(f"/write/{session_id}/edit", data={"to": "lee@client.example", "subject": "Hello", "body": "Hi Lee", "detach": upload_ref})
         self.assertEqual([item["name"] for item in writer.get(session_id)["attachments"]], ["company-intro.txt"])
 
+    def test_text_only_uploads_are_shown_but_not_attachable(self):
+        knowledge.add_document("Certificate of Incorporation.pdf", "Certificate of incorporation for Kiwi Sample Ltd.", "upload", origin="Certificate of Incorporation.pdf", summarize=False)
+        with patch("gmail_auto.files.MAX_FILE_BYTES", 1_000_000):
+            big = self.client.post(
+                "/knowledge/upload",
+                data={"files": (io.BytesIO(b"Sales deck. " * 100_000), "deck.txt")},
+                content_type="multipart/form-data",
+                follow_redirects=True,
+            ).get_data(as_text=True)
+        self.assertIn("so only its text was kept", big)
+        self.assertEqual(knowledge.attachable_documents(), [])
+        session_id = self._session()
+        _, page = self.page(f"/write/{session_id}")
+        self.assertIn("Text only: upload the file again to attach it", page)
+        self.assertRegex(page, r'value="text:[0-9a-f]+" translate="no" disabled>Certificate of Incorporation.pdf')
+        prompt = writer._prompt(writer.get(session_id), load_profile())
+        self.assertIn("TEXT ONLY", prompt)
+        self.assertIn("- deck.txt", prompt)
+        refused = self.client.post(f"/write/{session_id}/pick", data={"ref": "text:abc123"}, follow_redirects=True).get_data(as_text=True)
+        self.assertIn("is not one of your files", refused)
+
     def test_documents_are_offered_by_what_they_are_about(self):
         self.client.post(
             "/knowledge/upload",

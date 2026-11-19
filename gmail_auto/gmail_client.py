@@ -103,9 +103,25 @@ class GmailClient:
 
     def send_reply(self, mail: Mail, body: str, user_email: str, attachments: list | None = None) -> str:
         """attachments: (filename, mime, bytes) tuples."""
+        message = build_reply_message(mail, body, user_email, attachments)
+        if len(message.as_bytes()) > _SIMPLE_SEND_BYTES:
+            return self._send_large(message, mail.thread_id)
         payload = build_send_body(mail, body, user_email, attachments)
         try:
             sent = self.service.users().messages().send(userId="me", body=payload).execute()
+        except Exception as exc:
+            raise _translate(exc) from exc
+        return sent.get("id", "")
+
+    def _send_large(self, message, thread_id: str = "") -> str:
+        """Messages over a few MB go up as a file (Gmail takes up to 35 MB that way), not inside the JSON."""
+        import io
+
+        from googleapiclient.http import MediaIoBaseUpload
+
+        media = MediaIoBaseUpload(io.BytesIO(message.as_bytes()), mimetype="message/rfc822", resumable=True)
+        try:
+            sent = self.service.users().messages().send(userId="me", body={"threadId": thread_id} if thread_id else {}, media_body=media).execute()
         except Exception as exc:
             raise _translate(exc) from exc
         return sent.get("id", "")
@@ -125,6 +141,9 @@ class GmailClient:
         for filename, mime, data in attachments or []:
             maintype, _, subtype = (mime or "application/octet-stream").partition("/")
             message.add_attachment(data, maintype=maintype or "application", subtype=subtype or "octet-stream", filename=filename)
+        if len(message.as_bytes()) > _SIMPLE_SEND_BYTES:
+            self._send_large(message)
+            return
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
         try:
             self.service.users().messages().send(userId="me", body={"raw": raw}).execute()
@@ -581,6 +600,10 @@ def build_reply_message(mail: Mail, body: str, user_email: str, attachments: lis
         maintype, _, subtype = (mime or "application/octet-stream").partition("/")
         message.add_attachment(data, maintype=maintype or "application", subtype=subtype or "octet-stream", filename=filename)
     return message
+
+
+# Up to this size a message goes inside the JSON request; bigger ones are uploaded as a file.
+_SIMPLE_SEND_BYTES = 3_500_000
 
 
 def build_send_body(mail: Mail, body: str, user_email: str, attachments: list | None = None) -> dict:

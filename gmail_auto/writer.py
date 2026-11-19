@@ -384,6 +384,13 @@ def _prompt(session: dict, profile: dict) -> str:
                 state = f"issued as {made['number']}" if made["status"] == "issued" else ("ready to issue" if not made["missing"] else "missing: " + "; ".join(made["missing"]))
                 rows.append(f"- {made['ref']} | {made['kind']} for {item.get('client_name') if item else ''}: {lines} | total {made['total']} | {state}" + (" | ATTACHED" if made["attached"] else ""))
         parts.append("DRAFTS IN THIS EMAIL:\n" + "\n".join(rows))
+    text_only = knowledge.text_only_uploads()
+    if text_only:
+        parts.append(
+            "TEXT ONLY (you may use what they say, but they CANNOT be attached: their original file was not kept; if the owner "
+            "wants one attached, say so and ask them to upload the file again on the Documents page, under 18 MB):\n"
+            + "\n".join(f"- {doc['title']}" for doc in text_only[:20])
+        )
     hits = knowledge.search(f"{session['subject']}\n{said}", 4)
     for hit in hits:
         parts.append(f"KNOWLEDGE \"{hit['title']}\":\n{hit['text']}")

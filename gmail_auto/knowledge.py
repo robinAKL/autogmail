@@ -325,6 +325,15 @@ def attachable_documents() -> list[dict]:
     return kept
 
 
+def text_only_uploads() -> list[dict]:
+    """Uploaded files whose original was not kept (too big, or uploaded before file storage): they can be
+    read but not attached until they are uploaded again."""
+    return [
+        item for item in list_documents()
+        if item.get("source") == "upload" and not (item.get("meta") or {}).get("file_id") and not is_template(item)
+    ]
+
+
 def _forget_file(entry: dict, keep: str = "") -> None:
     file_id = (entry.get("meta") or {}).get("file_id") or ""
     if file_id and file_id != keep:
