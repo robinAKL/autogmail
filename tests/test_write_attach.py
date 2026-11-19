@@ -139,6 +139,49 @@ class WritePageAttachTests(WebCase):
         self.assertIn("not started in this email", other.get_data(as_text=True))
 
 
+class WhatsAppConversationTests(WebCase):
+    def test_an_address_then_a_vague_request_starts_the_email_and_asks(self):
+        box = NewMailbox()
+        first = assistant.handle(whatsapp.Incoming(sender="64210000001", text="lee@client.example"), clients=[box])
+        self.assertIn("Writing a new email to lee@client.example. What should it say?", first)
+        self.assertNotIn("Tell me what you want in ordinary language", first)
+
+        ready, model = _chat({"reply": "Sure. What is the email about, and which file should I attach?"})
+        with ready, model:
+            second = assistant.handle(whatsapp.Incoming(sender="64210000001", text="Please help me write an email for this account with an attachment"), clients=[box])
+        self.assertIn("which file should I attach", second)
+        self.assertIn("To: lee@client.example", second)
+        self.assertEqual(approvals.pending(), [])
+        early = assistant.handle(whatsapp.Incoming(sender="64210000001", text="yes"), clients=[box])
+        self.assertIn("Not ready to send yet", early)
+
+        ready, model = _chat({"reply": "Done.", "subject": "Your account", "body": "Hi Lee,\n\nYour account is ready.\n\nRobin"})
+        with ready, model:
+            third = assistant.handle(whatsapp.Incoming(sender="64210000001", text="say the account is ready"), clients=[box])
+        self.assertIn("Reply YES to send", third)
+        self.assertEqual(len(approvals.pending()), 1)
+        assistant.handle(whatsapp.Incoming(sender="64210000001", text="YES"), clients=[box])
+        self.assertEqual(box.new, [("lee@client.example", "Your account", "Hi Lee,\n\nYour account is ready.\n\nRobin", [])])
+
+    def test_follow_ups_see_the_recent_chat(self):
+        said = json.dumps({"intent": "compose", "to": "lee@client.example", "subject": "", "body": "", "attach": [], "numbers": [], "reply": ""})
+        assistant._remember_chat("lee@client.example", "Writing a new email to lee@client.example.")
+        writing, model = _chat({"reply": "What should it say?"})
+        with patch("gmail_auto.assistant.complete", return_value=said) as intent, writing, model:
+            answer = assistant.handle(whatsapp.Incoming(sender="64210000001", text="write an email for this account"), clients=[NewMailbox()])
+        self.assertIn("OWNER: lee@client.example", intent.call_args[0][1])
+        self.assertIn("What should it say?", answer)
+        self.assertEqual(writer.get(assistant.get_state("wa_pending_action")["session_id"])["to"], "lee@client.example")
+
+    def test_help_is_for_asking_what_it_can_do(self):
+        said = json.dumps({"intent": "help", "numbers": [], "reply": ""})
+        with patch("gmail_auto.assistant.complete", return_value=said):
+            vague = assistant.handle(whatsapp.Incoming(sender="64210000001", text="the thing from before"), clients=[NewMailbox()])
+            asked = assistant.handle(whatsapp.Incoming(sender="64210000001", text="what can you do"), clients=[NewMailbox()])
+        self.assertTrue(vague.startswith("Sorry, I didn't quite get"))
+        self.assertTrue(asked.startswith("Tell me what you want"))
+
+
 class WhatsAppFileTests(WebCase):
     def _compose(self, box):
         said = json.dumps({"intent": "compose", "to": "lee@client.example", "subject": "Plan", "body": "Hi Lee, the plan is attached.", "attach": [], "numbers": [], "query": "", "instruction": "", "reply": ""})

@@ -81,6 +81,12 @@ Examples:
 - "明天下午3点和 lee@x.com 开会" → invite
 - "给 lee@x.com 发邮件说明报价" → compose
 - "帮我找下需要我签字的保险单的邮件" → search, query "insurance document to sign"
+- RECENT CHAT shows what was just said. Use it for follow-ups: "this account", "him", "that address", "the
+  same person", "add the attachment" refer to what came just before. An email address sent alone, then
+  "write an email to this account", is compose with that address as "to".
+- Any wish to write or send a new email is compose, even when the content or recipient is not given yet
+  (leave those fields empty; the writing assistant will ask). Never answer it with help.
+- Choose help only when the owner asks what you can do.
 """
 # "Find me the email about…" in either language. The model sometimes answers these from the short lists it
 # is shown instead of searching the mailbox, so they are sent to search whatever it decided.
@@ -88,8 +94,33 @@ _FIND_WORDS = re.compile(r"(?i)(找|查|搜|\bfind\b|\blook(?:ing)? for\b|\bwher
 _MAIL_WORDS = re.compile(r"(?i)(邮件|来信|信件|\bemails?\b|\bmails?\b|\bletters?\b|\bmessages?\b)")
 
 
+_ONLY_ADDRESSES = re.compile(r"^\s*(?:mailto:)?[\w.+'-]+@[\w-]+(?:\.[\w-]+)+(?:\s*[,;，、 ]\s*[\w.+'-]+@[\w-]+(?:\.[\w-]+)+)*\s*$")
+_CHAT_KEEP = 10
+
+
 def handle(incoming: whatsapp.Incoming, clients: list | None = None) -> str:
     """Act on one message from the owner and return what to answer."""
+    answer = _handle(incoming, clients)
+    if incoming.text.strip():
+        _remember_chat(incoming.text.strip(), answer or "")
+    return answer
+
+
+def _remember_chat(said: str, answered: str) -> None:
+    chat = get_state("wa_chat", [])
+    chat = chat if isinstance(chat, list) else []
+    chat += [{"who": "owner", "text": said[:400]}, {"who": "assistant", "text": " ".join(answered.split())[:400]}]
+    set_state("wa_chat", chat[-_CHAT_KEEP:])
+
+
+def _recent_chat() -> str:
+    chat = get_state("wa_chat", [])
+    if not isinstance(chat, list):
+        return ""
+    return "\n".join(f"{'OWNER' if row.get('who') == 'owner' else 'YOU'}: {row.get('text')}" for row in chat[-_CHAT_KEEP:] if isinstance(row, dict))
+
+
+def _handle(incoming: whatsapp.Incoming, clients: list | None = None) -> str:
     text = incoming.text.strip()
     action, target = _button(incoming.button)
     waiting = approvals.open_items()
@@ -121,6 +152,9 @@ def handle(incoming: whatsapp.Incoming, clients: list | None = None) -> str:
             changed = _continue_writing(pending, text)
             if changed is not None:
                 return changed
+    if _ONLY_ADDRESSES.match(text):
+        # Just an address: they want to write to it. Start the email and ask what it should say.
+        return _start_writing({"to": text}, "")
     text = _spoken_numbers(text)
     parsed = _interpret(text, waiting, incoming.context_id, clients)
     return _dispatch(parsed, text, waiting, clients)
@@ -245,6 +279,7 @@ def _intent_user_prompt(text: str, waiting: list, clients: list | None) -> str:
         f"PENDING CONFIRM: {pending_line or '(none)'}\n\n"
         "RECENTLY HANDLED:\n" + ("\n".join(recent) or "(none)") + "\n\n"
         "NUMBERS:\n" + stats.digest_text() + "\n\n"
+        "RECENT CHAT (oldest first):\n" + (_recent_chat() or "(none)") + "\n\n"
         f"OWNER'S MESSAGE:\n{text}"
     )
 
@@ -338,7 +373,9 @@ def _dispatch(parsed: dict, text: str, waiting: list, clients: list | None) -> s
         intent = "read"
 
     if intent == "help":
-        return _HELP
+        if re.search(r"(?i)\b(help|menu|what can you do|commands?)\b|帮助|菜单|你能做什么|怎么用", text or "") or len((text or "").strip()) <= 2:
+            return _HELP
+        return "Sorry, I didn't quite get what you want me to do. Could you say it another way?\n\n" + _HELP
     if intent == "list":
         if parsed.get("reply"):
             return parsed["reply"]
@@ -525,7 +562,7 @@ def _compose_preview(parsed: dict, text: str = "", clients: list | None = None) 
     if to_addr and "@" not in to_addr:
         to_addr = _address_for(to_addr) or to_addr
     if not to_addr or "@" not in to_addr or not body:
-        return str(parsed.get("reply") or "Please tell me the recipient's email address and what you want to say.")
+        return _start_writing(parsed, text)
     try:
         to_addr = outgoing.clean_recipients(to_addr)
     except ConfigError as exc:
@@ -567,6 +604,30 @@ def _compose_preview(parsed: dict, text: str = "", clients: list | None = None) 
         lines += ["", "Not attached:"] + [f"- {note}" for note in missing]
     lines += ["", "Reply YES to send, NO to cancel, or tell me what to change. It is also on the Approvals page."]
     return "\n".join(lines)
+
+
+def _start_writing(parsed: dict, text: str) -> str:
+    """Start an email that is not complete yet; the writing assistant drafts what it can and asks for the rest."""
+    from gmail_auto import writer
+
+    to = str(parsed.get("to") or "").strip()
+    if to and "@" not in to:
+        to = _address_for(to) or to
+    session = writer.start(to=to, subject=str(parsed.get("subject") or ""), body=str(parsed.get("body") or ""), source="whatsapp")
+    if parsed.get("cc"):
+        session = writer.edit(session["id"], cc=str(parsed["cc"]))
+    pending = {"kind": "send_new", "approval_id": "", "session_id": session["id"], "to": to, "subject": session["subject"], "body": session["body"]}
+    set_state("wa_pending_action", pending)
+    if text.strip():
+        changed = _continue_writing(pending, text)
+        if changed is not None:
+            return changed
+    who = to or "them"
+    return (
+        f"Writing a new email to {who}. What should it say?\n"
+        "You can also send me a file to attach, or ask for a document, quote or contract "
+        "(\"attach our company introduction\", \"make a quote for 3 months\")."
+    )
 
 
 def _draft_waiting(pending: dict) -> bool:
@@ -618,11 +679,20 @@ def _continue_writing(pending: dict, text: str) -> str | None:
     if session.get("off_topic"):
         return None
     answer = session["messages"][-1]["text"] if session["messages"] else ""
+    if not pending.get("approval_id") and session["body"].strip() and session["to"].strip():
+        # The email now has someone to go to and something to say: put it in Approvals too.
+        try:
+            pending = {**pending, "approval_id": writer.queue(session["id"])["id"]}
+            session = writer.get(session["id"]) or session
+        except ConfigError:
+            pass
     item = approvals.get(pending.get("approval_id") or "") or {}
     set_state(
         "wa_pending_action",
         {**pending, "to": item.get("to") or session["to"], "subject": session["subject"], "body": session["body"]},
     )
+    if not pending.get("approval_id"):
+        return f"{answer}\n\n{writer.preview(session)}\n\nTell me what to add or change; when it is ready I'll ask you to send it."
     return f"{answer}\n\n{writer.preview(session)}\n\nReply YES to send, NO to cancel, or tell me what else to change."
 
 
@@ -1102,6 +1172,13 @@ def _execute_pending(pending: dict, clients: list | None) -> str:
         if client is None:
             return "Could not run that action: no mailbox is connected."
         if kind == "send_new":
+            if not pending.get("approval_id") and pending.get("session_id"):
+                from gmail_auto import writer
+
+                try:
+                    pending = {**pending, "approval_id": writer.queue(pending["session_id"])["id"]}
+                except ConfigError as exc:
+                    return f"Not ready to send yet: {exc} Tell me who it is for and what it should say."
             if pending.get("approval_id"):
                 item = approvals.approve(pending["approval_id"], "whatsapp", client)
                 set_state("wa_pending_action", None)
