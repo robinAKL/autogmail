@@ -10,7 +10,7 @@ from gmail_auto.models import Mail
 from gmail_auto.outlook_client import _SELECT_LIST, parse_message
 
 _OUTLOOK_FOLDERS = "/me/mailFolders"
-_SKIP_FOLDERS = ("junkemail", "deleteditems", "drafts", "outbox", "sentitems", "recoverableitemsdeletions")
+_SKIP_FOLDERS = ("junkemail", "deleteditems", "drafts", "outbox", "sentitems", "archive", "recoverableitemsdeletions")
 _SKIP_LABELS = {"SPAM", "TRASH", "DRAFT", "CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL", "CATEGORY_FORUMS"}
 _SKIP_CODES = {"self", "sensitive", "system", "auto", "list", "promotions", "social", "forums", "junk", "notification"}
 

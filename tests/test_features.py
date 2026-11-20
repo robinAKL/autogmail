@@ -211,14 +211,16 @@ class KnowledgeTests(TempHome):
         self.assertIn("healthy eating", seen[0])
         self.assertEqual(entry["title"], "What your email shows (robin@kiwiknowledge.co.nz)")
 
-    def test_received_history_keeps_archived_mail_and_skips_the_other_folders(self):
+    def test_received_history_stays_in_the_inbox_and_skips_junk_categories(self):
         from gmail_auto.gmail_client import RECEIVED_HISTORY_QUERY, RECENT_QUERY, GmailClient
         from gmail_auto.outlook_client import OutlookClient
 
         self.assertTrue(RECENT_QUERY.startswith("in:inbox"))
-        self.assertNotIn("in:inbox", RECEIVED_HISTORY_QUERY)
+        self.assertTrue(RECEIVED_HISTORY_QUERY.startswith("in:inbox"))
         for folder in ("sent", "drafts", "spam", "trash"):
             self.assertIn(f"-in:{folder}", RECEIVED_HISTORY_QUERY)
+        for category in ("promotions", "social", "forums"):
+            self.assertIn(f"-category:{category}", RECEIVED_HISTORY_QUERY)
 
         gmail = GmailClient.__new__(GmailClient)
         seen = []
@@ -236,24 +238,22 @@ class KnowledgeTests(TempHome):
 
         def newest(folder, limit, field):
             folders.append(folder)
-            if folder == "archive":
-                return [sample(id="arch", provider="outlook", subject="Old thread", received_ts=10)]
             return [sample(id="in", provider="outlook", subject="New thread", received_ts=20)]
 
         outlook._list_newest = newest
         mails = outlook.list_received_history(5, full=False)
-        self.assertEqual(folders, ["inbox", "archive"])
-        self.assertEqual([mail.id for mail in mails], ["in", "arch"])
+        self.assertEqual(folders, ["inbox"])
+        self.assertEqual([mail.id for mail in mails], ["in"])
 
         class Box(FakeGmail):
             def list_sent(self, limit=30, full=False):
                 return []
 
             def list_recent(self, limit=30, full=False):
-                raise AssertionError("knowledge must not use the inbox-only list")
+                raise AssertionError("knowledge must use received history")
 
             def list_received_history(self, limit=30, full=False):
-                return [sample(id="arch", body="The archived note is still here.", label_ids=["IMPORTANT"])]
+                return [sample(id="in", body="The inbox note is still here.", label_ids=["INBOX"])]
 
         seen = []
 
@@ -264,7 +264,7 @@ class KnowledgeTests(TempHome):
         with patch("gmail_auto.knowledge.complete", fake_complete):
             entry = knowledge.learn_from_mailbox(Box([]))
         self.assertEqual(entry["meta"]["letters"], 1)
-        self.assertIn("archived note", seen[0])
+        self.assertIn("inbox note", seen[0])
 
 
 class CalendarTests(TempHome):

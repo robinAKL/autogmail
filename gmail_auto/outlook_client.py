@@ -56,13 +56,13 @@ class OutlookClient:
         return self._hydrate(mails) if full else mails
 
     def list_received_history(self, limit: int = 25, full: bool = False) -> list[Mail]:
-        """Received mail still in the mailbox, including Archive.
+        """Received mail still in the inbox.
 
-        Junk, Deleted, Sent, and Drafts are not read. The inbox screen keeps list_recent.
+        Archive, Junk, Deleted, Sent, and Drafts are not read. The inbox screen keeps list_recent.
         """
         want = max(1, min(int(limit), 25))
         found: dict[str, Mail] = {}
-        for folder in ("inbox", "archive"):
+        for folder in ("inbox",):
             try:
                 page = self._list_newest(folder, want, "receivedDateTime")
             except ConfigError:

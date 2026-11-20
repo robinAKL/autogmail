@@ -343,7 +343,7 @@
       if (analyzeMsg) {
         analyzeMsg.textContent = (payload && payload.message) || ({
           idle: "Ready to analyse connected mailboxes and documents.",
-          running: "Reading the next batch. Received and sent are counted separately.",
+          running: "Reading the next batch from the inbox and sent mail. Archived mail and junk categories are left out.",
           done: "Analysis complete.",
           error: "Analysis paused. Select Analyse knowledge to retry."
         })[st];

@@ -826,7 +826,7 @@ def learn_from_mailbox(client, limit: int = 30) -> dict:
 
     from concurrent.futures import ThreadPoolExecutor
 
-    # direction inbox: received history, including mail archived but still in the mailbox.
+    # Received mail still in the inbox. Archived mail and junk categories stay out.
     receive = getattr(client, "list_received_history", None)
     if not callable(receive):
         receive = client.list_recent
