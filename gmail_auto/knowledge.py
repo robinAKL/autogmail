@@ -10,7 +10,6 @@ import json
 import math
 import re
 import secrets
-import time
 from datetime import datetime
 
 from gmail_auto.envfile import has_openai_key
@@ -1030,7 +1029,7 @@ def _tokens(text: str) -> list[str]:
 
 
 def _save_index(index: dict) -> None:
-    index["stamp"] = time.time()
+    index["stamp"] = secrets.token_hex(8)
     save_doc("kb_index", {key: index[key] for key in ("docs", "rules", "brief", "model", "stamp")})
 
 
