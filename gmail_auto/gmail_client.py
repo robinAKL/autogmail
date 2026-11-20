@@ -158,10 +158,14 @@ class GmailClient:
 
     def send_reply(self, mail: Mail, body: str, user_email: str, attachments: list | None = None) -> str:
         """attachments: (filename, mime, bytes) tuples."""
-        message = build_reply_message(mail, body, user_email, attachments)
-        if len(message.as_bytes()) > _SIMPLE_SEND_BYTES:
+        from gmail_auto.signatures import load_logo
+
+        logo = load_logo("gmail", self.get_user_email())
+        message = build_reply_message(mail, body, user_email, attachments, logo=logo)
+        raw = message.as_bytes()
+        if len(raw) > _SIMPLE_SEND_BYTES:
             return self._send_large(message, mail.thread_id)
-        payload = build_send_body(mail, body, user_email, attachments)
+        payload = _send_payload(raw, mail.thread_id)
         try:
             sent = self.service.users().messages().send(userId="me", body=payload).execute()
         except Exception as exc:
@@ -186,22 +190,25 @@ class GmailClient:
 
     def send_new(self, to: str, subject: str, body: str, attachments: list | None = None, cc: str = "") -> None:
         """A new email (not a reply). to and cc may hold several addresses separated by commas."""
+        from gmail_auto.signatures import load_logo
+
         message = EmailMessage()
         message["To"] = to
         if cc:
             message["Cc"] = cc
-        message["From"] = self.get_user_email()
+        account = self.get_user_email()
+        message["From"] = account
         message["Subject"] = subject
-        message.set_content(body, subtype="plain", charset="utf-8")
+        _set_message_body(message, body, load_logo("gmail", account))
         for filename, mime, data in attachments or []:
             maintype, _, subtype = (mime or "application/octet-stream").partition("/")
             message.add_attachment(data, maintype=maintype or "application", subtype=subtype or "octet-stream", filename=filename)
-        if len(message.as_bytes()) > _SIMPLE_SEND_BYTES:
+        raw = message.as_bytes()
+        if len(raw) > _SIMPLE_SEND_BYTES:
             self._send_large(message)
             return
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
         try:
-            self.service.users().messages().send(userId="me", body={"raw": raw}).execute()
+            self.service.users().messages().send(userId="me", body=_send_payload(raw)).execute()
         except Exception as exc:
             raise _translate(exc) from exc
 
@@ -750,10 +757,13 @@ _SIMPLE_SEND_BYTES = 3_500_000
 
 def build_send_body(mail: Mail, body: str, user_email: str, attachments: list | None = None) -> dict:
     message = build_reply_message(mail, body, user_email, attachments)
-    raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
-    payload = {"raw": raw}
-    if mail.thread_id:
-        payload["threadId"] = mail.thread_id
+    return _send_payload(message.as_bytes(), mail.thread_id)
+
+
+def _send_payload(raw: bytes, thread_id: str = "") -> dict:
+    payload = {"raw": base64.urlsafe_b64encode(raw).decode("ascii")}
+    if thread_id:
+        payload["threadId"] = thread_id
     return payload
 
 
