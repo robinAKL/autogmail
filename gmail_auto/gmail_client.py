@@ -27,8 +27,11 @@ UNREAD_QUERY = (
 DONE_LABEL = "autogmail-done"
 RETRY_LABEL = "autogmail-retry"
 RECENT_QUERY = "in:inbox -in:chats -in:spam -in:trash"
-# Received history for knowledge. No in:inbox, so archived mail still in the mailbox is included.
-RECEIVED_HISTORY_QUERY = "-in:sent -in:drafts -in:spam -in:trash -in:chats"
+# Inbox only. Archived mail stays out, and so do junk categories.
+RECEIVED_HISTORY_QUERY = (
+    "in:inbox -in:sent -in:drafts -in:spam -in:trash -in:chats "
+    "-category:promotions -category:social -category:forums"
+)
 SENT_QUERY = "in:sent -in:chats"
 
 
@@ -101,9 +104,10 @@ class GmailClient:
         return self._list(RECENT_QUERY, limit, full=full)
 
     def list_received_history(self, limit: int = 25, full: bool = False) -> list[Mail]:
-        """Received mail, including archived mail that is still in the mailbox.
+        """Received mail that is still in the inbox.
 
-        Sent, drafts, spam, and trash stay out. The inbox screen keeps list_recent.
+        Archived mail, sent, drafts, spam, trash, and junk categories stay out.
+        The inbox screen keeps list_recent.
         """
         return self._list(RECEIVED_HISTORY_QUERY, limit, full=full)
 

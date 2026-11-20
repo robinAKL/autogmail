@@ -622,7 +622,9 @@ def items_from_brief(text: str) -> list[dict]:
 
 
 def is_shown(item: dict) -> bool:
-    """A mail date alone does not make a fact. Those observations stay stored, not on the page."""
+    """Rules stay in the editable list. A mail date alone does not make a fact."""
+    if item.get("kind") == "rule":
+        return False
     return not (
         item.get("kind") == "fact"
         and item.get("origin") == "analysis"
@@ -826,7 +828,7 @@ def learn_from_mailbox(client, limit: int = 30) -> dict:
 
     from concurrent.futures import ThreadPoolExecutor
 
-    # direction inbox: received history, including mail archived but still in the mailbox.
+    # Received mail still in the inbox. Archived mail and junk categories stay out.
     receive = getattr(client, "list_received_history", None)
     if not callable(receive):
         receive = client.list_recent

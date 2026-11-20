@@ -114,6 +114,26 @@ class KnowledgeUnifiedUITests(unittest.TestCase):
         self.assertIn("Office hours are 9am-5pm NZT.", html)
         self.assertIn("Keep replies concise with a warm sign-off.", html)
         self.assertIn("Rules that always win", html)
+        self.assertIn("Current knowledge only —", html)
+        self.assertNotIn("â€", html)
+
+    def test_rules_stay_in_the_editor_and_not_on_the_memory_map(self):
+        fake_index = knowledge.load_index()
+        fake_index["rules"] = ["Sign off external emails with Kind regards, Robin."]
+        fake_index["model"]["items"] = [
+            {
+                "id": "rule-1",
+                "kind": "rule",
+                "text": "Sign off external emails with Kind regards, Robin.",
+                "origin": "user",
+                "status": "active",
+            }
+        ]
+        with mock.patch.object(knowledge, "load_index", return_value=fake_index):
+            html = self.client.get("/knowledge").get_data(as_text=True)
+        self.assertIn("Sign off external emails with Kind regards, Robin.", html)
+        self.assertNotIn("kind-rule", html)
+        self.assertIn('name="rules"', html)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ from gmail_auto.gmail_client import GmailClient
 from tests.test_core import sample
 
 
-def test_gmail_history_uses_provider_tokens_and_includes_archived_messages():
+def test_gmail_history_stays_in_the_inbox_and_skips_junk_categories():
     client = GmailClient.__new__(GmailClient)
     client.service = Mock()
     messages = client.service.users().messages()
@@ -16,8 +16,8 @@ def test_gmail_history_uses_provider_tokens_and_includes_archived_messages():
         assert [letter.id for letter in letters] == ["archived"]
         assert next_cursor == "older"
         query = messages.list.call_args.kwargs
-        assert "in:inbox" not in query["q"]
-        assert all(term in query["q"] for term in ("-in:sent", "-in:drafts", "-in:spam", "-in:trash"))
+        assert query["q"].startswith("in:inbox ")
+        assert all(term in query["q"] for term in ("-in:sent", "-in:drafts", "-in:spam", "-in:trash", "-category:promotions", "-category:social", "-category:forums"))
         assert query["pageToken"] == "previous"
         hydrate.assert_called_once_with(["archived"], True)
 
