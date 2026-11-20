@@ -5,7 +5,6 @@ import re
 import secrets
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextvars import copy_context
 from urllib.parse import urlsplit
 
 from flask import Flask, Response, abort, flash, g, redirect, request, session, url_for
@@ -42,7 +41,7 @@ from gmail_auto.importance import (
     preset_of,
 )
 from gmail_auto.storage import persistent
-from gmail_auto.tenant import saas_enabled, user_scope
+from gmail_auto.tenant import require_user_id, saas_enabled, user_scope
 from gmail_auto.token_store import storage_hint, storage_kind, storage_ready
 from gmail_auto.store import get_state, is_live, list_processed, load_last_run, load_processed, now_text, set_state
 from gmail_auto.story import attach_stories, hide_story, story_board, story_detail, story_view
@@ -2512,13 +2511,19 @@ def _list_mailboxes(clients) -> list[tuple]:
         return [_list_one_mailbox(clients[0])]
     from flask import copy_current_request_context
 
-    wrapped = [copy_current_request_context(lambda client=client: _list_one_mailbox(client)) for client in clients]
-    out = []
-    with ThreadPoolExecutor(max_workers=len(wrapped)) as pool:
-        futures = [pool.submit(copy_context().run, item) for item in wrapped]
-        for future in as_completed(futures):
-            out.append(future.result())
-    return out
+    with ThreadPoolExecutor(max_workers=len(clients)) as pool:
+        if saas_enabled():
+            user_id = require_user_id()
+
+            def read_in_workspace(client):
+                with user_scope(user_id):
+                    return _list_one_mailbox(client)
+
+            futures = [pool.submit(read_in_workspace, client) for client in clients]
+        else:
+            readers = [copy_current_request_context(lambda client=client: _list_one_mailbox(client)) for client in clients]
+            futures = [pool.submit(reader) for reader in readers]
+        return [future.result() for future in as_completed(futures)]
 
 
 def _list_one_mailbox(client) -> tuple:

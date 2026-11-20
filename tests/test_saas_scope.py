@@ -243,3 +243,35 @@ def test_bound_gmail_login_opens_a_distinct_workspace_and_logout_revokes_old_coo
         second = browser.get("/workspace-proof", base_url=host).json
         assert second["user_id"] != first["user_id"]
         assert second["bound"] == "" and not second["encrypted"]
+
+
+def test_refreshing_two_mailboxes_keeps_request_and_worker_scopes_separate(saas):
+    from unittest.mock import Mock
+
+    app = create_app()
+    app.testing = True
+    browser = app.test_client()
+    with browser.session_transaction() as session:
+        session["user"] = "owner@example.com"
+        session["user_id"] = USER_A
+        session["login_session_id"] = login_sessions.create(USER_A)
+
+    workers = []
+
+    def list_recent(*_args, **_kwargs):
+        workers.append(current_user_id())
+        return []
+
+    gmail = Mock(provider="gmail")
+    gmail.get_user_email.return_value = "gmail@example.com"
+    gmail.list_recent.side_effect = list_recent
+    outlook = Mock(provider="outlook")
+    outlook.get_user_email.return_value = "outlook@example.com"
+    outlook.list_recent.side_effect = list_recent
+
+    with patch("gmail_auto.web.connected_clients", return_value=([gmail, outlook], [])):
+        response = browser.get("/inbox/refresh")
+
+    assert response.status_code == 302
+    assert workers == [USER_A, USER_A]
+    assert current_user_id() is None
