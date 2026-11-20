@@ -622,7 +622,9 @@ def items_from_brief(text: str) -> list[dict]:
 
 
 def is_shown(item: dict) -> bool:
-    """A mail date alone does not make a fact. Those observations stay stored, not on the page."""
+    """Rules stay in the editable list. A mail date alone does not make a fact."""
+    if item.get("kind") == "rule":
+        return False
     return not (
         item.get("kind") == "fact"
         and item.get("origin") == "analysis"

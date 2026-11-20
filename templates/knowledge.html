@@ -64,7 +64,7 @@
   <div class="card-head">
     <div>
       <h2 class="card-title">How it is connected</h2>
-      <p class="muted">Current knowledge only â€” ended and replaced facts stay on the Timeline. Replies use what is still current.</p>
+      <p class="muted">Current knowledge only — ended and replaced facts stay on the Timeline. Replies use what is still current.</p>
     </div>
     <div class="head-stats">
       <span><strong>{{ overview.documents }}</strong> sources</span>
@@ -77,8 +77,8 @@
   <div class="kb-graph" id="kb-map" role="img" aria-label="Knowledge map"></div>
   <p class="meta kb-graph-hint">Drag a node to tuck it aside. Scroll to zoom. Hover to read the full line.</p>
   <ul class="legend kb-legend">
-    {% for name, meta in kinds.items() %}
-    <li><i class="sw kind-{{ name }}"></i>{{ meta.label }}{% if overview.by_kind[name] %} Â· {{ overview.by_kind[name] }}{% endif %}</li>
+    {% for name, meta in kinds.items() if name != 'rule' %}
+    <li><i class="sw kind-{{ name }}"></i>{{ meta.label }}{% if overview.by_kind[name] %} · {{ overview.by_kind[name] }}{% endif %}</li>
     {% endfor %}
   </ul>
   {% else %}
@@ -105,7 +105,7 @@
       <li class="kb-event {{ event.action }}">
         <i class="sw kind-{{ event.item.kind }}"></i>
         <div>
-          <p><b>{{ kinds[event.item.kind].label }}</b> Â· {{ event.label }} Â· {{ event.when }}</p>
+          <p><b>{{ kinds[event.item.kind].label }}</b> · {{ event.label }} · {{ event.when }}</p>
           <p>{{ event.item.text }}</p>
           {% if event.previous %}<p class="meta">Was: {{ event.previous.text }}</p>{% endif %}
         </div>
@@ -151,14 +151,14 @@
   </div>
   <nav class="tabs-row" aria-label="Knowledge kind">
     <a class="tab {% if not kind %}on{% endif %}" href="{{ url_for('knowledge_page') }}#cards">All<span>{{ overview.item_count }}</span></a>
-    {% for name, meta in kinds.items() %}
+    {% for name, meta in kinds.items() if name != 'rule' %}
     <a class="tab {% if kind == name %}on{% endif %}" href="{{ url_for('knowledge_page', kind=name) }}#cards">{{ meta.label }}<span>{{ overview.by_kind[name] }}</span></a>
     {% endfor %}
   </nav>
 
   {% if not kind %}
   <div class="kb-tiles">
-    {% for tile in tiles if tile.kind != 'storyline' %}
+    {% for tile in tiles if tile.kind != 'storyline' and tile.kind != 'rule' %}
     <a class="card kb-tile" href="{{ url_for('knowledge_page', kind=tile.kind) }}#kind-{{ tile.kind }}">
       <h3><i class="sw kind-{{ tile.kind }}"></i> {{ tile.label }} <span>{{ tile.count }}</span></h3>
       {% if tile.preview %}
@@ -167,7 +167,7 @@
         <li>{{ item.text }}</li>
         {% endfor %}
       </ul>
-      {% if tile.more %}<p class="meta">+{{ tile.more }} moreâ€¦</p>{% endif %}
+      {% if tile.more %}<p class="meta">+{{ tile.more }} more…</p>{% endif %}
       {% else %}
       <p class="empty">Nothing current</p>
       {% endif %}
@@ -176,7 +176,7 @@
   </div>
   {% endif %}
 
-  {% for group in groups if kind and group.kind == kind %}
+  {% for group in groups if kind and group.kind == kind and group.kind != 'rule' %}
   <section class="card kb-kind" id="kind-{{ group.kind }}">
     <div class="card-head">
       <div>
@@ -186,7 +186,7 @@
       {% if not group.locked %}
       <form method="post" action="{{ url_for('knowledge_item_add') }}" class="inline-form kb-add">
         <input type="hidden" name="kind" value="{{ group.kind }}">
-        <input name="text" maxlength="300" placeholder="Add oneâ€¦" required>
+        <input name="text" maxlength="300" placeholder="Add one…" required>
         <button class="quiet small" type="submit">Add</button>
       </form>
       {% endif %}
@@ -207,7 +207,7 @@
         {% else %}
         <p>{{ item.text }}</p>
         <p class="meta">Current since {{ item.valid_from or item.at }}{% if item.valid_until %} until {{ item.valid_until }}{% endif %}
-          {% if item.source %} Â· {{ item.source }}{% elif item.origin == 'user' %} Â· added by you{% endif %}
+          {% if item.source %} · {{ item.source }}{% elif item.origin == 'user' %} · added by you{% endif %}
           {% if item.locked %}<span class="tag read">Locked fact</span>{% endif %}</p>
         <div class="button-row">
           <form method="post" action="{{ url_for('knowledge_item_save', item_id=item.id) }}" data-confirm="Keep the wording, but stop using this in replies?">
@@ -235,7 +235,7 @@
       {% for item in group.past %}
       <li class="kb-card past" id="item-{{ item.id }}">
         <p>{{ item.text }}</p>
-        <p class="meta">{{ item.valid_from or item.at }} â†’ {{ item.valid_until }} Â· {{ item.status }}</p>
+        <p class="meta">{{ item.valid_from or item.at }} → {{ item.valid_until }} · {{ item.status }}</p>
       </li>
       {% endfor %}
     </ul>
@@ -269,12 +269,12 @@
 <section class="section" id="sources">
   <div class="section-head">
     <h2>Sources</h2>
-    <p class="muted">Step 1 â€” what the map is built from</p>
+    <p class="muted">Step 1 — what the map is built from</p>
   </div>
   <div class="grid-3">
-    <form class="card source" method="post" action="{{ url_for('knowledge_upload') }}" enctype="multipart/form-data" data-busy="Reading filesâ€¦" data-upload-max="{{ upload_max_bytes }}" data-upload-label="{{ upload_limit }}" data-next="{{ url_for('knowledge_page') }}#documents">
+    <form class="card source" method="post" action="{{ url_for('knowledge_upload') }}" enctype="multipart/form-data" data-busy="Reading files…" data-upload-max="{{ upload_max_bytes }}" data-upload-label="{{ upload_limit }}" data-next="{{ url_for('knowledge_page') }}#documents">
       <h3>Upload files</h3>
-      <p class="muted">{{ file_types }}. Each file under {{ upload_limit }} â€” the hosted site rejects anything larger. Several smaller files are sent one by one.</p>
+      <p class="muted">{{ file_types }}. Each file under {{ upload_limit }} — the hosted site rejects anything larger. Several smaller files are sent one by one.</p>
       <label class="drop" data-drop>
         <input type="file" name="files" multiple required>
         <span data-drop-label>Choose files or drop them here</span>
@@ -282,11 +282,11 @@
       <button type="submit">Add to knowledge</button>
     </form>
 
-    <form class="card source" method="post" action="{{ url_for('knowledge_sharepoint') }}" id="sharepoint" data-busy="Reading SharePointâ€¦">
+    <form class="card source" method="post" action="{{ url_for('knowledge_sharepoint') }}" id="sharepoint" data-busy="Reading SharePoint…">
       <h3>SharePoint</h3>
       {% if sharepoint.connected %}
       <p class="muted">Connected{% if sharepoint.account %} as {{ sharepoint.account }}{% endif %}. Paste a site, folder or file link.</p>
-      <input name="url" type="url" placeholder="https://contoso.sharepoint.com/sites/Team/Shared Documents/â€¦" required>
+      <input name="url" type="url" placeholder="https://contoso.sharepoint.com/sites/Team/Shared Documents/…" required>
       <button type="submit">Read documents</button>
       {% else %}
       <p class="muted">Connect SharePoint to read a site, a library folder or a single file.</p>
@@ -318,7 +318,7 @@
     </div>
     {% if query %}
       {% for hit in hits %}
-      <div class="hit"><p class="hit-title">{{ hit.title }}</p><p>{{ hit.text[:320] }}{% if hit.text|length > 320 %}â€¦{% endif %}</p></div>
+      <div class="hit"><p class="hit-title">{{ hit.title }}</p><p>{{ hit.text[:320] }}{% if hit.text|length > 320 %}…{% endif %}</p></div>
       {% else %}
       <p class="empty">Nothing in the documents matches that.</p>
       {% endfor %}
@@ -338,7 +338,7 @@
             <td>{{ item.files }}</td>
             <td class="nowrap">{{ item.synced_at }}</td>
             <td class="actions">
-              <form method="post" action="{{ url_for('knowledge_sharepoint') }}" data-busy="Readingâ€¦"><input type="hidden" name="url" value="{{ item.url }}"><button class="quiet small" type="submit">Read again</button></form>
+              <form method="post" action="{{ url_for('knowledge_sharepoint') }}" data-busy="Reading…"><input type="hidden" name="url" value="{{ item.url }}"><button class="quiet small" type="submit">Read again</button></form>
               <form method="post" action="{{ url_for('knowledge_sharepoint') }}" data-confirm="Remove this source and the documents read from it?"><input type="hidden" name="url" value="{{ item.url }}"><button class="quiet small danger-text" type="submit" name="remove" value="1">Remove</button></form>
             </td>
           </tr>
@@ -353,7 +353,7 @@
 <section class="section" id="documents">
   <div class="section-head">
     <h2>Documents</h2>
-    <p class="muted">{{ overview.documents }} kept Â· {{ '{:,}'.format(overview.characters) }} characters</p>
+    <p class="muted">{{ overview.documents }} kept · {{ '{:,}'.format(overview.characters) }} characters</p>
   </div>
   {% if docs %}
   <div class="doc-list">
@@ -365,17 +365,17 @@
           {% set role = role_of(doc) %}
           <p class="meta"><span class="chip tiny src-{{ doc.source }}">{{ sources.get(doc.source, doc.source) }}</span>
             {% if role != 'reference' %}<span class="chip tiny role-{{ role }}">{{ roles[role] }}</span>{% endif %}
-            <span class="dot">Â·</span> added {{ doc.added_at }}
-            <span class="dot">Â·</span> {{ '{:,}'.format(doc.chars) }} characters{% if doc.clipped %} (cut to fit){% endif %}</p>
+            <span class="dot">·</span> added {{ doc.added_at }}
+            <span class="dot">·</span> {{ '{:,}'.format(doc.chars) }} characters{% if doc.clipped %} (cut to fit){% endif %}</p>
         </div>
         <div class="doc-actions">
-          <form method="post" action="{{ url_for('knowledge_role', doc_id=doc.id) }}" class="role-form" data-busy="Updatingâ€¦">
+          <form method="post" action="{{ url_for('knowledge_role', doc_id=doc.id) }}" class="role-form" data-busy="Updating…">
             <select name="role" aria-label="Use this document as" onchange="this.form.requestSubmit()">
               {% for key, label in roles.items() %}<option value="{{ key }}" {% if key == role %}selected{% endif %}>{{ label }}</option>{% endfor %}
             </select>
             <noscript><button class="quiet small" type="submit">Set</button></noscript>
           </form>
-          <form method="post" action="{{ url_for('knowledge_delete', doc_id=doc.id) }}" data-confirm="Remove â€œ{{ doc.title }}â€ from the knowledge base?">
+          <form method="post" action="{{ url_for('knowledge_delete', doc_id=doc.id) }}" data-confirm="Remove “{{ doc.title }}” from the knowledge base?">
             <button class="quiet small danger-text" type="submit">Remove</button>
           </form>
         </div>
