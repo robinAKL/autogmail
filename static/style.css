@@ -117,6 +117,7 @@ code { font-family: Consolas, "SF Mono", monospace; font-size: 0.9em; background
 .grid-2.wide-left { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
 .grid-2.flush { gap: 28px; }
 .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; align-items: stretch; }
+.grid-4 > .card.source > :last-child { margin-top: auto; }
 .stack { display: grid; gap: 12px; }
 .stack-sm { display: grid; gap: 8px; }
 .stack-lg { display: grid; gap: 18px; }
