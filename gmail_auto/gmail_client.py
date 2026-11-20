@@ -27,6 +27,8 @@ UNREAD_QUERY = (
 DONE_LABEL = "autogmail-done"
 RETRY_LABEL = "autogmail-retry"
 RECENT_QUERY = "in:inbox -in:chats -in:spam -in:trash"
+# Received history for knowledge. No in:inbox, so archived mail still in the mailbox is included.
+RECEIVED_HISTORY_QUERY = "-in:sent -in:drafts -in:spam -in:trash -in:chats"
 SENT_QUERY = "in:sent -in:chats"
 
 
@@ -97,6 +99,13 @@ class GmailClient:
 
     def list_recent(self, limit: int = 25, full: bool = False) -> list[Mail]:
         return self._list(RECENT_QUERY, limit, full=full)
+
+    def list_received_history(self, limit: int = 25, full: bool = False) -> list[Mail]:
+        """Received mail, including archived mail that is still in the mailbox.
+
+        Sent, drafts, spam, and trash stay out. The inbox screen keeps list_recent.
+        """
+        return self._list(RECEIVED_HISTORY_QUERY, limit, full=full)
 
     def list_recent_page(self, limit: int = 20, token: str = "", full: bool = False) -> tuple[list[Mail], str]:
         """One inbox page of metadata, plus the token for the next page. Stops after this page."""
