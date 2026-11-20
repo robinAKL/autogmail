@@ -14,7 +14,7 @@ from gmail_auto.filters import Allow, Skip, classify, short_subject
 from gmail_auto.models import Draft, Mail
 from gmail_auto.screen import screen_mail
 from gmail_auto.profile_store import load_profile, profile_is_placeholder
-from gmail_auto.settings import load_settings
+from gmail_auto.settings import append_signature, evaluate_auto_reply_rules, load_settings, signature_for_mailbox
 from gmail_auto.storage import workspace_operation
 from gmail_auto.tenant import require_user_id, saas_enabled
 from gmail_auto.token_store import kv_set_if_absent, storage_ready
@@ -345,6 +345,16 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
                 draft.reason = f"{close.get('name') or 'This person'} is marked as {TYPES[close['type']].lower()}; replies to them always wait for you."
         if draft.action in {"reply", "ask"} and not draft.summary and brief.get("summary"):
             draft.summary = brief["summary"]
+        if draft.action in {"reply", "ask"}:
+            sig = signature_for_mailbox(settings, provider=getattr(mail, "provider", ""), email=getattr(mail, "account", ""))
+            if sig:
+                draft.reply = append_signature(draft.reply, sig)
+            if live and settings.get("approval_mode") in {"smart", "never"} and not must_wait:
+                allowed, rule_reason = evaluate_auto_reply_rules(mail, settings)
+                if not allowed:
+                    must_wait = True
+                    draft.action = "ask"
+                    draft.reason = rule_reason
         subject = short_subject(mail.subject)
         if draft.action == "skip":
             reason = draft.reason or "no reply needed"

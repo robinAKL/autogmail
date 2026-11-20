@@ -24,7 +24,7 @@ from gmail_auto.errors import ConfigError, NotConnected, ReplyError, named_error
 from gmail_auto.llm import active_model, complete
 from gmail_auto.extractors import SUPPORTED, extract_text
 from gmail_auto.filters import Skip, classify
-from gmail_auto.gmail_client import SCOPES, web_client_config
+from gmail_auto.gmail_client import OAUTH_SCOPES, SCOPES, web_client_config
 from gmail_auto.mailboxes import PROVIDERS, client_for, connected_clients
 from gmail_auto.mailer import deliver_code
 from gmail_auto.mailview import FRAME_POLICY, document
@@ -1643,7 +1643,7 @@ def configure_app(app: Flask) -> None:
             return redirect(url_for("connections_page"))
         from google_auth_oauthlib.flow import Flow
 
-        flow = Flow.from_client_config(config, SCOPES, autogenerate_code_verifier=True)
+        flow = Flow.from_client_config(config, OAUTH_SCOPES, autogenerate_code_verifier=True)
         flow.redirect_uri = _oauth_redirect()
         hint = session.get("user") or ""
         options = {"access_type": "offline", "prompt": "consent"}
@@ -1686,7 +1686,7 @@ def configure_app(app: Flask) -> None:
             flash("Gmail connection is temporarily unavailable. Please contact support.", "error")
             return redirect(url_for("connections_page"))
 
-        flow = Flow.from_client_config(config, SCOPES)
+        flow = Flow.from_client_config(config, OAUTH_SCOPES)
         flow.redirect_uri = _oauth_redirect()
         flow.code_verifier = verifier
         try:
@@ -1992,6 +1992,21 @@ def configure_app(app: Flask) -> None:
                 changes["preserve_langs"] = [p.strip().lower() for p in raw_preserve.split(",") if p.strip()]
             if "default_sender" in request.form:
                 changes["default_sender"] = request.form.get("default_sender", "")
+            if "auto_reply_allow" in request.form:
+                changes["auto_reply_allow"] = request.form.get("auto_reply_allow", "")
+            if "auto_reply_block" in request.form:
+                changes["auto_reply_block"] = request.form.get("auto_reply_block", "")
+            if "signatures_present" in request.form:
+                sigs = dict(load_settings().get("mail_signatures") or {})
+                for provider in ("gmail", "outlook"):
+                    field = f"signature_{provider}"
+                    if field in request.form:
+                        val = (request.form.get(field) or "").strip()
+                        if val:
+                            sigs[provider] = val
+                        else:
+                            sigs.pop(provider, None)
+                changes["mail_signatures"] = sigs
             if "notify_preset" in request.form:
                 changes["notify_auto_replies"] = request.form.get("notify_auto_replies") == "1"
                 changes["notify_important"] = request.form.get("notify_important") == "1"
@@ -2019,6 +2034,22 @@ def configure_app(app: Flask) -> None:
         if not nxt.startswith("#"):
             nxt = "#interrupt"
         return redirect(url_for("profile_page") + nxt)
+
+    @app.post("/settings/signature/import")
+    def signature_import():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        try:
+            sig = client_for("gmail").get_signature()
+            if sig:
+                session["imported_gmail_signature"] = sig
+                flash("Read your Gmail signature. Review it below and click Save signatures to keep it.")
+            else:
+                flash("Your Gmail account does not have a signature saved yet.", "error")
+        except (ConfigError, NotConnected) as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("profile_page") + "#signatures")
 
     @app.post("/settings/model")
     def model_save():
@@ -3478,8 +3509,16 @@ def _profile_context(form=None) -> dict:
     from gmail_auto.translator import SUPPORTED_LANGUAGES
 
     settings = load_settings()
+    imported_gmail = session.pop("imported_gmail_signature", None)
+    sigs = settings.get("mail_signatures") or {}
+    signature_gmail = imported_gmail if imported_gmail is not None else (sigs.get("gmail") or "")
     shared = {
         "settings": settings,
+        "auto_reply_allow_text": "\n".join(settings.get("auto_reply_allow") or []),
+        "auto_reply_block_text": "\n".join(settings.get("auto_reply_block") or []),
+        "signature_gmail": signature_gmail,
+        "signature_gmail_unsaved": imported_gmail is not None,
+        "signature_outlook": sigs.get("outlook") or "",
         "languages": LANGUAGES,
         "translation_modes": TRANSLATION_MODES,
         "supported_languages": SUPPORTED_LANGUAGES,

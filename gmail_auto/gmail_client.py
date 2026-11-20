@@ -18,6 +18,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/calendar.events",
 ]
+SIGNATURE_SCOPE = "https://www.googleapis.com/auth/gmail.settings.basic"
+OAUTH_SCOPES = [*SCOPES, SIGNATURE_SCOPE]
 UNREAD_QUERY = (
     "is:unread in:inbox -category:promotions -category:social "
     "-category:forums -in:chats -in:spam -in:trash -label:autogmail-done"
@@ -26,6 +28,22 @@ DONE_LABEL = "autogmail-done"
 RETRY_LABEL = "autogmail-retry"
 RECENT_QUERY = "in:inbox -in:chats -in:spam -in:trash"
 SENT_QUERY = "in:sent -in:chats"
+
+
+def _html_to_plain_signature(raw_html: str) -> str:
+    text = str(raw_html or "")
+    if not text.strip():
+        return ""
+    text = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", text)
+    text = re.sub(r"(?i)</\s*(p|div|li|tr)\s*>", "\n", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    lines = [line.strip() for line in text.splitlines()]
+    out: list[str] = []
+    for line in lines:
+        if line or (out and out[-1]):
+            out.append(line)
+    return "\n".join(out).strip()
 
 
 class GmailClient:
@@ -47,6 +65,29 @@ class GmailClient:
         if not self._email:
             raise ConfigError("Could not read the address of this Gmail account.")
         return self._email
+
+    def get_signature(self) -> str:
+        """Read the primary/matching Gmail send-as signature as plain text."""
+        try:
+            res = self.service.users().settings().sendAs().list(userId="me").execute()
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "insufficient" in msg or "403" in msg or "permission" in msg:
+                raise ConfigError("Reconnect Gmail in Connections to allow reading your Gmail signature, or paste it below.") from exc
+            raise _translate(exc) from exc
+        entries = list((res or {}).get("sendAs") or [])
+        if not entries:
+            return ""
+        me = ""
+        try:
+            me = self.get_user_email().lower()
+        except ConfigError:
+            me = ""
+        chosen = next(
+            (item for item in entries if me and str(item.get("sendAsEmail") or "").strip().lower() == me),
+            None,
+        ) or next((item for item in entries if item.get("isPrimary")), entries[0])
+        return _html_to_plain_signature(str(chosen.get("signature") or ""))
 
     def list_unread(self, limit: int = 20, since_ts: int | None = None) -> list[Mail]:
         query = UNREAD_QUERY
