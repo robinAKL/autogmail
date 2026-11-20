@@ -288,7 +288,7 @@ def configure_app(app: Flask) -> None:
         blocked = _login_required()
         if blocked:
             return blocked
-        inbox = _inbox(live=True, force=True)
+        inbox = _inbox(live=True, force=True, prefetch=True)
         if "application/json" in (request.headers.get("Accept") or ""):
             return {
                 "ok": True,
@@ -2531,7 +2531,7 @@ def _request_inbox_cache() -> dict:
     return g.workspace_inbox_cache
 
 
-def _inbox(live: bool = True, force: bool = False) -> dict:
+def _inbox(live: bool = True, force: bool = False, prefetch: bool = False) -> dict:
     who = session.get("user", "")
     cache = _request_inbox_cache()
     cached = cache["data"]
@@ -2568,7 +2568,7 @@ def _inbox(live: bool = True, force: bool = False) -> dict:
         clients, problems = [], [_safe_error(exc)]
     data["errors"].extend(problems)
     pairs = []
-    fetched = _list_mailboxes(clients, "recent")
+    fetched = _list_mailboxes(clients, "refresh" if prefetch else "recent")
     for account, mails, error in fetched:
         if account.get("provider"):
             provider = account["provider"]
@@ -2576,7 +2576,8 @@ def _inbox(live: bool = True, force: bool = False) -> dict:
             data["accounts"].append({"provider": provider, "label": label, "email": account.get("email") or label})
         if error:
             data["errors"].append(error)
-            continue
+            if not mails:
+                continue
         if account.get("provider"):
             data["provider_counts"][account["provider"]] = len(mails)
             data["cursors"][account["provider"]] = account.get("cursor") or ""
@@ -2734,6 +2735,8 @@ def _list_one_mailbox(client, reader: str = "recent") -> tuple:
         cursor = ""
         if reader == "sent":
             mails = client.list_sent(_INBOX_PAGE, full=False)
+        elif reader == "refresh":
+            return _refresh_one_mailbox(client, email, label)
         else:
             mails, cursor = _recent_page(client, _INBOX_PAGE)
         return ({"provider": client.provider, "email": email, "cursor": cursor}, mails, "")
@@ -2743,6 +2746,26 @@ def _list_one_mailbox(client, reader: str = "recent") -> tuple:
         return (_known_account(client, email), [], named_error(label, exc))
     except Exception as extra:
         return (_known_account(client, email), [], named_error(label, _safe_error(extra)))
+
+
+def _refresh_one_mailbox(client, email: str, label: str) -> tuple:
+    account = {"provider": client.provider, "email": email, "cursor": ""}
+    mails = []
+    cursor = ""
+    seen_cursors = set()
+    while len(mails) < _INBOX_CAP and cursor not in seen_cursors:
+        seen_cursors.add(cursor)
+        try:
+            remaining = _INBOX_CAP - len(mails)
+            page, cursor = _recent_page(client, remaining, cursor)
+        except (ConfigError, NotConnected) as exc:
+            return account, mails, named_error(label, exc)
+        except Exception as exc:
+            return account, mails, named_error(label, _safe_error(exc))
+        mails.extend(page[:remaining])
+        if not cursor:
+            break
+    return account, mails, ""
 
 
 def _known_account(client, email: str) -> dict:
