@@ -445,6 +445,7 @@ ZH = {
     "Knowledge, approvals and history are kept in: This computer (data folder).": "知识库、待确认和历史记录保存在：本机（data 文件夹）。",
     # calendar
     "Today": "今天", "Nothing on this day.": "这天没有安排。", "From email": "来自邮件",
+    "All calendars": "全部日历", "Could not read this calendar": "这个日历读不出来", "Calendar source": "日历来源",
     "Pacific/Auckland · Gmail and Outlook": "奥克兰时间 · Gmail 和 Outlook",
     "A letter from a real person that names a meeting or appointment with a date still ahead can be added automatically. Notifications, newsletters and letters without a date are never added. You can also add the opened letter from the inbox.": "真人来信里提到未来日期的会议或约会，可以自动加到日历。通知、新闻简报和没有日期的邮件不会加。你也可以在收件箱里把打开的邮件加到日历。",
     "Add dated meetings and appointments from mail to this calendar": "把邮件里带日期的会议和约会加到这个日历",

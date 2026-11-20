@@ -14,7 +14,7 @@
     </p>
   </div>
   <div class="head-actions">
-    <a class="button quiet" href="{{ url_for('calendar_page', year=board.this.year, month=board.this.month, day=board.this.day) }}">Today</a>
+    <a class="button quiet" href="{{ url_for('calendar_page', year=board.this.year, month=board.this.month, day=board.this.day, provider=board.provider or none) }}">Today</a>
   </div>
 </header>
 
@@ -27,10 +27,18 @@
 
 <div class="cal-layout">
   <section class="cal-board" aria-label="{{ board.title }}">
+    <nav class="cal-sources" aria-label="Calendar source">
+      {% for source in board.sources or [] %}
+      <a class="chip {{ source.provider }}" href="{{ url_for('calendar_page', year=board.year, month=board.month, day=board.selected, provider=source.provider or none) }}" {% if source.on %}aria-current="page"{% endif %}{% if source.error %} title="Could not read this calendar"{% endif %}>
+        <span>{{ source.label }}</span>
+        <span>{% if source.count is not none %}{{ source.count }}{% else %}—{% endif %}</span>
+      </a>
+      {% endfor %}
+    </nav>
     <div class="cal-toolbar">
-      <a class="button quiet small" href="{{ url_for('calendar_page', year=board.prev.year, month=board.prev.month) }}" aria-label="Previous month">‹</a>
+      <a class="button quiet small" href="{{ url_for('calendar_page', year=board.prev.year, month=board.prev.month, provider=board.provider or none) }}" aria-label="Previous month">‹</a>
       <h2>{{ board.title }}</h2>
-      <a class="button quiet small" href="{{ url_for('calendar_page', year=board.next.year, month=board.next.month) }}" aria-label="Next month">›</a>
+      <a class="button quiet small" href="{{ url_for('calendar_page', year=board.next.year, month=board.next.month, provider=board.provider or none) }}" aria-label="Next month">›</a>
     </div>
     <div class="cal-weekdays" aria-hidden="true">
       {% for name in board.weekdays %}<span>{{ name }}</span>{% endfor %}
@@ -40,7 +48,7 @@
       <div class="cal-week">
         {% for cell in week %}
         <a class="cal-cell{% if not cell.in_month %} out{% endif %}{% if cell.today %} today{% endif %}{% if cell.date == board.selected %} on{% endif %}"
-           href="{{ url_for('calendar_page', year=board.year, month=board.month, day=cell.date) }}">
+           href="{{ url_for('calendar_page', year=board.year, month=board.month, day=cell.date, provider=board.provider or none) }}">
           <span class="cal-num">{{ cell.num }}</span>
           {% for event in cell.events[:3] %}
           <span class="cal-pill {{ event.provider }}" title="{{ event.when }} · {{ event.title }}">

@@ -281,6 +281,36 @@ class CalendarTests(TempHome):
         self.assertEqual(found["events"][0]["title"], "Parent interview")
         self.assertEqual(board["selected_label"], "Friday 13 November")
         self.assertEqual(len(board["selected_events"]), 1)
+        self.assertEqual(board["provider"], "")
+        self.assertEqual([row["label"] for row in board["sources"]], ["All calendars", "Gmail", "Outlook"])
+        self.assertEqual([row["count"] for row in board["sources"]], [1, 1, 0])
+
+    def test_month_board_filters_one_provider_keeps_the_day_and_names_a_failed_provider(self):
+        from datetime import datetime
+        from gmail_auto.calendars import ZONE, _item, month_board
+
+        gmail = _item("g1", "gmail", "Parent interview", datetime(2026, 11, 13, 15, 0, tzinfo=ZONE), datetime(2026, 11, 13, 16, 0, tzinfo=ZONE), "", [], "")
+        outlook = _item("o1", "outlook", "Site visit", datetime(2026, 11, 13, 9, 0, tzinfo=ZONE), datetime(2026, 11, 13, 10, 0, tzinfo=ZONE), "", [], "")
+
+        with patch("gmail_auto.calendars._outlook_events", return_value=([outlook], "robin@example.com")), patch(
+            "gmail_auto.calendars._gmail_events", return_value=([gmail], "me@example.com")
+        ):
+            board = month_board(2026, 11, "2026-11-13", "outlook")
+        self.assertEqual(board["provider"], "outlook")
+        self.assertEqual(board["selected"], "2026-11-13")
+        self.assertEqual([event["title"] for event in board["selected_events"]], ["Site visit"])
+        self.assertEqual([row["count"] for row in board["sources"]], [2, 1, 1])
+        self.assertTrue(board["sources"][2]["on"])
+
+        with patch("gmail_auto.calendars._outlook_events", side_effect=ConfigError("Calendar permission was not granted.")), patch(
+            "gmail_auto.calendars._gmail_events", return_value=([gmail], "me@example.com")
+        ):
+            failed = month_board(2026, 11, "2026-11-13", "gmail")
+        self.assertEqual(failed["errors"], ["Outlook: Calendar permission was not granted."])
+        self.assertEqual(failed["selected"], "2026-11-13")
+        self.assertEqual(failed["sources"][1]["count"], 1)
+        self.assertIsNone(failed["sources"][2]["count"])
+        self.assertIn("permission", failed["sources"][2]["error"])
 
     def test_items_added_from_mail_can_be_removed_and_hand_made_ones_stay(self):
         from gmail_auto import calendars
