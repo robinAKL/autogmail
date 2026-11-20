@@ -292,6 +292,7 @@ def configure_app(app: Flask) -> None:
             return {
                 "ok": True,
                 "count": len(inbox.get("rows") or []),
+                "provider_counts": inbox.get("provider_counts", {}),
                 "errors": inbox.get("errors") or [],
             }
         return redirect(url_for("home", **_inbox_query()))
@@ -2351,8 +2352,14 @@ def _home_context() -> dict:
     hosted = bool(os.environ.get("VERCEL"))
     inbox = _inbox(live=not hosted or request.args.get("live") == "1")
     errors.extend(inbox["errors"])
-    rows = attach_stories(_merge_history(inbox["rows"]))
     accounts = _account_chips() or inbox["accounts"]
+    mailbox = request.args.get("mailbox", "")
+    if not any(item["provider"] == mailbox for item in accounts):
+        mailbox = None
+    rows = _merge_history(inbox["rows"])
+    if mailbox:
+        rows = [row for row in rows if row.get("provider") == mailbox]
+    rows = attach_stories(rows)
     from gmail_auto.importance import inbox_kinds
 
     kinds = set(inbox_kinds(load_settings()))
@@ -2394,6 +2401,8 @@ def _home_context() -> dict:
         "live": is_live(),
         "placeholder": placeholder,
         "accounts": accounts,
+        "mailbox": mailbox,
+        "provider_counts": inbox.get("provider_counts", {}),
         "connected": bool(accounts),
         "offline": inbox["offline"],
         "errors": errors,
@@ -2455,7 +2464,10 @@ def _inbox(live: bool = True) -> dict:
             "needs_fetch": False,
             "at": 0.0,
         }
-    data = {"rows": [], "mails": {}, "accounts": [], "errors": [], "offline": False, "needs_fetch": False, "at": time.time()}
+    data = {
+        "rows": [], "mails": {}, "accounts": [], "provider_counts": {}, "errors": [],
+        "offline": False, "needs_fetch": False, "at": time.time(),
+    }
     try:
         clients, problems = connected_clients()
     except Exception as exc:
@@ -2471,6 +2483,8 @@ def _inbox(live: bool = True) -> dict:
         if error:
             data["errors"].append(error)
             continue
+        if account.get("provider"):
+            data["provider_counts"][account["provider"]] = len(mails)
         for mail in mails:
             if not mail.account:
                 mail.account = account["email"]
@@ -2540,6 +2554,8 @@ def _list_one_mailbox(client) -> tuple:
         email = client.get_user_email()
         mails = client.list_recent(_INBOX_PAGE, full=False)
         return ({"provider": client.provider, "email": email}, mails, "")
+    except NotConnected:
+        return ({}, [], "")
     except ConfigError as exc:
         return (_known_account(client, email), [], named_error(label, exc))
     except Exception as extra:
@@ -2548,7 +2564,10 @@ def _list_one_mailbox(client) -> tuple:
 
 def _known_account(client, email: str) -> dict:
     if not email and getattr(client, "provider", "") == "outlook":
-        email = (microsoft.status("outlook").get("account") or "").strip()
+        try:
+            email = (microsoft.status("outlook").get("account") or "").strip()
+        except ConfigError:
+            return {}
     if not email:
         return {}
     return {"provider": client.provider, "email": email}
@@ -2590,6 +2609,7 @@ def _read_inbox_snapshot(who: str) -> dict | None:
         "rows": list(saved.get("rows") or []),
         "mails": {},
         "accounts": list(saved.get("accounts") or []),
+        "provider_counts": dict(saved.get("provider_counts") or {}),
         "errors": list(saved.get("errors") or []),
         "offline": bool(saved.get("offline")),
         "needs_fetch": False,
@@ -2608,6 +2628,7 @@ def _write_inbox_snapshot(who: str, data: dict) -> None:
                 "at": data.get("at") or time.time(),
                 "rows": data.get("rows") or [],
                 "accounts": data.get("accounts") or [],
+                "provider_counts": data.get("provider_counts") or {},
                 "errors": data.get("errors") or [],
                 "offline": bool(data.get("offline")),
             },
@@ -2646,6 +2667,9 @@ def _find_mail(key: str):
 
 def _inbox_query() -> dict:
     query = {}
+    mailbox = request.args.get("mailbox", "")
+    if mailbox in PROVIDERS:
+        query["mailbox"] = mailbox
     show = request.args.get("show", "")
     show = _OLD_FILTERS.get(show, show)
     if show in _FILTERS and show != _DEFAULT_FILTER:

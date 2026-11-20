@@ -333,3 +333,35 @@ def test_auto_reply_timeout_records_unconfirmed_delivery_and_skips_retry(saas):
         _run_mailbox(gmail, generate, profile, settings, True, report)
 
     gmail.send_reply.assert_called_once()
+
+
+def test_inbox_reports_counts_and_filters_connected_mailboxes(saas):
+    from unittest.mock import Mock
+    from tests.test_core import sample
+
+    browser = create_app().test_client()
+    with browser.session_transaction() as session:
+        session["user"] = "owner@example.com"
+        session["user_id"] = USER_A
+        session["login_session_id"] = login_sessions.create(USER_A)
+
+    gmail = Mock(provider="gmail")
+    gmail.get_user_email.return_value = "gmail@example.com"
+    gmail.list_recent.return_value = [sample(id="gmail-one", subject="Only in Gmail")]
+    outlook = Mock(provider="outlook")
+    outlook.get_user_email.return_value = "outlook@example.com"
+    outlook_mail = sample(id="outlook-one", subject="Only in Outlook")
+    outlook_mail.provider = "outlook"
+    outlook.list_recent.return_value = [outlook_mail]
+
+    with patch("gmail_auto.web.connected_clients", return_value=([gmail, outlook], [])), patch(
+        "gmail_auto.web._account_chips", return_value=[]
+    ):
+        refresh = browser.get("/inbox/refresh?mailbox=outlook")
+        assert "mailbox=outlook" in refresh.location
+        counts = browser.get("/inbox/refresh", headers={"Accept": "application/json"}).json
+        assert counts["provider_counts"] == {"gmail": 1, "outlook": 1}
+        page = browser.get("/?show=all&mailbox=outlook").get_data(as_text=True)
+        assert "Only in Outlook" in page
+        assert "Only in Gmail" not in page
+        assert "Outlook · outlook@example.com · 1 loaded" in page
