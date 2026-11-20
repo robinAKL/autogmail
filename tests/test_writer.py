@@ -3,6 +3,7 @@ import json
 from unittest.mock import patch
 
 from gmail_auto import approvals, assistant, contacts, invoices, knowledge, whatsapp, writer
+from gmail_auto.outlook_client import OutlookClient
 from gmail_auto.settings import save_settings
 from tests.test_compose import NewMailbox
 from tests.test_contacts import _record
@@ -97,6 +98,29 @@ class WriterPageTests(WebCase):
                         approvals.approve(item_id, "web")
                     choose.assert_any_call(provider)
                 self.assertEqual(boxes[provider].new, [("lee@client.example", "Test", expected, [])])
+
+    def test_outlook_workbench_places_the_logo_beside_the_signature_text(self):
+        box = OutlookClient()
+        box._email = "company@example.com"
+        save_settings({
+            "mail_signatures": {"outlook": "Company signature text"},
+            "signature_logo_positions": {"outlook:company@example.com": "left"},
+        })
+        started = self.client.get("/write?to=lee@client.example")
+        session_id = started.headers["Location"].rsplit("/", 1)[1]
+        with patch("gmail_auto.mailboxes.client_for", return_value=box), patch(
+            "gmail_auto.signatures.load_logo", return_value=("brand.png", "image/png", b"brand"),
+        ), patch("gmail_auto.outlook_client.microsoft.graph") as graph:
+            self.client.post(f"/write/{session_id}/send", data={
+                "to": "lee@client.example", "subject": "Test", "body": "Typed email", "provider": "outlook",
+            })
+        self.assertEqual(graph.call_args.args, ("outlook", "POST", "/me/sendMail"))
+        message = graph.call_args.kwargs["body"]["message"]
+        rich = message["body"]["content"]
+        logo = message["attachments"][0]
+        self.assertTrue(logo["isInline"])
+        self.assertLess(rich.index("Typed email"), rich.index("<table"))
+        self.assertLess(rich.index(f'cid:{logo["contentId"]}'), rich.index("Company signature text"))
 
     def test_email_language_is_kept_apart_from_the_chat_language(self):
         started = self.client.get("/write?to=ann@b.example")
