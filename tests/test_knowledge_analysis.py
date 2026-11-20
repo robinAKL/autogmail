@@ -33,6 +33,12 @@ class KnowledgeAnalysisTests(TempHome):
             ], ""
 
         def complete(system, prompt, **kwargs):
+            if "Fill the editable profile" in system:
+                return json.dumps({
+                    "name": "", "role": "", "introduction": "", "tone": "",
+                    "cannot_promise": [], "sample_phrases": [],
+                    "rules": [], "auto_reply_allow": [], "auto_reply_block": [],
+                })
             records = json.loads(prompt)
             source = records["1"]
             if source["type"] == "document":
@@ -155,6 +161,72 @@ class KnowledgeAnalysisTests(TempHome):
         self.assertEqual(len(collapsed), 1)
         self.assertIn("Monthly price is $129", collapsed[0]["text"])
         self.assertIn("Yearly price is $1299", collapsed[0]["text"])
+
+    def test_refreshing_during_a_batch_does_not_mark_the_job_failed(self):
+        from gmail_auto.errors import ConfigError
+
+        knowledge.add_document("Notes", "The office opens at nine.", "note", summarize=False)
+        browser = create_app().test_client()
+        browser.post("/knowledge/analyze")
+        with patch(
+            "gmail_auto.knowledge_analysis.workspace_operation",
+            side_effect=ConfigError("This workspace operation is already in progress. Try again shortly."),
+        ):
+            response = browser.post("/knowledge/analyze/step")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["status"], "running")
+        self.assertIn("previous batch", response.json["message"])
+
+    def test_analysis_writes_the_profile_rules_and_auto_reply_keywords(self):
+        from gmail_auto.profile_store import load_profile, save_profile
+        from gmail_auto.settings import load_settings, save_settings
+
+        save_profile({
+            "name": "Mailbox owner",
+            "role": "The person sending this reply",
+            "introduction": "No personal or business details have been supplied.",
+            "tone": "Clear, polite, and concise. Do not add a name or signature unless supplied.",
+            "cannot_promise": ["Do not invent facts, commitments, contact details, or a signature."],
+            "sample_phrases": ["Thank you for your message."],
+        })
+        knowledge.save_rules([
+            "Always ask me before agreeing to a meeting or a price.",
+            "Never reply to recruiters.",
+            "Emails from school are important: always ask me first.",
+        ])
+        save_settings({"auto_reply_allow": ["quote"], "auto_reply_block": ["invoice"]})
+        knowledge.merge_analysis([{
+            "kind": "person", "text": "Robin E is Co-Founder at InnoPro.",
+            "temporal": "stable", "source": "Signature",
+        }])
+        voice = json.dumps({
+            "name": "Robin E",
+            "role": "Co-Founder and Technology Director",
+            "introduction": "Robin leads InnoPro and writes practical replies for customers.",
+            "tone": "Warm, short, and direct.",
+            "cannot_promise": ["Do not agree a price without asking Robin."],
+            "sample_phrases": ["Thanks for your note."],
+            "rules": ["Ask Robin before agreeing a meeting or a price."],
+            "auto_reply_allow": ["inquiry"],
+            "auto_reply_block": ["contract"],
+        })
+        with patch("gmail_auto.knowledge_analysis.complete", return_value=voice):
+            knowledge_analysis._apply_learned_voice(None)
+        profile = load_profile()
+        self.assertEqual(profile["name"], "Robin E")
+        self.assertEqual(profile["role"], "Co-Founder and Technology Director")
+        self.assertIn("InnoPro", profile["introduction"])
+        self.assertEqual(profile["tone"], "Warm, short, and direct.")
+        self.assertIn("Do not agree a price without asking Robin.", profile["cannot_promise"])
+        self.assertIn("Thanks for your note.", profile["sample_phrases"])
+        self.assertEqual(knowledge.load_index()["rules"], ["Ask Robin before agreeing a meeting or a price."])
+        self.assertEqual(load_settings()["auto_reply_allow"], ["quote", "inquiry"])
+        self.assertEqual(load_settings()["auto_reply_block"], ["invoice", "contract"])
+
+        save_profile({**profile, "name": "Robin Edited"})
+        with patch("gmail_auto.knowledge_analysis.complete", return_value=voice):
+            knowledge_analysis._apply_learned_voice({"name": "Robin E"})
+        self.assertEqual(load_profile()["name"], "Robin Edited")
 
     def test_storyline_needs_more_than_one_reply(self):
         knowledge_analysis._flush_storylines({"threads": {

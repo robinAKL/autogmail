@@ -305,7 +305,7 @@
 
   <form class="card" method="post" action="{{ url_for('knowledge_rules') }}" id="rules">
     <h3 class="card-title">Rules that always win</h3>
-    <p class="muted">One per line. Analysis adds reply rules here from mail you sent. Edit or delete any line. These override everything else.</p>
+    <p class="muted">One per line. Analyse knowledge writes reply rules here, and fills your profile and auto-reply keywords when those are still the defaults. Edit or delete any line. These override everything else.</p>
     <textarea name="rules" rows="6" placeholder="Always ask me before agreeing to a meeting or a price.&#10;Never reply to recruiters.&#10;Emails from school are important: always ask me first.">{{ rules_text }}</textarea>
     <button type="submit">Save rules</button>
   </form>

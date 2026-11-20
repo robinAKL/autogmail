@@ -395,7 +395,7 @@
           try {
             if (window.sessionStorage) { window.sessionStorage.setItem(analysisKey, JSON.stringify(finalData)); }
           } catch (e) {}
-          window.location.hash = "analysis-results";
+          window.location.hash = "storylines";
           window.location.reload();
         }
       }).catch(function (err) {
@@ -403,7 +403,8 @@
         renderAnalyzeState({
           status: "error",
           documents: parseInt((statDocs && statDocs.textContent) || "0", 10) || 0,
-          emails: parseInt((statEmails && statEmails.textContent) || "0", 10) || 0,
+          received: parseInt((statReceived && statReceived.textContent) || "0", 10) || 0,
+          sent: parseInt((statSent && statSent.textContent) || "0", 10) || 0,
           skipped: parseInt((statSkipped && statSkipped.textContent) || "0", 10) || 0,
           message: (err && err.message) || "Analysis could not complete."
         });
