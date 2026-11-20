@@ -218,6 +218,27 @@ class SendWithAttachmentTests(WebCase):
         self.assertEqual(calls[-1], ("POST", "/me/messages/draft-1/send"))
         self.assertNotIn(("POST", "/me/sendMail"), calls)
 
+    def test_outlook_reads_the_address_when_the_saved_account_is_blank(self):
+        from gmail_auto.outlook_client import OutlookClient
+
+        calls = []
+        client = OutlookClient.__new__(OutlookClient)
+        client._email = ""
+
+        def address():
+            client._email = "robin@innopro.co.nz"
+            return client._email
+
+        client.get_user_email = address
+        with patch("gmail_auto.microsoft.graph", side_effect=lambda *a, **k: calls.append(k) or {}), patch(
+            "gmail_auto.microsoft.status", return_value={"connected": True, "account": ""}
+        ), patch("gmail_auto.signatures.load_logo", return_value=("logo.png", "image/png", b"\x89PNG")) as loader:
+            client.send_new("lee@a.example", "Hello", "Hi")
+        loader.assert_called_once_with("outlook", "robin@innopro.co.nz")
+        logo = calls[0]["body"]["message"]["attachments"][0]
+        self.assertEqual(logo["isInline"], True)
+        self.assertEqual(base64.b64decode(logo["contentBytes"]), b"\x89PNG")
+
 
 class AttachOnPageTests(WebCase):
     def test_attach_from_knowledge_and_upload_then_send(self):
