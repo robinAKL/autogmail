@@ -57,6 +57,19 @@ class GmailClient:
     def list_recent(self, limit: int = 25, full: bool = False) -> list[Mail]:
         return self._list(RECENT_QUERY, limit, full=full)
 
+    def list_recent_page(self, limit: int = 20, token: str = "", full: bool = False) -> tuple[list[Mail], str]:
+        """One inbox page of metadata, plus the token for the next page. Stops after this page."""
+        want = max(1, min(int(limit), 100))
+        kwargs = {"userId": "me", "q": RECENT_QUERY, "maxResults": want}
+        if token:
+            kwargs["pageToken"] = token
+        try:
+            listed = self.service.users().messages().list(**kwargs).execute()
+        except Exception as exc:
+            raise _translate(exc) from exc
+        ids = [item["id"] for item in listed.get("messages") or [] if item.get("id")]
+        return self._mails_for_ids(ids, full), listed.get("nextPageToken") or ""
+
     def search(self, text: str, limit: int = 25, raw: bool = False) -> list[Mail]:
         """Gmail's own search over the whole mailbox, so older or archived letters are found too.
 
@@ -255,7 +268,9 @@ class GmailClient:
                     break
         except Exception as exc:
             raise _translate(exc) from exc
-        ids = ids[:want]
+        return self._mails_for_ids(ids[:want], full)
+
+    def _mails_for_ids(self, ids: list[str], full: bool) -> list[Mail]:
         if not ids:
             return []
         found: dict[str, dict] = {}
