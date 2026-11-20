@@ -94,11 +94,17 @@ def validate_provider(provider: str) -> str:
 
 def start(to: str, points: str, subject: str, profile: dict, records: list[dict], provider: str = "", complete=None, cc: str = "") -> dict:
     """Write the email, put it in the queue and attach the files. Returns the waiting item."""
+    from gmail_auto.settings import append_signature, load_settings, signature_for_mailbox
+
     to = clean_recipients(to)
     cc = clean_recipients(cc) if (cc or "").strip() else ""
     chosen_provider = validate_provider(provider)
+    actual_provider = chosen_provider or default_provider()
     subject, body, sources = write(to, points, subject, profile, [record["name"] for record in records], complete=complete)
-    item = approvals.create_new(to, subject, body, provider=chosen_provider or default_provider(), sources=sources, cc=cc)
+    sig = signature_for_mailbox(load_settings(), provider=actual_provider)
+    if sig:
+        body = append_signature(body, sig)
+    item = approvals.create_new(to, subject, body, provider=actual_provider, sources=sources, cc=cc)
     for record in records:
         approvals.attach(item["id"], record)
     return approvals.get(item["id"])

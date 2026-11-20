@@ -57,6 +57,9 @@ DEFAULTS = {
     "translate_outgoing": True,
     "preserve_langs": [],
     "default_sender": "",
+    "auto_reply_allow": [],
+    "auto_reply_block": [],
+    "mail_signatures": {},
 }
 
 
@@ -181,6 +184,9 @@ def _clean(data: dict, strict: bool = False) -> dict:
         "translate_outgoing": bool(data.get("translate_outgoing", DEFAULTS["translate_outgoing"])),
         "preserve_langs": preserve_langs,
         "default_sender": default_sender,
+        "auto_reply_allow": _rule_lines(data.get("auto_reply_allow"), strict),
+        "auto_reply_block": _rule_lines(data.get("auto_reply_block"), strict),
+        "mail_signatures": _clean_signatures(data.get("mail_signatures"), strict),
     }
 
 
@@ -233,3 +239,106 @@ def _union_lines(items: list[str], fallback: list[str]) -> list[str]:
             out.append(item)
             seen.add(item.lower())
     return out[:_CLEANUP_LINES]
+
+
+def _rule_lines(value, strict: bool) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        raw = [line.strip() for line in value.splitlines() if line.strip()]
+    elif isinstance(value, (list, tuple)):
+        raw = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        return []
+    if len(raw) > _CLEANUP_LINES:
+        if strict:
+            raise ConfigError(f"Keep auto-reply rules to {_CLEANUP_LINES} or fewer lines.")
+        raw = raw[:_CLEANUP_LINES]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if len(item) > _CLEANUP_CHARS:
+            if strict:
+                raise ConfigError("One of the auto-reply rules is too long.")
+            item = item[:_CLEANUP_CHARS]
+        key = item.lower()
+        if key not in seen:
+            out.append(item)
+            seen.add(key)
+    return out
+
+
+def _clean_signatures(value, strict: bool) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, str] = {}
+    for raw_key, raw_sig in value.items():
+        key = str(raw_key or "").strip().lower()
+        if not key or not isinstance(raw_sig, str):
+            continue
+        sig = raw_sig.replace("\r\n", "\n").strip()
+        if len(sig) > 2000:
+            if strict:
+                raise ConfigError("Keep each mailbox signature to 2000 characters or fewer.")
+            sig = sig[:2000]
+        if sig:
+            out[key] = sig
+    return out
+
+
+def _rule_matches(rule: str, sender: str, haystack: str) -> bool:
+    needle = (rule or "").strip().lower()
+    if not needle:
+        return False
+    if needle.startswith("@"):
+        return needle in sender
+    if "@" in needle and " " not in needle:
+        return needle in sender or needle in haystack
+    return needle in sender or needle in haystack
+
+
+def evaluate_auto_reply_rules(mail, settings: dict) -> tuple[bool, str]:
+    """Tighten whether a reply may be auto-sent in smart/never modes."""
+    sender = " ".join(
+        part for part in (
+            getattr(mail, "from_email", "") or "",
+            getattr(mail, "reply_email", "") or "",
+            getattr(mail, "from_name", "") or "",
+        ) if part
+    ).lower()
+    haystack = " ".join(
+        part for part in (
+            getattr(mail, "subject", "") or "",
+            getattr(mail, "body", "") or "",
+            getattr(mail, "snippet", "") or "",
+        ) if part
+    ).lower()
+    for rule in settings.get("auto_reply_block") or []:
+        if _rule_matches(rule, sender, haystack):
+            return False, f"Held by never-auto-reply rule: {rule}"
+    allow_rules = settings.get("auto_reply_allow") or []
+    if allow_rules and not any(_rule_matches(rule, sender, haystack) for rule in allow_rules):
+        return False, "Held because it did not match your auto-reply allow rules."
+    return True, ""
+
+
+def signature_for_mailbox(settings: dict, provider: str = "", email: str = "") -> str:
+    sigs = settings.get("mail_signatures") or {}
+    if not isinstance(sigs, dict):
+        return ""
+    for candidate in ((email or "").strip().lower(), (provider or "").strip().lower()):
+        if candidate and isinstance(sigs.get(candidate), str) and sigs[candidate].strip():
+            return sigs[candidate].strip()
+    return ""
+
+
+def append_signature(body: str, signature: str) -> str:
+    text = (body or "").rstrip()
+    sig = (signature or "").strip()
+    if not sig:
+        return text
+    if not text:
+        return sig
+    if text.endswith(sig):
+        return text
+    return f"{text}\n\n{sig}"

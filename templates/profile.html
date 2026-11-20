@@ -74,6 +74,51 @@
   </form>
 </section>
 
+<section class="card" id="auto-reply-rules">
+  <h2 class="card-title">Auto-reply rules</h2>
+  <p class="muted">Decide when a reply may go out automatically in Send the easy ones or Send whenever it can mode. In Write only or Show me every reply mode, nothing sends on its own. For what a reply says, use Rules that always win in Knowledge.</p>
+  <form method="post" action="{{ url_for('settings_save') }}" class="stack">
+    <input type="hidden" name="next" value="#send">
+    <label>
+      When auto-reply may send (optional, one per line: sender, @domain, or keyword)
+      <textarea name="auto_reply_allow" rows="3" placeholder="quote&#10;@client.co.nz">{{ auto_reply_allow_text }}</textarea>
+    </label>
+    <label>
+      Never auto-reply to (one per line: sender, @domain, or keyword — always waits for your OK)
+      <textarea name="auto_reply_block" rows="3" placeholder="invoice&#10;@ird.govt.nz&#10;contract">{{ auto_reply_block_text }}</textarea>
+    </label>
+    <div class="button-row">
+      <button type="submit">Save auto-reply rules</button>
+    </div>
+  </form>
+</section>
+
+<section class="card" id="signatures">
+  <h2 class="card-title">Mailbox signatures</h2>
+  <p class="muted">Stored separately for each mailbox and added when you write or reply from that mailbox. Read your Gmail signature first, then click Save signatures to keep it. Outlook signatures can be pasted here.</p>
+  {% if signature_gmail_unsaved %}
+  <p class="banner warn">Loaded from Gmail. Click Save signatures below to keep it.</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('signature_import') }}" class="button-row">
+    <button type="submit" class="quiet">Read from Gmail</button>
+  </form>
+  <form method="post" action="{{ url_for('settings_save') }}" class="stack">
+    <input type="hidden" name="next" value="#send">
+    <input type="hidden" name="signatures_present" value="1">
+    <label>
+      Gmail signature
+      <textarea name="signature_gmail" rows="4" placeholder="Kind regards,&#10;Your Name">{{ signature_gmail }}</textarea>
+    </label>
+    <label>
+      Outlook signature
+      <textarea name="signature_outlook" rows="4" placeholder="Kind regards,&#10;Your Name">{{ signature_outlook }}</textarea>
+    </label>
+    <div class="button-row">
+      <button type="submit">Save signatures</button>
+    </div>
+  </form>
+</section>
+
 <section class="card" id="model">
   <h2 class="card-title">Models</h2>
   <p class="muted">Super decides. Worker reads, summarises and writes. This is advanced; most people can leave the defaults.</p>
