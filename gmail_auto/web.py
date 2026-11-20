@@ -254,8 +254,9 @@ def configure_app(app: Flask) -> None:
             page = document("", "This letter could not be loaded right now.")
         else:
             settings = load_settings()
+            mode = settings.get("translation_mode", "off")
             translated = ""
-            if settings.get("translation_mode", "off") != "off":
+            if mode != "off":
                 if not getattr(mail, "translated_body", ""):
                     try:
                         from gmail_auto.translator import translate_inbound_mail
@@ -268,7 +269,7 @@ def configure_app(app: Flask) -> None:
                     except Exception:
                         pass
                 translated = getattr(mail, "translated_body", "")
-            page = document(mail.html, mail.body, translated=translated)
+            page = document(mail.html, mail.body, translated=translated, mode=mode)
         response = Response(page, mimetype="text/html")
         response.headers["Content-Security-Policy"] = FRAME_POLICY
         response.headers["X-Content-Type-Options"] = "nosniff"

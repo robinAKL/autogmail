@@ -1,5 +1,6 @@
 """Seamless multi-language translation engine for inbound reading and outbound replies."""
 
+import html
 import re
 import logging
 from typing import Tuple, List, Dict
@@ -109,6 +110,36 @@ def detect_language(text: str) -> str:
         if spanish_hits >= 2:
             return "es"
 
+    # Turkish (unique chars ğ, ş, ı)
+    if len(re.findall(r"[ğşış]", lower)) >= 2 or len(re.findall(r"\b(merhaba|teşekkür|teşekkürler|için|lütfen|ile|saygılarımla)\b", lower)) >= 2:
+        return "tr"
+
+    # Polish (unique chars ą, ę, ł, ń, ś, ź, ż)
+    if len(re.findall(r"[ąćęłńśźż]", lower)) >= 2 or len(re.findall(r"\b(proszę|dziękuję|witam|pozdrawiam|jest|nie|tak)\b", lower)) >= 2:
+        return "pl"
+
+    # Portuguese (ã, õ or strong keyword hits)
+    if len(re.findall(r"[ãõ]", lower)) >= 1 and len(re.findall(r"\b(olá|obrigado|obrigada|para|com|não|você|bom|prezado|atenciosamente)\b", lower)) >= 1:
+        return "pt"
+    if len(re.findall(r"\b(olá|obrigado|obrigada|você|prezado|atenciosamente)\b", lower)) >= 2:
+        return "pt"
+
+    # Italian
+    if len(re.findall(r"\b(ciao|grazie|buongiorno|gentile|cordiali|saluti|sono|per|con|che)\b", lower)) >= 2:
+        if re.search(r"\b(ciao|grazie|buongiorno|gentile|cordiali|saluti)\b", lower):
+            return "it"
+
+    # Dutch
+    if len(re.findall(r"\b(hallo|bedankt|groeten|voor|met|het|een|van|niet|met\s+vriendelijke)\b", lower)) >= 2:
+        if re.search(r"\b(hallo|bedankt|groeten|vriendelijke)\b", lower):
+            return "nl"
+
+    # Indonesian / Malay
+    if len(re.findall(r"\b(terima\s+kasih|selamat|dengan|untuk|yang|tidak|mohon|silakan|sila|semak|encik|puan|tuan)\b", lower)) >= 2:
+        if re.search(r"\b(sila|semak|encik|puan|tuan)\b", lower):
+            return "ms"
+        return "id"
+
     return "en"
 
 
@@ -175,12 +206,29 @@ def translate_text(text: str, from_lang: str, to_lang: str, context: str = "", *
     return translated or text
 
 
+_HTML_BLOCK_RE = re.compile(r"(?is)<(script|style|head)\b.*?</\1\s*>")
+_HTML_BREAK_RE = re.compile(r"(?is)<(?:br\s*/?|/(?:p|div|li|tr|h[1-6]))>")
+_HTML_TAG_RE = re.compile(r"(?is)<[^>]+>")
+
+
+def _html_to_text(raw_html: str) -> str:
+    if not raw_html:
+        return ""
+    text = _HTML_BLOCK_RE.sub("", raw_html)
+    text = _HTML_BREAK_RE.sub("\n", text)
+    text = _HTML_TAG_RE.sub(" ", text)
+    text = html.unescape(text)
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    return "\n".join(line for line in lines if line).strip()
+
+
 def translate_inbound_mail(mail: Mail, user_lang: str = "zh", preserve_langs: List[str] | None = None) -> Mail:
     """Translate an incoming mail to user's first language if needed.
     
     Populates detected_lang, translated_subject, translated_body, translated_snippet.
     """
-    full_sample = f"{mail.subject or ''}\n{mail.body or ''}"
+    source_body = (mail.body or "").strip() or _html_to_text(getattr(mail, "html", ""))
+    full_sample = f"{mail.subject or ''}\n{source_body}"
     detected = detect_language(full_sample)
     mail.detected_lang = detected
 
@@ -201,7 +249,7 @@ def translate_inbound_mail(mail: Mail, user_lang: str = "zh", preserve_langs: Li
         mail.translated_subject = ""
 
     # 2. Translate body (separating active text from quoted history to save tokens)
-    active_body, quoted_history = split_mail_body(mail.body)
+    active_body, quoted_history = split_mail_body(source_body)
     if active_body:
         translated_active = translate_text(active_body, detected, user_lang, context=context)
         if quoted_history:
@@ -236,9 +284,10 @@ def translate_outbound_reply(reply_text: str, target_lang: str, user_lang: str =
 
 def extract_entities(text: str) -> Dict[str, List[str]]:
     """Extract key business entities for safety alignment checking."""
+    urls = [u.rstrip(".,;:!?。，；：！？)]}") for u in _URL_RE.findall(text or "")]
     return {
         "emails": _EMAIL_RE.findall(text or ""),
-        "urls": _URL_RE.findall(text or ""),
+        "urls": [u for u in urls if u],
         "amounts": _AMOUNT_RE.findall(text or ""),
     }
 

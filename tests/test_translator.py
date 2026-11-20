@@ -113,6 +113,60 @@ class TestTranslator(unittest.TestCase):
         self.assertEqual(res_mail.translated_subject, "发票咨询")
         self.assertEqual(res_mail.translated_body, "请问发票开具了吗？")
 
+    def test_detect_additional_supported_languages(self):
+        self.assertEqual(detect_language("Olá, obrigado pela sua resposta rápida."), "pt")
+        self.assertEqual(detect_language("Buongiorno, grazie mille per la risposta."), "it")
+        self.assertEqual(detect_language("Hallo, bedankt voor uw bericht. Met vriendelijke groeten."), "nl")
+        self.assertEqual(detect_language("Dziękuję bardzo, pozdrawiam serdecznie."), "pl")
+        self.assertEqual(detect_language("Merhaba, hızlı dönüşünüz için teşekkürler."), "tr")
+        self.assertEqual(detect_language("Terima kasih banyak, silakan cek dokumen ini."), "id")
+        self.assertEqual(detect_language("Terima kasih Tuan, sila semak dokumen ini."), "ms")
+
+    def test_verify_entities_url_trailing_punctuation(self):
+        src = "Please pay at https://pay.example.com."
+        dst = "请在 https://pay.example.com。完成付款"
+        ok, missing = verify_entities_preserved(src, dst)
+        self.assertTrue(ok)
+        self.assertEqual(missing, [])
+
+    @patch("gmail_auto.translator.model_ready", return_value=True)
+    @patch("gmail_auto.translator.complete")
+    def test_translate_inbound_html_only_mail(self, mock_complete, mock_ready):
+        mock_complete.side_effect = lambda sys, user, **kw: "译文：" + user.split("[Text to Translate]:\n")[-1]
+        mail = Mail(
+            id="103",
+            thread_id="t103",
+            from_name="Alice",
+            from_email="alice@example.com",
+            reply_email="alice@example.com",
+            subject="Contract",
+            date="Today",
+            body="",
+            html="<html><body><style>.x{}</style><p>Please review the contract.</p></body></html>",
+            snippet="",
+        )
+        res_mail = translate_inbound_mail(mail, user_lang="zh")
+        self.assertEqual(res_mail.detected_lang, "en")
+        self.assertEqual(res_mail.translated_body, "译文：Please review the contract.")
+
+    def test_mailview_document_modes(self):
+        from gmail_auto.mailview import document
+
+        seamless_html = document("<p>Hello</p>", "", translated="你好", mode="seamless")
+        self.assertIn("Seamless Translation", seamless_html)
+        self.assertIn('<details class="orig-toggle"', seamless_html)
+        self.assertIn("你好", seamless_html)
+
+        bilingual_html = document("<p>Hello</p>", "", translated="你好", mode="bilingual")
+        self.assertIn("Bilingual View", bilingual_html)
+        self.assertIn("orig-bilingual", bilingual_html)
+        self.assertNotIn('<details class="orig-toggle"', bilingual_html)
+
+        off_html = document("<p>Hello</p>", "", translated="你好", mode="off")
+        self.assertNotIn("Seamless Translation", off_html)
+        self.assertNotIn("Bilingual View", off_html)
+        self.assertIn("<p>Hello</p>", off_html)
+
 
 if __name__ == "__main__":
     unittest.main()
