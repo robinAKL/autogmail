@@ -756,13 +756,13 @@ class StoryTests(unittest.TestCase):
         self.assertEqual(rows[0]["story_id"], rows[1]["story_id"])
         self.assertEqual(rows[0]["story_id"], rows[2]["story_id"])
         self.assertNotEqual(rows[0]["story_id"], rows[3]["story_id"])
-        self.assertEqual(rows[0]["story_size"], 3)
+        self.assertEqual(rows[0]["story_size"], 4)
         self.assertTrue(rows[0]["story_open"])
         self.assertEqual(rows[0]["story_status"], "waiting_on_me")
         self.assertFalse(rows[3]["story_open"])
         self.assertIsNone(story_view(lone, rows))
         view = story_view(follow, rows)
-        self.assertEqual(view["size"], 3)
+        self.assertEqual(view["size"], 4)
         self.assertEqual(view["label"], "Waiting on you")
         self.assertEqual(view["sources"], ["Price list"])
         self.assertTrue(any(step["current"] and step["key"] == "b" for step in view["steps"]))
@@ -842,6 +842,22 @@ class StoryTests(unittest.TestCase):
         text = format_history(history_for_mail(mail))
         self.assertIn("Asked for a May quote.", text)
         self.assertIn("200 an hour", text)
+
+    def test_skipped_conversation_and_sent_reply_appear_on_story_board(self):
+        from gmail_auto.story import attach_stories, story_board, story_view
+
+        support = {"key": "first", "thread_id": "support", "subject": "Change of address",
+                   "email": "helpdesk@example.com", "kind": "skipped", "group": "skipped", "received_ts": 1}
+        followup = {**support, "key": "followup", "received_ts": 2}
+        rows = attach_stories([support, followup])
+        board = story_board(rows, hidden=set())
+        self.assertEqual([(card["size"], card["status"]) for card in board], [(2, "settled")])
+        self.assertEqual(story_view(followup, rows)["size"], 2)
+
+        received = {**support, "key": "sent", "thread_id": "answered", "kind": "sent", "reply": "Here is my reply."}
+        rows = attach_stories([received])
+        self.assertEqual(story_board(rows, hidden=set())[0]["size"], 2)
+        self.assertTrue(story_view(received, rows)["steps"][-1]["outbound"])
 
     def test_story_board_hides_a_finished_matter(self):
         from gmail_auto.story import attach_stories, hide_story, story_board
