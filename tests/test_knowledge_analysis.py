@@ -156,6 +156,23 @@ class KnowledgeAnalysisTests(TempHome):
         self.assertIn("Monthly price is $129", collapsed[0]["text"])
         self.assertIn("Yearly price is $1299", collapsed[0]["text"])
 
+    def test_refreshing_during_a_batch_does_not_mark_the_job_failed(self):
+        from gmail_auto.errors import ConfigError
+
+        knowledge.add_document("Notes", "The office opens at nine.", "note", summarize=False)
+        browser = create_app().test_client()
+        browser.post("/knowledge/analyze")
+        with patch(
+            "gmail_auto.knowledge_analysis.workspace_operation",
+            side_effect=ConfigError("This workspace operation is already in progress. Try again shortly."),
+        ):
+            response = browser.post("/knowledge/analyze/step")
+        self.assertEqual(response.status_code, 200)
+        body = response.json
+        self.assertEqual(body["status"], "running")
+        self.assertIn("previous batch", body["message"])
+        self.assertEqual(knowledge_analysis.status()["status"], "running")
+
     def test_storyline_needs_more_than_one_reply(self):
         knowledge_analysis._flush_storylines({"threads": {
             "gmail:once": {
