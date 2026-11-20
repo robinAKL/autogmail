@@ -128,3 +128,22 @@ def test_hosted_saas_requires_a_canonical_origin_and_persistent_storage(saas, mo
         client = create_app().test_client()
         assert client.get("/login", base_url="https://other.example").status_code == 403
         assert client.get("/login", base_url="https://mail.example").status_code == 200
+
+
+def test_reply_cannot_be_sent_from_a_replacement_mailbox(saas):
+    from unittest.mock import Mock
+
+    from gmail_auto import approvals
+    from gmail_auto.models import Draft
+    from tests.test_core import sample
+
+    client = Mock()
+    client.get_user_email.return_value = "replacement@example.com"
+    mail = sample(id="original")
+    mail.account = "original@example.com"
+    with user_scope(USER_A):
+        item = approvals.create(mail, Draft(reply="Original reply."), "en")
+        with pytest.raises(ConfigError, match="Reconnect the mailbox"):
+            approvals.approve(item["id"], "web", client)
+        assert approvals.get(item["id"])["status"] == "pending"
+    client.send_reply.assert_not_called()

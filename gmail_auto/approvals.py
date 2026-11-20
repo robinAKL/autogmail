@@ -272,6 +272,10 @@ def approve(item_id: str, via: str, client=None) -> dict:
         attached = _attachment_bytes(item)
         is_new = item.get("mode") == "new"
         user_email = "" if is_new else client.get_user_email()
+        if saas_enabled() and not is_new:
+            original_account = (item.get("account") or "").strip().casefold()
+            if not original_account or original_account != user_email.strip().casefold():
+                raise ConfigError("Reconnect the mailbox that received this email before sending its reply.")
         dispatch_started = True
         if is_new:
             if item.get("cc"):
