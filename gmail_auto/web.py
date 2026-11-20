@@ -297,6 +297,13 @@ def configure_app(app: Flask) -> None:
             }
         return redirect(url_for("home", **_inbox_query()))
 
+    @app.get("/sent")
+    def sent_page():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        return _render("sent.html", **_sent())
+
     @app.post("/inbox/story/hide")
     def story_hide():
         blocked = _login_required()
@@ -2474,7 +2481,7 @@ def _inbox(live: bool = True) -> dict:
         clients, problems = [], [_safe_error(exc)]
     data["errors"].extend(problems)
     pairs = []
-    fetched = _list_mailboxes(clients)
+    fetched = _list_mailboxes(clients, "recent")
     for account, mails, error in fetched:
         if account.get("provider"):
             provider = account["provider"]
@@ -2524,35 +2531,82 @@ def _refresh_status(data: dict) -> None:
     data["rows"] = rows
 
 
-def _list_mailboxes(clients) -> list[tuple]:
+def _sent() -> dict:
+    """Sent mail from the mailboxes connected to the signed-in workspace."""
+    data = {"rows": [], "accounts": [], "errors": [], "connected": False}
+    try:
+        clients, problems = connected_clients()
+    except Exception as exc:
+        clients, problems = [], [_safe_error(exc)]
+    data["errors"].extend(problems)
+    for account, mails, error in _list_mailboxes(clients, "sent"):
+        if account.get("provider"):
+            provider = account["provider"]
+            label = PROVIDERS.get(provider, "Mailbox")
+            data["accounts"].append({"provider": provider, "label": label, "email": account.get("email") or label})
+            data["connected"] = True
+        if error:
+            data["errors"].append(error)
+            continue
+        for mail in mails:
+            if not mail.account:
+                mail.account = account.get("email") or ""
+            data["rows"].append(_sent_row(mail, account))
+    data["rows"].sort(key=lambda row: row.get("received_ts") or 0, reverse=True)
+    return data
+
+
+def _sent_row(mail, account: dict) -> dict:
+    mailbox = (account.get("email") or mail.account or "").strip()
+    recipient = (mail.headers or {}).get("to") or ""
+    return {
+        "key": mail.key,
+        "who": recipient or mail.from_name or mail.from_email or "Unknown",
+        "subject": mail.subject or "(no subject)",
+        "snippet": " ".join((mail.snippet or mail.body or "").split())[:160],
+        "short_date": _short_date(mail.date),
+        "provider": mail.provider,
+        "provider_label": PROVIDERS.get(mail.provider, "Mail"),
+        "mailbox": mailbox or PROVIDERS.get(account.get("provider"), "Mailbox"),
+        "received_ts": float(mail.received_ts or 0),
+    }
+
+
+def _list_mailboxes(clients, reader: str = "recent") -> list[tuple]:
     """Read each mailbox on its own thread so Gmail and Outlook do not wait for each other."""
     if not clients:
         return []
     if len(clients) == 1:
-        return [_list_one_mailbox(clients[0])]
+        return [_list_one_mailbox(clients[0], reader)]
     from flask import copy_current_request_context
 
     with ThreadPoolExecutor(max_workers=len(clients)) as pool:
         if saas_enabled():
             user_id = require_user_id()
 
-            def read_in_workspace(client):
+            def read_in_workspace(client, reader=reader):
                 with user_scope(user_id):
-                    return _list_one_mailbox(client)
+                    return _list_one_mailbox(client, reader)
 
             futures = [pool.submit(read_in_workspace, client) for client in clients]
         else:
-            readers = [copy_current_request_context(lambda client=client: _list_one_mailbox(client)) for client in clients]
+            readers = [
+                copy_current_request_context(lambda client=client, reader=reader: _list_one_mailbox(client, reader))
+                for client in clients
+            ]
             futures = [pool.submit(reader) for reader in readers]
         return [future.result() for future in as_completed(futures)]
 
 
-def _list_one_mailbox(client) -> tuple:
+def _list_one_mailbox(client, reader: str = "recent") -> tuple:
     label = PROVIDERS.get(getattr(client, "provider", "gmail"), "Mailbox")
     email = ""
     try:
         email = client.get_user_email()
-        mails = client.list_recent(_INBOX_PAGE, full=False)
+        if reader == "sent":
+            mails = client.list_sent(_INBOX_PAGE, full=False)
+        else:
+            mails = client.list_recent(_INBOX_PAGE, full=False)
         return ({"provider": client.provider, "email": email}, mails, "")
     except NotConnected:
         return ({}, [], "")

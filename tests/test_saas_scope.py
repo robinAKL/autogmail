@@ -365,3 +365,83 @@ def test_inbox_reports_counts_and_filters_connected_mailboxes(saas):
         assert "Only in Outlook" in page
         assert "Only in Gmail" not in page
         assert "Outlook · outlook@example.com · 1 loaded" in page
+
+
+def _signed_in(browser, user_id):
+    with browser.session_transaction() as session:
+        session["user"] = f"{user_id[:6]}@example.com"
+        session["user_id"] = user_id
+        session["login_session_id"] = login_sessions.create(user_id)
+
+
+def _sent_client(provider, email, subject, recipient, stamp):
+    from unittest.mock import Mock
+
+    from gmail_auto.models import Mail
+
+    mail = Mail(
+        id=f"{provider}-{stamp}",
+        thread_id=f"thread-{stamp}",
+        from_name="Owner",
+        from_email=email,
+        reply_email="",
+        subject=subject,
+        date="2026-11-20 10:00",
+        body="",
+        headers={"to": recipient},
+        snippet=subject,
+        provider=provider,
+        received_ts=stamp,
+    )
+    client = Mock(provider=provider)
+    client.get_user_email.return_value = email
+
+    def list_sent(*_args, **_kwargs):
+        assert current_user_id()
+        return [mail]
+
+    client.list_sent.side_effect = list_sent
+    return client
+
+
+def test_sent_menu_lists_only_the_signed_in_users_mailboxes(saas):
+    app = create_app()
+    app.testing = True
+    browser = app.test_client()
+    anonymous = browser.get("/sent")
+    assert anonymous.status_code == 302
+    assert "/login" in (anonymous.location or "")
+
+    gmail_a = _sent_client("gmail", "a.gmail@example.com", "Alpha sent note", "lee@client.example", 200)
+    outlook_a = _sent_client("outlook", "a.outlook@example.com", "Alpha outlook note", "sam@client.example", 100)
+    gmail_b = _sent_client("gmail", "b.gmail@example.com", "Beta sent note", "other@client.example", 300)
+
+    def clients():
+        if current_user_id() == USER_A:
+            return [gmail_a, outlook_a], []
+        if current_user_id() == USER_B:
+            return [gmail_b], []
+        return [], []
+
+    with patch("gmail_auto.web.connected_clients", side_effect=clients):
+        _signed_in(browser, USER_A)
+        first = browser.get("/sent")
+        _signed_in(browser, USER_B)
+        second = browser.get("/sent")
+
+    assert first.status_code == 200
+    page_a = first.get_data(as_text=True)
+    assert "Alpha sent note" in page_a
+    assert "Alpha outlook note" in page_a
+    assert 'class="chip tiny source-mailbox" translate="no">a.gmail@example.com' in page_a
+    assert 'class="chip tiny source-mailbox" translate="no">a.outlook@example.com' in page_a
+    assert 'href="/sent"' in page_a
+    assert "Beta sent note" not in page_a
+
+    assert second.status_code == 200
+    page_b = second.get_data(as_text=True)
+    assert "Beta sent note" in page_b
+    assert 'class="chip tiny source-mailbox" translate="no">b.gmail@example.com' in page_b
+    assert "Alpha sent note" not in page_b
+    assert "a.gmail@example.com" not in page_b
+    assert "a.outlook@example.com" not in page_b

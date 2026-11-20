@@ -112,7 +112,7 @@ def _translate_attr(match: re.Match) -> str:
 
 ZH = {
     # menu and shell
-    "Inbox": "收件箱", "Dashboard": "概览", "Contacts": "联系人", "Knowledge": "知识库", "Documents": "文档库",
+    "Inbox": "收件箱", "Sent": "已发件", "Dashboard": "概览", "Contacts": "联系人", "Knowledge": "知识库", "Documents": "文档库",
     "Calendar": "日历", "Connections": "连接", "Settings": "设置", "Sign out": "退出登录", "This computer": "本机",
     "Mail Autopilot": "邮件自动驾驶", "· Mail Autopilot": "· 邮件自动驾驶", "Main": "主菜单",
     "Change how far replies can go": "修改回复可以自动发到什么程度", "Drafts waiting for your OK": "等你确认的草稿",
@@ -134,6 +134,10 @@ ZH = {
     "Nothing to do. New letters that need a reply show up here with a draft ready.": "没有待处理的邮件。需要回复的新邮件会带着写好的草稿出现在这里。",
     "No notices. Bills, fines, school and government letters land here when they arrive.": "没有提醒。账单、罚单、学校和政府来信到了会放在这里。",
     "Nothing here.": "这里没有邮件。", "Selected email": "选中的邮件", "Select an email to read it.": "选一封邮件来阅读。",
+    "Sent mail": "已发邮件",
+    "Letters sent from the mailboxes connected to this sign-in. Each one keeps the mailbox it came from.": "这里是当前登录账号已连接邮箱发出的邮件。每封都标着它来自哪个邮箱。",
+    "Connect a mailbox to see mail you have sent.": "先连接一个邮箱，才能看到已发出的邮件。",
+    "No sent mail in the connected mailboxes.": "已连接的邮箱里还没有已发邮件。",
     "What they want": "对方想要什么", "What to do": "该怎么办", "Open storyline": "打开故事线", "Add to calendar": "加到日历",
     "Adding to calendar…": "正在加到日历…", "Mark handled": "标记为已处理", "Not handled yet": "还没处理",
     "Paid, read or done: take it off Notices and To do": "已付款、已读或已办完：从“提醒”和“待处理”中移除",
