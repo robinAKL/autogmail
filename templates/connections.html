@@ -68,6 +68,21 @@
       </div>
     </article>
   </div>
+  {% if gmail.connected or outlook.connected %}
+  <article class="card" id="default-sender">
+    <h3 class="card-title">Default sending mailbox</h3>
+    <p class="muted">Initial sender when writing a new email. Replies always use the mailbox that received the original email.</p>
+    <form method="post" action="{{ url_for('settings_save') }}" class="inline-form">
+      <input type="hidden" name="next" value="connections">
+      <select name="default_sender" aria-label="Default sending mailbox">
+        <option value="" {% if not default_sender %}selected{% endif %}>Automatic (first connected)</option>
+        <option value="gmail" {% if default_sender == 'gmail' %}selected{% endif %}>Gmail{% if gmail.account %} ({{ gmail.account }}){% endif %}</option>
+        <option value="outlook" {% if default_sender == 'outlook' %}selected{% endif %}>Outlook{% if outlook.account %} ({{ outlook.account }}){% endif %}</option>
+      </select>
+      <button type="submit" class="quiet">Save default</button>
+    </form>
+  </article>
+  {% endif %}
 </section>
 
 {% if not saas %}

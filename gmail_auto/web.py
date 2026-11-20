@@ -861,17 +861,25 @@ def configure_app(app: Flask) -> None:
         blocked = _login_required()
         if blocked:
             return blocked
-        from gmail_auto import contracts, invoices
+        from gmail_auto import contracts, invoices, outgoing
         from gmail_auto.llm import model_ready
 
         issued = [item for item in invoices.list_invoices() if item.get("status") == "issued"]
         ready = [item for item in contracts.list_drafts() if not contracts.empty_fields(item)]
         chosen_invoice = invoices.get(request.args.get("invoice", ""))
+        mailboxes = _compose_mailboxes()
+        available = [box["provider"] for box in mailboxes]
+        chosen_provider = (request.args.get("provider") or "").strip().lower()
+        if chosen_provider not in available:
+            preferred = outgoing.default_provider(available)
+            chosen_provider = preferred if preferred in available else (available[0] if available else "")
         return _render(
             "compose.html",
             to=request.args.get("to") or (chosen_invoice or {}).get("client_email") or "",
             subject=request.args.get("subject", ""),
             points=request.args.get("points", ""),
+            mailboxes=mailboxes,
+            chosen_provider=chosen_provider,
             docs=knowledge.attachable_documents(),
             people=_people_for_compose(),
             issued=issued,
@@ -907,7 +915,15 @@ def configure_app(app: Flask) -> None:
             for record in _uploads("reply"):
                 uploaded.append(record)
                 records.append(record)
-            item = outgoing.start(to, request.form.get("points", ""), request.form.get("subject", ""), load_profile(), records, cc=request.form.get("cc", ""))
+            item = outgoing.start(
+                to,
+                request.form.get("points", ""),
+                request.form.get("subject", ""),
+                load_profile(),
+                records,
+                provider=request.form.get("provider", ""),
+                cc=request.form.get("cc", ""),
+            )
         except (ConfigError, ReplyError) as exc:
             for record in uploaded:
                 files.remove(record["id"])
@@ -918,6 +934,7 @@ def configure_app(app: Flask) -> None:
                     to=request.form.get("to", ""),
                     subject=request.form.get("subject", ""),
                     points=request.form.get("points", "")[:1500] or None,
+                    provider=request.form.get("provider") or None,
                     invoice=request.form.get("invoice") or None,
                     contract=request.form.get("contract") or None,
                 )
@@ -1949,6 +1966,8 @@ def configure_app(app: Flask) -> None:
             if "preserve_langs" in request.form:
                 raw_preserve = request.form.get("preserve_langs", "")
                 changes["preserve_langs"] = [p.strip().lower() for p in raw_preserve.split(",") if p.strip()]
+            if "default_sender" in request.form:
+                changes["default_sender"] = request.form.get("default_sender", "")
             if "notify_preset" in request.form:
                 changes["notify_auto_replies"] = request.form.get("notify_auto_replies") == "1"
                 changes["notify_important"] = request.form.get("notify_important") == "1"
@@ -1971,6 +1990,8 @@ def configure_app(app: Flask) -> None:
         except ConfigError as exc:
             flash(str(exc), "error")
         nxt = request.form.get("next") or "#interrupt"
+        if nxt == "connections":
+            return redirect(url_for("connections_page"))
         if not nxt.startswith("#"):
             nxt = "#interrupt"
         return redirect(url_for("profile_page") + nxt)
@@ -3174,8 +3195,35 @@ def _connections_context() -> dict:
             "super_model": active_model("super"),
             "gateway": using_gateway(),
         },
+        "default_sender": load_settings().get("default_sender", ""),
         "local": local,
     }
+
+
+def _compose_mailboxes() -> list[dict]:
+    try:
+        clients, _ = connected_clients()
+    except Exception:
+        return []
+    boxes = []
+    for client in clients:
+        provider = getattr(client, "provider", "") or ""
+        if provider not in PROVIDERS:
+            continue
+        account = ""
+        try:
+            account = (client.get_user_email() or "").strip()
+        except Exception:
+            account = ""
+        label = PROVIDERS[provider]
+        boxes.append(
+            {
+                "provider": provider,
+                "label": f"{label} ({account})" if account else label,
+                "account": account,
+            }
+        )
+    return boxes
 
 
 def _provider_connected(provider: str) -> bool:

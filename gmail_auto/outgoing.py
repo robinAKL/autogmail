@@ -75,23 +75,44 @@ def write(to: str, points: str, subject: str, profile: dict, attached: list[str]
 
 def start(to: str, points: str, subject: str, profile: dict, records: list[dict], provider: str = "", complete=None, cc: str = "") -> dict:
     """Write the email, put it in the queue and attach the files. Returns the waiting item."""
+    from gmail_auto.mailboxes import PROVIDERS, connected_clients
+
     to = clean_recipients(to)
     cc = clean_recipients(cc) if (cc or "").strip() else ""
+    chosen_provider = (provider or "").strip().lower()
+    if chosen_provider:
+        if chosen_provider not in PROVIDERS:
+            raise ConfigError("Choose a connected mailbox to send from.")
+        try:
+            clients, _ = connected_clients()
+        except Exception:
+            clients = []
+        available = {getattr(client, "provider", "") for client in clients}
+        if available and chosen_provider not in available:
+            raise ConfigError(f"{PROVIDERS[chosen_provider]} is not connected.")
     subject, body, sources = write(to, points, subject, profile, [record["name"] for record in records], complete=complete)
-    item = approvals.create_new(to, subject, body, provider=provider or default_provider(), sources=sources, cc=cc)
+    item = approvals.create_new(to, subject, body, provider=chosen_provider or default_provider(), sources=sources, cc=cc)
     for record in records:
         approvals.attach(item["id"], record)
     return approvals.get(item["id"])
 
 
-def default_provider() -> str:
+def default_provider(available: list[str] | None = None) -> str:
     from gmail_auto.mailboxes import connected_clients
+    from gmail_auto.settings import load_settings
 
-    try:
-        clients, _ = connected_clients()
-    except Exception:
-        clients = []
-    return clients[0].provider if clients else "gmail"
+    preferred = (load_settings().get("default_sender") or "").strip().lower()
+    if available is None:
+        try:
+            clients, _ = connected_clients()
+        except Exception:
+            clients = []
+        available = [getattr(client, "provider", "") for client in clients if getattr(client, "provider", "")]
+    if preferred and preferred in available:
+        return preferred
+    if available:
+        return available[0]
+    return preferred or "gmail"
 
 
 # ---- things to attach -------------------------------------------------------------------

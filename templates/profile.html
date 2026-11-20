@@ -55,6 +55,25 @@
   </form>
 </section>
 
+<section class="card" id="default-sender">
+  <h2 class="card-title">Default sending mailbox</h2>
+  <p class="muted">Used as the initial sender when you write a new email. Replies always go from the mailbox that received the original letter.</p>
+  <form method="post" action="{{ url_for('settings_save') }}" class="stack">
+    <input type="hidden" name="next" value="#send">
+    <label>
+      Default sender for new emails
+      <select name="default_sender" aria-label="Default sending mailbox">
+        <option value="" {% if not settings.default_sender %}selected{% endif %}>Automatic (first connected mailbox)</option>
+        <option value="gmail" {% if settings.default_sender == 'gmail' %}selected{% endif %}>Gmail</option>
+        <option value="outlook" {% if settings.default_sender == 'outlook' %}selected{% endif %}>Outlook</option>
+      </select>
+    </label>
+    <div class="button-row">
+      <button type="submit">Save default sender</button>
+    </div>
+  </form>
+</section>
+
 <section class="card" id="model">
   <h2 class="card-title">Models</h2>
   <p class="muted">Super decides. Worker reads, summarises and writes. This is advanced; most people can leave the defaults.</p>
