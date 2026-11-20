@@ -2051,6 +2051,71 @@ def configure_app(app: Flask) -> None:
             flash(str(exc), "error")
         return redirect(url_for("profile_page") + "#signatures")
 
+    @app.post("/settings/signature/logo")
+    def signature_logo_save():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        provider = (request.form.get("provider") or "").strip().lower()
+        if provider not in PROVIDERS:
+            abort(400)
+        settings = load_settings()
+        logos = dict(settings.get("signature_logos") or {})
+        old_id = ((logos.get(provider) or {}).get("file_id") or "").strip()
+        try:
+            if request.form.get("action") == "remove":
+                logos.pop(provider, None)
+                save_settings({"signature_logos": logos})
+                if old_id:
+                    try:
+                        files.remove(old_id)
+                    except ConfigError:
+                        pass
+                flash("Logo removed.")
+            else:
+                uploaded = request.files.get("logo")
+                if uploaded is None or not (uploaded.filename or "").strip():
+                    raise ConfigError("Choose a PNG, JPG, GIF, or WebP logo image first.")
+                data = uploaded.read(1_000_001)
+                if not data:
+                    raise ConfigError("That logo file is empty.")
+                if len(data) > 1_000_000:
+                    raise ConfigError("Keep signature logos to 1 MB or smaller.")
+                mime = _detect_logo_mime(data)
+                record = files.save(data, uploaded.filename, mime, origin="signature_logo")
+                logos[provider] = {
+                    "file_id": record["id"],
+                    "name": record["name"],
+                    "mime": record["mime"],
+                    "size": record["size"],
+                }
+                save_settings({"signature_logos": logos})
+                if old_id and old_id != record["id"]:
+                    try:
+                        files.remove(old_id)
+                    except ConfigError:
+                        pass
+                flash("Logo saved.")
+        except ConfigError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("profile_page") + "#signatures")
+
+    @app.get("/settings/signature/logo/<provider>")
+    def signature_logo_view(provider: str):
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        provider = (provider or "").strip().lower()
+        if provider not in PROVIDERS:
+            abort(404)
+        from gmail_auto.settings import signature_logo_bytes
+
+        loaded = signature_logo_bytes(load_settings(), provider=provider)
+        if loaded is None:
+            abort(404)
+        meta, data = loaded
+        return Response(data, mimetype=meta.get("mime") or "image/png", headers={"Cache-Control": "no-store"})
+
     @app.post("/settings/model")
     def model_save():
         blocked = _login_required()
@@ -3503,6 +3568,18 @@ def _login_view(email=None, sent=None, error=""):
     )
 
 
+def _detect_logo_mime(data: bytes) -> str:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    raise ConfigError("Upload a PNG, JPG, GIF, or WebP logo image.")
+
+
 def _profile_context(form=None) -> dict:
     from gmail_auto.cleanup import LIMIT
     from gmail_auto.settings import TRANSLATION_MODES
@@ -3511,6 +3588,7 @@ def _profile_context(form=None) -> dict:
     settings = load_settings()
     imported_gmail = session.pop("imported_gmail_signature", None)
     sigs = settings.get("mail_signatures") or {}
+    logos = settings.get("signature_logos") or {}
     signature_gmail = imported_gmail if imported_gmail is not None else (sigs.get("gmail") or "")
     shared = {
         "settings": settings,
@@ -3519,6 +3597,8 @@ def _profile_context(form=None) -> dict:
         "signature_gmail": signature_gmail,
         "signature_gmail_unsaved": imported_gmail is not None,
         "signature_outlook": sigs.get("outlook") or "",
+        "signature_logo_gmail": logos.get("gmail"),
+        "signature_logo_outlook": logos.get("outlook"),
         "languages": LANGUAGES,
         "translation_modes": TRANSLATION_MODES,
         "supported_languages": SUPPORTED_LANGUAGES,

@@ -60,6 +60,7 @@ DEFAULTS = {
     "auto_reply_allow": [],
     "auto_reply_block": [],
     "mail_signatures": {},
+    "signature_logos": {},
 }
 
 
@@ -187,6 +188,7 @@ def _clean(data: dict, strict: bool = False) -> dict:
         "auto_reply_allow": _rule_lines(data.get("auto_reply_allow"), strict),
         "auto_reply_block": _rule_lines(data.get("auto_reply_block"), strict),
         "mail_signatures": _clean_signatures(data.get("mail_signatures"), strict),
+        "signature_logos": _clean_signature_logos(data.get("signature_logos")),
     }
 
 
@@ -342,3 +344,50 @@ def append_signature(body: str, signature: str) -> str:
     if text.endswith(sig):
         return text
     return f"{text}\n\n{sig}"
+
+
+def _clean_signature_logos(value) -> dict[str, dict]:
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for raw_key, raw_meta in value.items():
+        key = str(raw_key or "").strip().lower()
+        if not key or not isinstance(raw_meta, dict):
+            continue
+        file_id = str(raw_meta.get("file_id") or "").strip()
+        if not file_id:
+            continue
+        mime = str(raw_meta.get("mime") or "image/png").strip().lower()
+        name = str(raw_meta.get("name") or "logo").strip()[:120]
+        try:
+            size = max(0, int(raw_meta.get("size") or 0))
+        except (TypeError, ValueError):
+            size = 0
+        out[key] = {"file_id": file_id, "name": name, "mime": mime, "size": size}
+    return out
+
+
+def signature_logo_for_mailbox(settings: dict, provider: str = "", email: str = "") -> dict | None:
+    logos = settings.get("signature_logos") or {}
+    if not isinstance(logos, dict):
+        return None
+    for candidate in ((email or "").strip().lower(), (provider or "").strip().lower()):
+        meta = logos.get(candidate)
+        if isinstance(meta, dict) and meta.get("file_id"):
+            return dict(meta)
+    return None
+
+
+def signature_logo_bytes(settings: dict, provider: str = "", email: str = "") -> tuple[dict, bytes] | None:
+    meta = signature_logo_for_mailbox(settings, provider=provider, email=email)
+    if meta is None:
+        return None
+    from gmail_auto import files
+
+    try:
+        data = files.read(meta["file_id"])
+    except ConfigError:
+        return None
+    if not data:
+        return None
+    return meta, data
