@@ -1393,6 +1393,40 @@ def configure_app(app: Flask) -> None:
             flash(str(exc), "error")
         return redirect(url_for("knowledge_page") + "#documents")
 
+    @app.get("/knowledge/analyze")
+    def knowledge_analysis_status():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import knowledge_analysis
+
+        return knowledge_analysis.status()
+
+    @app.post("/knowledge/analyze")
+    def knowledge_analyze():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import knowledge_analysis
+
+        try:
+            clients, problems = connected_clients()
+            return knowledge_analysis.start(clients, problems)
+        except ConfigError as exc:
+            return {**knowledge_analysis.status(), "status": "error", "message": str(exc)}, 409
+
+    @app.post("/knowledge/analyze/step")
+    def knowledge_analyze_step():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import knowledge_analysis
+
+        try:
+            return knowledge_analysis.step(client_for)
+        except ConfigError as exc:
+            return {**knowledge_analysis.status(), "status": "error", "message": str(exc)}, 409
+
     @app.post("/knowledge/learn")
     def knowledge_learn():
         blocked = _login_required()
