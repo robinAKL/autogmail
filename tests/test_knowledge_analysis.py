@@ -5,6 +5,7 @@ from unittest.mock import patch
 from gmail_auto import knowledge, knowledge_analysis
 from gmail_auto.errors import ReplyError
 from gmail_auto.web import create_app
+from gmail_auto.tenant import user_scope
 from tests.test_core import TempHome, sample
 
 
@@ -94,3 +95,15 @@ class KnowledgeAnalysisTests(TempHome):
         self.assertEqual(item["observed_at"][:10], "2025-01-31")
         self.assertEqual(item["valid_from"], "")
         self.assertNotIn("Codex", knowledge.render_context(knowledge.context_for(sample(subject="Codex"))))
+
+    def test_analysis_jobs_and_cards_are_workspace_scoped(self):
+        with patch.dict("os.environ", {"AUTOMAIL_SAAS": "1"}):
+            with user_scope("a" * 32):
+                knowledge.add_document("Workspace A", "Private data for A.", "note", summarize=False)
+                knowledge_analysis.start([])
+                knowledge.merge_analysis([{"kind": "fact", "text": "A only", "temporal": "stable"}])
+                self.assertEqual(knowledge_analysis.status()["status"], "running")
+            with user_scope("b" * 32):
+                self.assertEqual(knowledge_analysis.status()["status"], "idle")
+                self.assertEqual(knowledge.list_items(), [])
+                self.assertEqual(knowledge.list_documents(), [])

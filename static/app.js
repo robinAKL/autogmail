@@ -338,7 +338,14 @@
       if (statDocs) { statDocs.textContent = String((payload && payload.documents) || 0); }
       if (statEmails) { statEmails.textContent = String((payload && payload.emails) || 0); }
       if (statSkipped) { statSkipped.textContent = String((payload && payload.skipped) || 0); }
-      if (analyzeMsg && payload && payload.message) { analyzeMsg.textContent = payload.message; }
+      if (analyzeMsg) {
+        analyzeMsg.textContent = (payload && payload.message) || ({
+          idle: "Ready to analyse connected mailboxes and documents.",
+          running: "Reading the next batch of emails or documents.",
+          done: "Analysis complete.",
+          error: "Analysis paused. Select Analyse knowledge to retry."
+        })[st];
+      }
     };
     try {
       var saved = window.sessionStorage ? window.sessionStorage.getItem(analysisKey) : null;
@@ -347,8 +354,8 @@
         renderAnalyzeState(JSON.parse(saved));
       }
     } catch (e) {}
-    var postJson = function (url) {
-      return fetch(url, { method: "POST", headers: { "Accept": "application/json" } }).then(function (resp) {
+    var requestJson = function (url, method) {
+      return fetch(url, { method: method, headers: { "Accept": "application/json" } }).then(function (resp) {
         return resp.json().catch(function () { return null; }).then(function (data) {
           if (!resp.ok) {
             throw new Error((data && data.message) || (data && data.error) || ("Request failed (" + resp.status + ")."));
@@ -358,7 +365,7 @@
       });
     };
     var stepLoop = function () {
-      return postJson("/knowledge/analyze/step").then(function (data) {
+      return requestJson("/knowledge/analyze/step", "POST").then(function (data) {
         renderAnalyzeState(data);
         if (data.status === "running") {
           return new Promise(function (resolve) { window.setTimeout(resolve, 250); }).then(stepLoop);
@@ -366,25 +373,22 @@
         return data;
       });
     };
-    analyzeForm.addEventListener("submit", function (event) {
-      event.preventDefault();
-      if (inFlight || analyzeBtn.disabled) { return; }
-      inFlight = true;
-      analyzeBtn.disabled = true;
-      analyzeBtn.classList.add("busy");
-      analyzeBtn.setAttribute("aria-busy", "true");
-      analyzeBtn.textContent = "Analysing…";
-      renderAnalyzeState({ status: "running", documents: 0, emails: 0, skipped: 0, message: "Starting knowledge analysis…" });
-      postJson(analyzeForm.action).then(function (data) {
+    var setAnalyzing = function (busy) {
+      inFlight = busy;
+      analyzeBtn.disabled = busy;
+      analyzeBtn.classList.toggle("busy", busy);
+      if (busy) { analyzeBtn.setAttribute("aria-busy", "true"); }
+      else { analyzeBtn.removeAttribute("aria-busy"); }
+      analyzeBtn.textContent = busy ? "Analysing…" : "Analyse knowledge";
+    };
+    var runAnalysis = function (initial) {
+      setAnalyzing(true);
+      initial.then(function (data) {
         renderAnalyzeState(data);
         if (data.status === "running") { return stepLoop(); }
         return data;
       }).then(function (finalData) {
-        inFlight = false;
-        analyzeBtn.classList.remove("busy");
-        analyzeBtn.removeAttribute("aria-busy");
-        analyzeBtn.textContent = "Analyse knowledge";
-        analyzeBtn.disabled = false;
+        setAnalyzing(false);
         if (finalData && finalData.status === "done") {
           try {
             if (window.sessionStorage) { window.sessionStorage.setItem(analysisKey, JSON.stringify(finalData)); }
@@ -393,11 +397,7 @@
           window.location.reload();
         }
       }).catch(function (err) {
-        inFlight = false;
-        analyzeBtn.classList.remove("busy");
-        analyzeBtn.removeAttribute("aria-busy");
-        analyzeBtn.textContent = "Analyse knowledge";
-        analyzeBtn.disabled = false;
+        setAnalyzing(false);
         renderAnalyzeState({
           status: "error",
           documents: parseInt((statDocs && statDocs.textContent) || "0", 10) || 0,
@@ -406,7 +406,21 @@
           message: (err && err.message) || "Analysis could not complete."
         });
       });
+    };
+    analyzeForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (inFlight || analyzeBtn.disabled) { return; }
+      runAnalysis(requestJson(analyzeForm.action, "POST"));
     });
+    requestJson(analyzeForm.action, "GET").then(function (state) {
+      if (inFlight || state.status === "idle") { return; }
+      if (state.status === "running" && !analyzeBtn.disabled) {
+        runAnalysis(Promise.resolve(state));
+      } else {
+        renderAnalyzeState(state);
+      }
+    }).catch(function () {});
+
   }
 
   document.addEventListener("keydown", function (event) {

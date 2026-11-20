@@ -1120,6 +1120,8 @@ def _clean_item(raw: dict, origin: str = "") -> dict | None:
         "evidence": evidence,
         "observed_at": observed,
         "temporal": temporal,
+        "recipient": str(raw.get("recipient") or "").strip()[:160],
+        "tone": str(raw.get("tone") or "").strip()[:80],
         "origin": origin or str(raw.get("origin") or "extract"),
         "locked": bool(KINDS[kind]["locked"]),
         "at": at,

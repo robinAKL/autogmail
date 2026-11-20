@@ -1253,6 +1253,10 @@ def configure_app(app: Flask) -> None:
             items = [str(part).strip() for part in raw_sources if str(part).strip()]
             if items:
                 return items
+        evidence = item.get("evidence") or []
+        names = list(dict.fromkeys(source["source"] for source in evidence if source.get("source")))
+        if names:
+            return names
         source = str(item.get("source") or "").strip()
         if source:
             return [source]
@@ -1267,6 +1271,14 @@ def configure_app(app: Flask) -> None:
             return raw, labels[raw]
         if not knowledge.is_active(item):
             return "expired", "Expired"
+        if item.get("temporal") == "unknown":
+            return "uncertain", "Timing uncertain"
+        if item.get("temporal") == "dated":
+            starts = str(item.get("valid_from") or "")[:10]
+            if not starts:
+                return "uncertain", "Timing uncertain"
+            if starts > time.strftime("%Y-%m-%d"):
+                return "uncertain", "Starts later"
         observed = str(item.get("observed_at") or item.get("at") or "").strip()
         valid_from = str(item.get("valid_from") or "").strip()
         valid_until = str(item.get("valid_until") or "").strip()
@@ -1299,10 +1311,10 @@ def configure_app(app: Flask) -> None:
                 "target": str(item.get("recipient") or item.get("sender") or item.get("contact") or "").strip(),
                 "tone": str(item.get("tone") or "").strip(),
             }
-            if kind_name == "fact":
+            if kind_name == "fact" and item.get("temporal") != "stable":
                 time_scoped_facts.append(entry)
             if knowledge.is_active(item):
-                if kind_name in ("fact", "topic", "decision"):
+                if kind_name in ("fact", "topic", "decision") and item.get("temporal") not in ("dated", "unknown"):
                     business_knowledge.append(entry)
                 elif kind_name in ("preference", "rule", "experience", "person"):
                     reply_guidance.append(entry)
