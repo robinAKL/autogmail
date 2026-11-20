@@ -287,7 +287,7 @@ def configure_app(app: Flask) -> None:
         blocked = _login_required()
         if blocked:
             return blocked
-        inbox = _inbox(live=True)
+        inbox = _inbox(live=True, force=True)
         if "application/json" in (request.headers.get("Accept") or ""):
             return {
                 "ok": True,
@@ -2487,11 +2487,11 @@ def _request_inbox_cache() -> dict:
     return g.workspace_inbox_cache
 
 
-def _inbox(live: bool = True) -> dict:
+def _inbox(live: bool = True, force: bool = False) -> dict:
     who = session.get("user", "")
     cache = _request_inbox_cache()
     cached = cache["data"]
-    if cached is not None and cache["who"] == who and time.time() - cache["at"] < _INBOX_TTL:
+    if not force and cached is not None and cache["who"] == who and time.time() - cache["at"] < _INBOX_TTL:
         # Statuses change when a reply is approved, so they are always read fresh.
         _refresh_status(cached)
         cached["needs_fetch"] = False
@@ -2699,15 +2699,14 @@ def _read_inbox_snapshot(who: str) -> dict | None:
         return None
     if not isinstance(saved, dict) or saved.get("who") != who:
         return None
-    if time.time() - float(saved.get("at") or 0) > _INBOX_STORE_TTL:
-        return None
+    stale = time.time() - float(saved.get("at") or 0) > _INBOX_STORE_TTL
     return {
         "rows": list(saved.get("rows") or []),
         "mails": {},
         "accounts": list(saved.get("accounts") or []),
         "provider_counts": dict(saved.get("provider_counts") or {}),
         "errors": list(saved.get("errors") or []),
-        "offline": bool(saved.get("offline")),
+        "offline": bool(saved.get("offline")) or stale,
         "needs_fetch": False,
         "at": float(saved.get("at") or 0),
     }
