@@ -55,6 +55,24 @@ class OutlookClient:
         mails = self._list_newest("inbox", limit, "receivedDateTime")
         return self._hydrate(mails) if full else mails
 
+    def list_received_history(self, limit: int = 25, full: bool = False) -> list[Mail]:
+        """Received mail still in the mailbox, including Archive.
+
+        Junk, Deleted, Sent, and Drafts are not read. The inbox screen keeps list_recent.
+        """
+        want = max(1, min(int(limit), 25))
+        found: dict[str, Mail] = {}
+        for folder in ("inbox", "archive"):
+            try:
+                page = self._list_newest(folder, want, "receivedDateTime")
+            except ConfigError:
+                continue
+            for mail in page:
+                if mail.id and mail.id not in found:
+                    found[mail.id] = mail
+        mails = sorted(found.values(), key=lambda mail: mail.received_ts or 0, reverse=True)[:want]
+        return self._hydrate(mails) if full else mails
+
     def list_recent_page(self, limit: int = 20, token: str = "", full: bool = False) -> tuple[list[Mail], str]:
         """One inbox page, plus Graph's nextLink. Does not follow that link."""
         want = max(1, min(int(limit), 50))
