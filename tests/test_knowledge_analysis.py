@@ -107,3 +107,26 @@ class KnowledgeAnalysisTests(TempHome):
                 self.assertEqual(knowledge_analysis.status()["status"], "idle")
                 self.assertEqual(knowledge.list_items(), [])
                 self.assertEqual(knowledge.list_documents(), [])
+
+    def test_invalid_model_output_retries_the_same_batch_without_losing_evidence(self):
+        knowledge.add_document("Company", "We run three weekly training sessions.", "note", summarize=False)
+        good = json.dumps({"items": [
+            model_item("fact", "We run three weekly training sessions.", "1",
+                       "We run three weekly training sessions.", temporal="stable"),
+        ]})
+        with patch("gmail_auto.knowledge_analysis.complete", side_effect=['{"items":[', good]) as model:
+            knowledge_analysis.start([])
+            result = knowledge_analysis.step(None)
+        self.assertEqual(result["documents"], 1)
+        self.assertEqual(model.call_count, 2)
+        self.assertEqual(model.call_args_list[0].args[1], model.call_args_list[1].args[1])
+        self.assertEqual(model.call_args_list[0].kwargs["response_format"]["type"], "json_schema")
+        self.assertIn("compact JSON object", model.call_args_list[1].args[0])
+        self.assertEqual(knowledge.list_items()[0]["source"], "Company")
+
+    def test_provider_without_schema_support_uses_prompt_constrained_json(self):
+        error = ReplyError("The AI provider returned an error (400): response_format json_schema is not supported.")
+        with patch("gmail_auto.knowledge_analysis.complete", side_effect=[error, '{"items":[]}']) as model:
+            self.assertEqual(knowledge_analysis._request_items('{"1":{}}'), [])
+        self.assertIsNotNone(model.call_args_list[0].kwargs["response_format"])
+        self.assertIsNone(model.call_args_list[1].kwargs["response_format"])
