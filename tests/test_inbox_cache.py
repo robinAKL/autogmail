@@ -91,38 +91,36 @@ class InboxCacheTests(unittest.TestCase):
             res3 = client.get("/")
             self.assertIn("Second fetch after refresh", res3.get_data(as_text=True))
 
-    def test_refresh_returns_the_first_page_and_later_pages_come_from_the_server(self):
+    def test_refresh_prefetches_100_per_mailbox_but_displays_20_at_a_time(self):
         os.environ["VERCEL"] = "1"
-        fake = _PagedMailbox()
+        gmail = _PagedMailbox()
+        outlook = _PagedMailbox(total=67)
+        outlook.provider = "outlook"
         app = create_app()
         client = app.test_client()
         with client.session_transaction() as sess:
             sess["user"] = "owner@example.com"
-        with patch("gmail_auto.web.connected_clients", return_value=([fake], [])):
+
+        with patch("gmail_auto.web.connected_clients", return_value=([gmail, outlook], [])):
             refreshed = client.get("/inbox/refresh", headers={"Accept": "application/json"})
             self.assertEqual(refreshed.status_code, 200)
-            self.assertEqual(refreshed.get_json()["count"], 20)
-            self.assertEqual(fake.calls, [("", 20, False)])
+            self.assertEqual(refreshed.get_json()["provider_counts"], {"gmail": 100, "outlook": 67})
+            self.assertEqual(refreshed.get_json()["count"], 167)
+            self.assertEqual(gmail.calls, [("", 100, False), ("50", 50, False)])
+            self.assertEqual(outlook.calls, gmail.calls)
 
-            first = client.get("/")
-            self.assertEqual(first.status_code, 200)
+            first = client.get("/?mailbox=gmail&show=all")
             first_body = first.get_data(as_text=True)
             self.assertIn("Letter 000", first_body)
             self.assertNotIn("Letter 020", first_body)
             self.assertIn("Older", first_body)
-            self.assertEqual(fake.calls, [("", 20, False)])
 
-            second = client.get("/?page=2")
-            second_body = second.get_data(as_text=True)
-            self.assertIn("Letter 020", second_body)
-            self.assertNotIn("Letter 040", second_body)
-            self.assertEqual(fake.calls[1][0], "20")
+            last = client.get("/?mailbox=gmail&show=all&page=5")
+            self.assertIn("Letter 099", last.get_data(as_text=True))
+            self.assertEqual(len(gmail.calls), 2)
+            self.assertEqual(len(outlook.calls), 2)
 
-            client.get("/?page=6")
-            self.assertEqual(len(fake.calls), 5)
-            self.assertNotIn("100", [token for token, _limit, _full in fake.calls])
-
-    def test_a_failed_later_page_keeps_the_letters_already_loaded(self):
+    def test_a_failed_later_refresh_page_keeps_the_letters_already_loaded(self):
         os.environ["VERCEL"] = "1"
         fake = _PagedMailbox(fail_after="")
         app = create_app()
@@ -130,18 +128,20 @@ class InboxCacheTests(unittest.TestCase):
         with client.session_transaction() as sess:
             sess["user"] = "owner@example.com"
         with patch("gmail_auto.web.connected_clients", return_value=([fake], [])):
-            client.get("/inbox/refresh", headers={"Accept": "application/json"})
-            later = client.get("/?page=2")
-            body = later.get_data(as_text=True)
-            self.assertIn("Letter 000", body)
-            self.assertNotIn("Letter 020", body)
+            refreshed = client.get("/inbox/refresh", headers={"Accept": "application/json"})
+            self.assertEqual(refreshed.get_json()["count"], 50)
+            self.assertTrue(any("Gmail timed out" in error for error in refreshed.get_json()["errors"]))
+            body = client.get("/?page=3&show=all").get_data(as_text=True)
+            self.assertIn("Letter 049", body)
+            self.assertNotIn("Letter 050", body)
             self.assertIn("Gmail timed out", body)
 
 
 class _PagedMailbox:
     provider = "gmail"
 
-    def __init__(self, fail_after=None):
+    def __init__(self, fail_after=None, total=125):
+        self.total = total
         self.calls = []
         self.fail_after = fail_after
 
@@ -155,11 +155,10 @@ class _PagedMailbox:
 
             raise ConfigError("Gmail timed out")
         start = int(token or "0")
-        if start >= 100:
-            return [], ""
+        end = min(self.total, start + min(limit, 50))
         mails = []
-        for i in range(start, start + limit):
+        for i in range(start, end):
             hour, minute = divmod(12 * 60 - i, 60)
-            mails.append(sample(id=f"m{i}", subject=f"Letter {i:03d}", snippet="note", date=f"2026-11-20 {hour:02d}:{minute:02d}"))
-        nxt = "" if start + limit >= 100 else str(start + limit)
+            mails.append(sample(id=f"m{i}", provider=self.provider, subject=f"Letter {i:03d}", snippet="note", date=f"2026-11-20 {hour:02d}:{minute:02d}"))
+        nxt = "" if end >= self.total else str(end)
         return mails, nxt
