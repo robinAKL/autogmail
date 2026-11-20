@@ -126,22 +126,65 @@
 <section class="section" id="storylines">
   <div class="section-head">
     <h2>Storylines</h2>
-    <p class="muted">A thread becomes a storyline after you have replied in it more than once. Facts from the same letter stay together under Facts.</p>
+    <p class="muted">Threads you have replied in more than once. Open one for the timeline.</p>
   </div>
-  {% for group in groups if group.kind == 'storyline' %}
-  {% if group.cards %}
-  <ul class="kb-result-list">
-    {% for item in group.cards %}
-    <li class="card kb-result-item" id="item-{{ item.id }}">
-      <p>{{ item.text }}</p>
-      <p class="meta">{% if item.source %}{{ item.source }}{% endif %}{% if item.valid_from or item.at %} · {{ item.valid_from or item.at }}{% endif %}</p>
-    </li>
+  {% if storylines %}
+  <div class="card kb-story-list">
+    {% for card in storylines[:6] %}
+    <details class="kb-story" id="item-{{ card.id }}">
+      <summary>
+        <span class="story-card-top">
+          <span class="story-card-title">{{ card.title }}</span>
+          <span class="tag {{ card.status }}">{{ card.label }}</span>
+        </span>
+        <span class="story-card-who">{{ card.who }}</span>
+        <span class="story-card-foot">{{ card.size }} letters{% if card.sent %} · {{ card.sent }} from you{% endif %}{% if card.date %} · {{ card.date }}{% endif %}</span>
+      </summary>
+      {% if card.steps %}
+      <ol class="story-line">
+        {% for step in card.steps %}
+        <li class="{% if step.outbound %}out{% endif %}">
+          <span class="story-who">{{ step.who }}</span>
+          {% if step.date %}<span class="story-date">{{ step.date }}</span>{% endif %}
+          <span class="story-summary">{{ step.summary }}</span>
+        </li>
+        {% endfor %}
+      </ol>
+      {% endif %}
+    </details>
     {% endfor %}
-  </ul>
+    {% if storylines|length > 6 %}
+    <details class="kb-story kb-story-more">
+      <summary><span class="story-card-foot">{{ storylines|length - 6 }} more storylines</span></summary>
+      {% for card in storylines[6:] %}
+      <details class="kb-story" id="item-{{ card.id }}">
+        <summary>
+          <span class="story-card-top">
+            <span class="story-card-title">{{ card.title }}</span>
+            <span class="tag {{ card.status }}">{{ card.label }}</span>
+          </span>
+          <span class="story-card-who">{{ card.who }}</span>
+          <span class="story-card-foot">{{ card.size }} letters{% if card.sent %} · {{ card.sent }} from you{% endif %}{% if card.date %} · {{ card.date }}{% endif %}</span>
+        </summary>
+        {% if card.steps %}
+        <ol class="story-line">
+          {% for step in card.steps %}
+          <li class="{% if step.outbound %}out{% endif %}">
+            <span class="story-who">{{ step.who }}</span>
+            {% if step.date %}<span class="story-date">{{ step.date }}</span>{% endif %}
+            <span class="story-summary">{{ step.summary }}</span>
+          </li>
+          {% endfor %}
+        </ol>
+        {% endif %}
+      </details>
+      {% endfor %}
+    </details>
+    {% endif %}
+  </div>
   {% else %}
   <p class="empty">No storylines yet. Analyse knowledge, and a thread you have replied in more than once will appear here.</p>
   {% endif %}
-  {% endfor %}
 </section>
 {% endif %}
 <section class="section" id="cards">
@@ -151,7 +194,7 @@
   </div>
   <nav class="tabs-row" aria-label="Knowledge kind">
     <a class="tab {% if not kind %}on{% endif %}" href="{{ url_for('knowledge_page') }}#cards">All<span>{{ overview.item_count }}</span></a>
-    {% for name, meta in kinds.items() if name != 'rule' %}
+    {% for name, meta in kinds.items() if name != 'rule' and name != 'storyline' %}
     <a class="tab {% if kind == name %}on{% endif %}" href="{{ url_for('knowledge_page', kind=name) }}#cards">{{ meta.label }}<span>{{ overview.by_kind[name] }}</span></a>
     {% endfor %}
   </nav>
@@ -176,7 +219,7 @@
   </div>
   {% endif %}
 
-  {% for group in groups if kind and group.kind == kind and group.kind != 'rule' %}
+  {% for group in groups if kind and group.kind == kind and group.kind != 'rule' and group.kind != 'storyline' %}
   <section class="card kb-kind" id="kind-{{ group.kind }}">
     <div class="card-head">
       <div>
