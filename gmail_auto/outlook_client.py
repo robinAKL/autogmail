@@ -397,10 +397,18 @@ _CHUNK = 320 * 1024 * 12  # pieces must be multiples of 320 KiB
 def _outlook_account(client) -> str:
     account = getattr(client, "_email", "") or ""
     if not account:
+        connected = False
         try:
-            account = (microsoft.status("outlook").get("account") or "").strip()
+            record = microsoft.status("outlook")
+            connected = bool(record.get("connected"))
+            account = (record.get("account") or "").strip()
         except Exception:
-            account = ""
+            connected = False
+        if not account and connected:
+            try:
+                account = (client.get_user_email() or "").strip()
+            except Exception:
+                account = ""
     return account
 
 
