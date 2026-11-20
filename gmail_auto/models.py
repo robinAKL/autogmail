@@ -18,6 +18,10 @@ class Mail:
     provider: str = "gmail"
     account: str = ""
     received_ts: float = 0.0
+    detected_lang: str = ""
+    translated_subject: str = ""
+    translated_body: str = ""
+    translated_snippet: str = ""
 
     @property
     def key(self) -> str:
@@ -36,5 +40,7 @@ class Draft:
     reason: str = ""
     summary: str = ""
     sources: list[str] = field(default_factory=list)
+    reply_l1: str = ""
+    reply_lang: str = ""
     # Set by the safety checks: this reply waits for the owner whatever the sending mode.
     hold: bool = False

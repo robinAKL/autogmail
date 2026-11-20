@@ -50,8 +50,9 @@ def clean_html(value: str) -> str:
     return text
 
 
-def document(rich: str, plain: str = "") -> str:
+def document(rich: str, plain: str = "", translated: str = "", mode: str = "seamless") -> str:
     """A complete page for the reading frame: the letter's own HTML if it has one, else its text."""
+    styles = ""
     if (rich or "").strip():
         cleaned = clean_html(rich)
         styles = "\n".join(_STYLE.findall(cleaned))
@@ -59,7 +60,37 @@ def document(rich: str, plain: str = "") -> str:
         body = inner.group(1) if inner else _OUTER.sub("", _HEAD.sub("", cleaned))
         if not inner:
             body = _STYLE.sub("", body)
-        return _SHELL.format(styles=styles, body=body)
-    text = (plain or "").strip() or "(This letter has no text.)"
-    escaped = _LINK.sub(r'<a href="\1" rel="noopener noreferrer">\1</a>', html.escape(text, quote=False))
-    return _SHELL.format(styles="", body=f'<div class="plain">{escaped}</div>')
+        orig_html = body
+    else:
+        text = (plain or "").strip() or "(This letter has no text.)"
+        escaped = _LINK.sub(r'<a href="\1" rel="noopener noreferrer">\1</a>', html.escape(text, quote=False))
+        orig_html = f'<div class="plain">{escaped}</div>'
+
+    trans_text = (translated or "").strip()
+    if mode != "off" and trans_text and trans_text != (plain or "").strip():
+        trans_escaped = _LINK.sub(r'<a href="\1" rel="noopener noreferrer">\1</a>', html.escape(trans_text, quote=False))
+        if mode == "bilingual":
+            content = (
+                '<div class="translated-box bilingual-view" style="margin-bottom:16px;">'
+                '<div style="display:inline-block;padding:2px 8px;margin-bottom:10px;background:#eef2ff;color:#4338ca;border-radius:4px;font-size:12px;font-weight:600;">🌐 Bilingual View (First language)</div>'
+                f'<div class="plain">{trans_escaped}</div>'
+                '</div>'
+                '<div class="orig-bilingual" style="margin-top:16px;border-top:1px solid #d0d7de;padding-top:12px;">'
+                '<div style="font-size:12px;font-weight:600;color:#57606a;margin-bottom:8px;">Original email</div>'
+                f'<div style="padding:12px;background:#f8fafc;border-radius:6px;">{orig_html}</div>'
+                '</div>'
+            )
+        else:
+            content = (
+                '<div class="translated-box" style="margin-bottom:16px;">'
+                '<div style="display:inline-block;padding:2px 8px;margin-bottom:10px;background:#eef2ff;color:#4338ca;border-radius:4px;font-size:12px;font-weight:600;">🌐 Seamless Translation (First language view)</div>'
+                f'<div class="plain">{trans_escaped}</div>'
+                '</div>'
+                '<details class="orig-toggle" style="margin-top:20px;border-top:1px dashed #d0d7de;padding-top:10px;">'
+                '<summary style="cursor:pointer;color:#0b57d0;font-size:13px;user-select:none;">Show original email text</summary>'
+                f'<div style="margin-top:10px;padding:12px;background:#f8fafc;border-radius:6px;">{orig_html}</div>'
+                '</details>'
+            )
+        return _SHELL.format(styles=styles, body=content)
+
+    return _SHELL.format(styles=styles, body=orig_html)
