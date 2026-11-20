@@ -2059,12 +2059,17 @@ def configure_app(app: Flask) -> None:
         provider = (request.form.get("provider") or "").strip().lower()
         if provider not in PROVIDERS:
             abort(400)
+        account = _connected_mailbox_email(provider)
+        key = f"{provider}:{account}" if account else provider
         settings = load_settings()
         logos = dict(settings.get("signature_logos") or {})
-        old_id = ((logos.get(provider) or {}).get("file_id") or "").strip()
+        old_meta = logos.get(key) or (logos.get(provider) if not account else None) or {}
+        old_id = (old_meta.get("file_id") or "").strip()
         try:
             if request.form.get("action") == "remove":
-                logos.pop(provider, None)
+                logos.pop(key, None)
+                if not account:
+                    logos.pop(provider, None)
                 save_settings({"signature_logos": logos})
                 if old_id:
                     try:
@@ -2083,11 +2088,12 @@ def configure_app(app: Flask) -> None:
                     raise ConfigError("Keep signature logos to 1 MB or smaller.")
                 mime = _detect_logo_mime(data)
                 record = files.save(data, uploaded.filename, mime, origin="signature_logo")
-                logos[provider] = {
+                logos[key] = {
                     "file_id": record["id"],
                     "name": record["name"],
                     "mime": record["mime"],
                     "size": record["size"],
+                    "account": account,
                 }
                 save_settings({"signature_logos": logos})
                 if old_id and old_id != record["id"]:
@@ -2110,7 +2116,8 @@ def configure_app(app: Flask) -> None:
             abort(404)
         from gmail_auto.settings import signature_logo_bytes
 
-        loaded = signature_logo_bytes(load_settings(), provider=provider)
+        account = _connected_mailbox_email(provider)
+        loaded = signature_logo_bytes(load_settings(), provider=provider, email=account)
         if loaded is None:
             abort(404)
         meta, data = loaded
@@ -3568,6 +3575,21 @@ def _login_view(email=None, sent=None, error=""):
     )
 
 
+def _connected_mailbox_email(provider: str) -> str:
+    prov = (provider or "").strip().lower()
+    if not prov:
+        return ""
+    for chip in _account_chips():
+        if (chip.get("provider") or "").strip().lower() == prov:
+            email = (chip.get("email") or "").strip().lower()
+            if email and email != (chip.get("label") or "").strip().lower():
+                return email
+    try:
+        return (client_for(prov).get_user_email() or "").strip().lower()
+    except Exception:
+        return ""
+
+
 def _detect_logo_mime(data: bytes) -> str:
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         return "image/png"
@@ -3587,8 +3609,11 @@ def _profile_context(form=None) -> dict:
 
     settings = load_settings()
     imported_gmail = session.pop("imported_gmail_signature", None)
+    from gmail_auto.settings import signature_logo_for_mailbox
+
     sigs = settings.get("mail_signatures") or {}
-    logos = settings.get("signature_logos") or {}
+    gmail_acct = _connected_mailbox_email("gmail")
+    outlook_acct = _connected_mailbox_email("outlook")
     signature_gmail = imported_gmail if imported_gmail is not None else (sigs.get("gmail") or "")
     shared = {
         "settings": settings,
@@ -3597,8 +3622,8 @@ def _profile_context(form=None) -> dict:
         "signature_gmail": signature_gmail,
         "signature_gmail_unsaved": imported_gmail is not None,
         "signature_outlook": sigs.get("outlook") or "",
-        "signature_logo_gmail": logos.get("gmail"),
-        "signature_logo_outlook": logos.get("outlook"),
+        "signature_logo_gmail": signature_logo_for_mailbox(settings, provider="gmail", email=gmail_acct),
+        "signature_logo_outlook": signature_logo_for_mailbox(settings, provider="outlook", email=outlook_acct),
         "languages": LANGUAGES,
         "translation_modes": TRANSLATION_MODES,
         "supported_languages": SUPPORTED_LANGUAGES,

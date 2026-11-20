@@ -2,10 +2,12 @@ import io
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from gmail_auto import files
 from gmail_auto.profile_store import save_profile
 from gmail_auto.settings import load_settings, save_settings, signature_logo_bytes
+from gmail_auto.signatures import load_logo
 from gmail_auto.web import create_app
 
 _PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02\x00\x00\x00\x90wS\xde"
@@ -100,3 +102,27 @@ class SignatureLogoTests(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertIn("Upload a PNG, JPG, GIF, or WebP logo image.", res.get_data(as_text=True))
         self.assertEqual(load_settings()["signature_logos"], {})
+
+    def test_rebound_mailbox_cannot_preview_or_load_previous_account_logo(self):
+        app = create_app()
+        client = app.test_client()
+
+        with patch("gmail_auto.web._connected_mailbox_email", side_effect=lambda p: "first@innopro.co.nz" if p == "outlook" else ""):
+            res = client.post(
+                "/settings/signature/logo",
+                data={"provider": "outlook", "logo": (io.BytesIO(_PNG_BYTES), "innopro.png")},
+                content_type="multipart/form-data",
+                follow_redirects=True,
+            )
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(client.get("/settings/signature/logo/outlook").status_code, 200)
+
+        self.assertEqual(load_logo("outlook", "first@innopro.co.nz"), ("innopro.png", "image/png", _PNG_BYTES))
+        self.assertIsNone(load_logo("gmail", "first@innopro.co.nz"))
+
+        # Same workspace switches Outlook to a different account: old logo must not leak.
+        self.assertIsNone(load_logo("outlook", "second@other.co.nz"))
+        with patch("gmail_auto.web._connected_mailbox_email", side_effect=lambda p: "second@other.co.nz" if p == "outlook" else ""):
+            self.assertEqual(client.get("/settings/signature/logo/outlook").status_code, 404)
+            page = client.get("/profile").get_data(as_text=True)
+            self.assertNotIn("/settings/signature/logo/outlook", page)

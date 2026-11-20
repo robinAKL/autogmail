@@ -359,11 +359,12 @@ def _clean_signature_logos(value) -> dict[str, dict]:
             continue
         mime = str(raw_meta.get("mime") or "image/png").strip().lower()
         name = str(raw_meta.get("name") or "logo").strip()[:120]
+        account = str(raw_meta.get("account") or "").strip().lower()[:200]
         try:
             size = max(0, int(raw_meta.get("size") or 0))
         except (TypeError, ValueError):
             size = 0
-        out[key] = {"file_id": file_id, "name": name, "mime": mime, "size": size}
+        out[key] = {"file_id": file_id, "name": name, "mime": mime, "size": size, "account": account}
     return out
 
 
@@ -371,10 +372,24 @@ def signature_logo_for_mailbox(settings: dict, provider: str = "", email: str = 
     logos = settings.get("signature_logos") or {}
     if not isinstance(logos, dict):
         return None
-    for candidate in ((email or "").strip().lower(), (provider or "").strip().lower()):
-        meta = logos.get(candidate)
+    prov = (provider or "").strip().lower()
+    acct = (email or "").strip().lower()
+    if acct:
+        for candidate in (f"{prov}:{acct}" if prov else "", acct):
+            meta = logos.get(candidate) if candidate else None
+            if isinstance(meta, dict) and meta.get("file_id"):
+                saved_acct = str(meta.get("account") or "").strip().lower()
+                if not saved_acct or saved_acct == acct:
+                    return dict(meta)
+        meta = logos.get(prov) if prov else None
         if isinstance(meta, dict) and meta.get("file_id"):
-            return dict(meta)
+            saved_acct = str(meta.get("account") or "").strip().lower()
+            if saved_acct == acct:
+                return dict(meta)
+        return None
+    meta = logos.get(prov) if prov else None
+    if isinstance(meta, dict) and meta.get("file_id") and not str(meta.get("account") or "").strip():
+        return dict(meta)
     return None
 
 
