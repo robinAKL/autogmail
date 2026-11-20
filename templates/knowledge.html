@@ -126,60 +126,56 @@
 <section class="section" id="storylines">
   <div class="section-head">
     <h2>Storylines</h2>
-    <p class="muted">Threads you have replied in more than once. Open one for the timeline.</p>
+    <p class="muted">Newest first. Open one to read its timeline.</p>
   </div>
+  {% if open_story %}
+  <article class="card kb-story-open">
+    <header class="matter-drawer-head">
+      <div>
+        <h3 id="story-title">{{ open_story.title }}</h3>
+        <p class="meta">{{ open_story.who }} · {{ open_story.label }} · {{ open_story.size }} letters</p>
+      </div>
+      <a class="button quiet small" href="{{ url_for('knowledge_page', story_page=story_pager.page) }}#storylines">Close</a>
+    </header>
+    <p class="ai-note"><b>Status</b> {{ open_story.label }}</p>
+    <h3 class="matter-h">Timeline</h3>
+    <ol class="story-line">
+      {% for step in open_story.steps %}
+      <li class="{% if step.current %}on{% endif %}{% if step.outbound %} out{% endif %}">
+        <span class="story-who">{{ step.who }}</span>
+        {% if step.day %}<span class="story-date">{{ step.day }}</span>{% endif %}
+        <span class="story-summary">{{ step.summary }}</span>
+      </li>
+      {% endfor %}
+    </ol>
+  </article>
+  {% endif %}
   {% if storylines %}
   <div class="card kb-story-list">
-    {% for card in storylines[:6] %}
-    <details class="kb-story" id="item-{{ card.id }}">
-      <summary>
-        <span class="story-card-top">
-          <span class="story-card-title">{{ card.title }}</span>
-          <span class="tag {{ card.status }}">{{ card.label }}</span>
-        </span>
-        <span class="story-card-who">{{ card.who }}</span>
-        <span class="story-card-foot">{{ card.size }} letters{% if card.sent %} · {{ card.sent }} from you{% endif %}{% if card.date %} · {{ card.date }}{% endif %}</span>
-      </summary>
-      {% if card.steps %}
-      <ol class="story-line">
-        {% for step in card.steps %}
-        <li class="{% if step.outbound %}out{% endif %}">
-          <span class="story-who">{{ step.who }}</span>
-          {% if step.date %}<span class="story-date">{{ step.date }}</span>{% endif %}
-          <span class="story-summary">{{ step.summary }}</span>
-        </li>
-        {% endfor %}
-      </ol>
-      {% endif %}
-    </details>
+    {% for card in storylines %}
+    <a class="story-card {% if open_story and open_story.id == card.id %}on{% endif %}" id="item-{{ card.id }}" href="{{ url_for('knowledge_page', story=card.id, story_page=story_pager.page) }}#storylines">
+      <span class="story-card-top">
+        <span class="story-card-title">{{ card.title }}</span>
+        <span class="tag {{ card.status }}">{{ card.label }}</span>
+      </span>
+      <span class="story-card-who">{{ card.who }}</span>
+      <span class="story-card-foot">{{ card.size }} letters{% if card.sent %} · {{ card.sent }} from you{% endif %}{% if card.day %} · {{ card.day }}{% endif %}</span>
+    </a>
     {% endfor %}
-    {% if storylines|length > 6 %}
-    <details class="kb-story kb-story-more">
-      <summary><span class="story-card-foot">{{ storylines|length - 6 }} more storylines</span></summary>
-      {% for card in storylines[6:] %}
-      <details class="kb-story" id="item-{{ card.id }}">
-        <summary>
-          <span class="story-card-top">
-            <span class="story-card-title">{{ card.title }}</span>
-            <span class="tag {{ card.status }}">{{ card.label }}</span>
-          </span>
-          <span class="story-card-who">{{ card.who }}</span>
-          <span class="story-card-foot">{{ card.size }} letters{% if card.sent %} · {{ card.sent }} from you{% endif %}{% if card.date %} · {{ card.date }}{% endif %}</span>
-        </summary>
-        {% if card.steps %}
-        <ol class="story-line">
-          {% for step in card.steps %}
-          <li class="{% if step.outbound %}out{% endif %}">
-            <span class="story-who">{{ step.who }}</span>
-            {% if step.date %}<span class="story-date">{{ step.date }}</span>{% endif %}
-            <span class="story-summary">{{ step.summary }}</span>
-          </li>
-          {% endfor %}
-        </ol>
-        {% endif %}
-      </details>
-      {% endfor %}
-    </details>
+    {% if story_pager.pages > 1 %}
+    <nav class="pager" aria-label="Storyline pages">
+      {% if story_pager.prev %}
+      <a class="button quiet small" href="{{ url_for('knowledge_page', story_page=story_pager.prev) }}#storylines">Newer</a>
+      {% else %}
+      <span class="button quiet small" aria-disabled="true">Newer</span>
+      {% endif %}
+      <span class="pager-status">{{ story_pager.page }} / {{ story_pager.pages }}</span>
+      {% if story_pager.next %}
+      <a class="button quiet small" href="{{ url_for('knowledge_page', story_page=story_pager.next) }}#storylines">Older</a>
+      {% else %}
+      <span class="button quiet small" aria-disabled="true">Older</span>
+      {% endif %}
+    </nav>
     {% endif %}
   </div>
   {% else %}
