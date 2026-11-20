@@ -41,6 +41,11 @@ def create(mail: Mail, draft, language: str, role: str = "ask", kind: str = "") 
             "summary": draft.summary,
             "reason": draft.reason,
             "draft": draft.reply,
+            "draft_l1": getattr(draft, "reply_l1", "") or "",
+            "reply_lang": getattr(draft, "reply_lang", "") or language,
+            "translated_subject": getattr(mail, "translated_subject", "") or "",
+            "translated_body": getattr(mail, "translated_body", "") or "",
+            "detected_lang": getattr(mail, "detected_lang", "") or "",
             "language": language,
             "sources": list(draft.sources or []),
             "status": "pending",
@@ -401,6 +406,9 @@ def _mail(item: dict) -> Mail:
         provider=item.get("provider") or "gmail",
         account=item.get("account", ""),
         received_ts=float(item.get("received_ts") or 0),
+        detected_lang=item.get("detected_lang", ""),
+        translated_subject=item.get("translated_subject", ""),
+        translated_body=item.get("translated_body", ""),
     )
 
 

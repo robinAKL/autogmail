@@ -253,7 +253,22 @@ def configure_app(app: Flask) -> None:
         if mail is None:
             page = document("", "This letter could not be loaded right now.")
         else:
-            page = document(mail.html, mail.body)
+            settings = load_settings()
+            translated = ""
+            if settings.get("translation_mode", "off") != "off":
+                if not getattr(mail, "translated_body", ""):
+                    try:
+                        from gmail_auto.translator import translate_inbound_mail
+
+                        mail = translate_inbound_mail(
+                            mail,
+                            user_lang=settings.get("first_language", "zh"),
+                            preserve_langs=settings.get("preserve_langs", []),
+                        )
+                    except Exception:
+                        pass
+                translated = getattr(mail, "translated_body", "")
+            page = document(mail.html, mail.body, translated=translated)
         response = Response(page, mimetype="text/html")
         response.headers["Content-Security-Policy"] = FRAME_POLICY
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -1728,6 +1743,14 @@ def configure_app(app: Flask) -> None:
             changes = {}
             if "reply_language" in request.form:
                 changes["reply_language"] = request.form.get("reply_language", "")
+            if "first_language" in request.form:
+                changes["first_language"] = request.form.get("first_language", "zh")
+            if "translation_mode" in request.form:
+                changes["translation_mode"] = request.form.get("translation_mode", "seamless")
+                changes["translate_outgoing"] = request.form.get("translate_outgoing") == "1"
+            if "preserve_langs" in request.form:
+                raw_preserve = request.form.get("preserve_langs", "")
+                changes["preserve_langs"] = [p.strip().lower() for p in raw_preserve.split(",") if p.strip()]
             if "notify_preset" in request.form:
                 changes["notify_auto_replies"] = request.form.get("notify_auto_replies") == "1"
                 changes["notify_important"] = request.form.get("notify_important") == "1"
@@ -2466,17 +2489,23 @@ def _merge_history(rows: list[dict]) -> list[dict]:
 def _row_from_mail(mail, record, user_email: str) -> dict:
     label, kind, group = _describe(mail, record, user_email)
     record = record if isinstance(record, dict) else {}
-    snippet = " ".join((mail.snippet or mail.body or "").split())
+    raw_snippet = " ".join((mail.snippet or mail.body or "").split())
+    display_snippet = getattr(mail, "translated_snippet", "") or raw_snippet
+    subject = mail.subject or "(no subject)"
+    display_subject = getattr(mail, "translated_subject", "") or subject
     return {
         "key": mail.key,
         "provider": mail.provider,
         "provider_label": PROVIDERS.get(mail.provider, "Mail"),
         "who": mail.from_name or mail.from_email or "Unknown sender",
         "email": mail.from_email,
-        "subject": mail.subject or "(no subject)",
+        "subject": display_subject,
+        "raw_subject": subject,
+        "detected_lang": getattr(mail, "detected_lang", ""),
+        "translated_subject": getattr(mail, "translated_subject", ""),
         "date": mail.date,
         "short_date": _short_date(mail.date),
-        "snippet": snippet[:160],
+        "snippet": display_snippet[:160],
         "unread": "UNREAD" in (mail.label_ids or []),
         "labels": [item for item in (mail.label_ids or []) if str(item).startswith("CATEGORY_")],
         "thread_id": mail.thread_id or "",
@@ -2912,11 +2941,16 @@ def _login_view(mode=None, email=None, sent=None, error=""):
 
 def _profile_context(form=None) -> dict:
     from gmail_auto.cleanup import LIMIT
+    from gmail_auto.settings import TRANSLATION_MODES
+    from gmail_auto.translator import SUPPORTED_LANGUAGES
 
     settings = load_settings()
     shared = {
         "settings": settings,
         "languages": LANGUAGES,
+        "translation_modes": TRANSLATION_MODES,
+        "supported_languages": SUPPORTED_LANGUAGES,
+        "preserve_langs_text": ", ".join(settings.get("preserve_langs", [])),
         "approval_labels": APPROVALS,
         "modes": _MODES,
         "mode": _current_mode(),

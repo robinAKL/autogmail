@@ -197,6 +197,39 @@
     </label>
     <div class="span-2"><button type="submit">Save language</button></div>
   </form>
+  <form method="post" action="{{ url_for('settings_save') }}" class="form-grid" style="margin-bottom:24px;padding-bottom:18px;border-bottom:1px solid #e1e4e8;">
+    <input type="hidden" name="next" value="#voice">
+    <div class="span-2">
+      <h3 style="margin:0 0 6px 0;font-size:16px;">Seamless Translation Settings</h3>
+      <p class="hint" style="margin-bottom:12px;">Read and write all foreign emails in your first language; translation happens seamlessly in the background.</p>
+    </div>
+    <label>
+      First language (L1)
+      <select name="first_language">
+        {% for code, name in supported_languages.items() %}
+        <option value="{{ code }}" {% if settings.first_language == code %}selected{% endif %}>{{ name }} ({{ code }})</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Translation mode
+      <select name="translation_mode">
+        {% for code, label in translation_modes.items() %}
+        <option value="{{ code }}" {% if settings.translation_mode == code %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label class="span-2">
+      Preserve languages
+      <input name="preserve_langs" value="{{ preserve_langs_text }}" placeholder="e.g. en, ja">
+      <span class="hint">These languages will stay in their original form without translation. Separate with commas.</span>
+    </label>
+    <label class="span-2 inline-check">
+      <input type="checkbox" name="translate_outgoing" value="1" {% if settings.translate_outgoing %}checked{% endif %}>
+      <span>Auto-translate outgoing replies to recipient language</span>
+    </label>
+    <div class="span-2"><button type="submit">Save translation settings</button></div>
+  </form>
   <form method="post" action="{{ url_for('profile_save') }}" class="form-grid">
     <label>
       Name
