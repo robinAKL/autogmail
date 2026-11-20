@@ -116,8 +116,10 @@ class OutlookClient:
 
         html_suffix is appended as HTML after the escaped text. inline_images are
         (content_id, filename, mime, bytes) and referenced from that HTML as cid:content_id.
+        A saved logo for this Outlook account is added the same way.
         """
-        images = _inline_attachments(inline_images)
+        logo_html, logo_images = _saved_outlook_logo(self)
+        images = _inline_attachments([*(inline_images or []), *logo_images])
         draft = microsoft.graph("outlook", "POST", f"/me/messages/{mail.id}/createReply", headers=_HTML)
         draft_id = draft.get("id")
         if not draft_id:
@@ -125,6 +127,8 @@ class OutlookClient:
         quoted = (draft.get("body") or {}).get("content") or ""
         mine = _escaped_html(body)
         suffix = (html_suffix or "").strip()
+        if logo_html:
+            suffix = f"{suffix}<br>{logo_html}" if suffix else logo_html
         if suffix:
             mine += suffix + "<br>"
         microsoft.graph(
@@ -152,8 +156,11 @@ class OutlookClient:
         inline_images: list | None = None,
     ) -> None:
         """A new email (not a reply). to and cc may hold several addresses separated by commas."""
-        images = _inline_attachments(inline_images)
+        logo_html, logo_images = _saved_outlook_logo(self)
+        images = _inline_attachments([*(inline_images or []), *logo_images])
         suffix = (html_suffix or "").strip()
+        if logo_html:
+            suffix = f"{suffix}<br>{logo_html}" if suffix else logo_html
         if suffix or images:
             content = _escaped_html(body)
             if suffix:
@@ -168,7 +175,9 @@ class OutlookClient:
         }
         if cc:
             message["ccRecipients"] = [{"emailAddress": {"address": address.strip()}} for address in cc.split(",") if address.strip()]
-        if any(len(data) > _INLINE_BYTES for _, _, data in attachments or []) or sum(len(data) for _, _, data in attachments or []) > _INLINE_BYTES:
+        file_bytes = sum(len(data) for _, _, data in attachments or [])
+        inline_bytes = sum(len(item[3]) for item in [*(inline_images or []), *logo_images])
+        if any(len(data) > _INLINE_BYTES for _, _, data in attachments or []) or file_bytes + inline_bytes > _INLINE_BYTES:
             # Too big to send in one call: make a draft, add the files (big ones through an upload session), send it.
             draft = microsoft.graph("outlook", "POST", "/me/messages", body=message)
             draft_id = draft.get("id")
@@ -352,6 +361,32 @@ def _timestamp(value: str) -> float:
 # Graph takes a file inside one request up to 3 MB; bigger ones go through an upload session in pieces.
 _INLINE_BYTES = 3_000_000
 _CHUNK = 320 * 1024 * 12  # pieces must be multiples of 320 KiB
+
+
+def _saved_outlook_logo(client) -> tuple[str, list]:
+    """Saved logo for this Outlook mailbox, with a content id we generate."""
+    account = getattr(client, "_email", "") or ""
+    if not account:
+        try:
+            account = (microsoft.status("outlook").get("account") or "").strip()
+        except Exception:
+            account = ""
+    if not account:
+        return "", []
+    from gmail_auto.signatures import load_logo
+    import secrets
+
+    logo = load_logo("outlook", account)
+    if not logo:
+        return "", []
+    filename, mime, data = logo
+    subtype = "img"
+    if isinstance(mime, str) and "/" in mime:
+        subtype = mime.split("/", 1)[1].split("+", 1)[0]
+    subtype = "".join(ch for ch in subtype.lower() if ch.isalnum())[:12] or "img"
+    cid = f"logo.{subtype}.{secrets.token_hex(6)}@autogmail"
+    image = f'<img src="cid:{html.escape(cid, quote=True)}" alt="Company logo" width="120">'
+    return image, [(cid, filename or "logo", mime or "image/png", data)]
 
 
 def _escaped_html(body: str) -> str:

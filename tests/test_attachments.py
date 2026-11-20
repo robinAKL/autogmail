@@ -175,6 +175,49 @@ class SendWithAttachmentTests(WebCase):
         fake.assert_not_called()
         self.assertIn("too large to embed", str(raised.exception))
 
+    def test_outlook_send_embeds_the_saved_logo_for_that_mailbox(self):
+        from gmail_auto.outlook_client import OutlookClient
+
+        calls = []
+        client = OutlookClient.__new__(OutlookClient)
+        client._email = "robin@innopro.co.nz"
+        with patch("gmail_auto.microsoft.graph", side_effect=lambda *a, **k: calls.append(k) or {}), patch(
+            "gmail_auto.signatures.load_logo", return_value=('evil".png', "image/png", b"\x89PNG")
+        ) as loader:
+            client.send_new("lee@a.example", "Hello", "Hi <there>")
+        loader.assert_called_once_with("outlook", "robin@innopro.co.nz")
+        message = calls[0]["body"]["message"]
+        self.assertEqual(message["body"]["contentType"], "HTML")
+        self.assertIn("Hi &lt;there&gt;", message["body"]["content"])
+        logo = message["attachments"][0]
+        self.assertEqual(logo["isInline"], True)
+        self.assertTrue(logo["contentId"].startswith("logo.png."))
+        self.assertTrue(logo["contentId"].endswith("@autogmail"))
+        self.assertNotIn('"', logo["contentId"])
+        self.assertIn(f'cid:{logo["contentId"]}', message["body"]["content"])
+        self.assertEqual(base64.b64decode(logo["contentBytes"]), b"\x89PNG")
+
+    def test_outlook_uses_a_draft_when_the_logo_and_files_exceed_one_request(self):
+        from gmail_auto.outlook_client import OutlookClient
+
+        calls = []
+
+        def fake_graph(kind, method, path, params=None, body=None, headers=None, **_):
+            calls.append((method, path))
+            return {"id": "draft-1"}
+
+        client = OutlookClient.__new__(OutlookClient)
+        client._email = "robin@innopro.co.nz"
+        big = b"x" * 2_000_000
+        with patch("gmail_auto.microsoft.graph", side_effect=fake_graph), patch(
+            "gmail_auto.signatures.load_logo", return_value=("logo.png", "image/png", big)
+        ):
+            client.send_new("lee@a.example", "Hello", "Hi", attachments=[("notes.pdf", "application/pdf", big)])
+        self.assertEqual(calls[0], ("POST", "/me/messages"))
+        self.assertIn(("POST", "/me/messages/draft-1/attachments"), calls)
+        self.assertEqual(calls[-1], ("POST", "/me/messages/draft-1/send"))
+        self.assertNotIn(("POST", "/me/sendMail"), calls)
+
 
 class AttachOnPageTests(WebCase):
     def test_attach_from_knowledge_and_upload_then_send(self):
