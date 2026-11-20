@@ -103,14 +103,30 @@ class OutlookClient:
         raw = microsoft.graph("outlook", "GET", f"/me/messages/{message_id}", params={"$select": _SELECT}, headers=_HTML)
         return self._stamp(parse_message(raw))
 
-    def send_reply(self, mail: Mail, body: str, user_email: str, attachments: list | None = None) -> str:
-        """Reply on the same conversation. The draft Outlook builds already quotes the original below."""
+    def send_reply(
+        self,
+        mail: Mail,
+        body: str,
+        user_email: str,
+        attachments: list | None = None,
+        html_suffix: str = "",
+        inline_images: list | None = None,
+    ) -> str:
+        """Reply on the same conversation. The draft Outlook builds already quotes the original below.
+
+        html_suffix is appended as HTML after the escaped text. inline_images are
+        (content_id, filename, mime, bytes) and referenced from that HTML as cid:content_id.
+        """
+        images = _inline_attachments(inline_images)
         draft = microsoft.graph("outlook", "POST", f"/me/messages/{mail.id}/createReply", headers=_HTML)
         draft_id = draft.get("id")
         if not draft_id:
             raise ConfigError("Outlook did not create the reply.")
         quoted = (draft.get("body") or {}).get("content") or ""
-        mine = "<div>" + html.escape(body).replace("\n", "<br>") + "</div><br>"
+        mine = _escaped_html(body)
+        suffix = (html_suffix or "").strip()
+        if suffix:
+            mine += suffix + "<br>"
         microsoft.graph(
             "outlook",
             "PATCH",
@@ -118,17 +134,36 @@ class OutlookClient:
             body={"body": {"contentType": "HTML", "content": mine + quoted}},
         )
         _add_attachments(draft_id, attachments)
+        _add_inline_images(draft_id, images)
         microsoft.graph("outlook", "POST", f"/me/messages/{draft_id}/send")
         return draft_id
 
     def send_notice(self, to: str, subject: str, body: str) -> None:
         self.send_new(to, subject, body)
 
-    def send_new(self, to: str, subject: str, body: str, attachments: list | None = None, cc: str = "") -> None:
+    def send_new(
+        self,
+        to: str,
+        subject: str,
+        body: str,
+        attachments: list | None = None,
+        cc: str = "",
+        html_suffix: str = "",
+        inline_images: list | None = None,
+    ) -> None:
         """A new email (not a reply). to and cc may hold several addresses separated by commas."""
+        images = _inline_attachments(inline_images)
+        suffix = (html_suffix or "").strip()
+        if suffix or images:
+            content = _escaped_html(body)
+            if suffix:
+                content += suffix
+            body_part = {"contentType": "HTML", "content": content}
+        else:
+            body_part = {"contentType": "Text", "content": body}
         message = {
             "subject": subject,
-            "body": {"contentType": "Text", "content": body},
+            "body": body_part,
             "toRecipients": [{"emailAddress": {"address": address.strip()}} for address in to.split(",") if address.strip()],
         }
         if cc:
@@ -140,18 +175,20 @@ class OutlookClient:
             if not draft_id:
                 raise ConfigError("Outlook did not create the email.")
             _add_attachments(draft_id, attachments)
+            _add_inline_images(draft_id, images)
             microsoft.graph("outlook", "POST", f"/me/messages/{draft_id}/send")
             return
-        if attachments:
-            message["attachments"] = [
-                {
-                    "@odata.type": "#microsoft.graph.fileAttachment",
-                    "name": filename,
-                    "contentType": mime or "application/octet-stream",
-                    "contentBytes": base64.b64encode(data).decode("ascii"),
-                }
-                for filename, mime, data in attachments
-            ]
+        files = [
+            {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": filename,
+                "contentType": mime or "application/octet-stream",
+                "contentBytes": base64.b64encode(data).decode("ascii"),
+            }
+            for filename, mime, data in attachments or []
+        ]
+        if files or images:
+            message["attachments"] = files + images
         microsoft.graph("outlook", "POST", "/me/sendMail", body={"message": message})
 
     def mark_read(self, message_id: str) -> None:
@@ -315,6 +352,45 @@ def _timestamp(value: str) -> float:
 # Graph takes a file inside one request up to 3 MB; bigger ones go through an upload session in pieces.
 _INLINE_BYTES = 3_000_000
 _CHUNK = 320 * 1024 * 12  # pieces must be multiples of 320 KiB
+
+
+def _escaped_html(body: str) -> str:
+    return "<div>" + html.escape(body or "").replace("\n", "<br>") + "</div><br>"
+
+
+def _inline_attachments(images: list | None) -> list[dict]:
+    """Graph inline files. A logo bigger than one request can hold is refused, not sent as a download."""
+    parts: list[dict] = []
+    for item in images or []:
+        if not isinstance(item, (tuple, list)) or len(item) != 4:
+            raise ConfigError("An inline image needs a content id, filename, type, and bytes.")
+        content_id, filename, mime, data = item
+        cid = str(content_id or "").strip()
+        if cid.lower().startswith("cid:"):
+            cid = cid[4:].strip()
+        if cid.startswith("<") and cid.endswith(">"):
+            cid = cid[1:-1].strip()
+        if not cid or any(mark in cid for mark in ' "\'<>'):
+            raise ConfigError("An inline image needs a content id.")
+        raw = bytes(data)
+        if len(raw) > _INLINE_BYTES:
+            raise ConfigError(f"{filename or 'The signature image'} is too large to embed in the email.")
+        parts.append(
+            {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": filename or "image",
+                "contentType": mime or "image/png",
+                "contentBytes": base64.b64encode(raw).decode("ascii"),
+                "isInline": True,
+                "contentId": cid,
+            }
+        )
+    return parts
+
+
+def _add_inline_images(message_id: str, images: list[dict]) -> None:
+    for image in images:
+        microsoft.graph("outlook", "POST", f"/me/messages/{message_id}/attachments", body=image)
 
 
 def _add_attachments(message_id: str, attachments: list | None) -> None:
