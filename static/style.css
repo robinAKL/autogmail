@@ -119,8 +119,18 @@ code { font-family: Consolas, "SF Mono", monospace; font-size: 0.9em; background
 .card.conn > .button-row { margin-top: auto; }
 .grid-2.wide-left { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
 .grid-2.flush { gap: 28px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: stretch; }
 .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; align-items: stretch; }
-.grid-4 > .card.source > :last-child { margin-top: auto; }
+.grid-3 > .card.source > :last-child, .grid-4 > .card.source > :last-child { margin-top: auto; }
+.kb-analysis-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.kb-result-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.kb-result-item { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2); display: grid; gap: 4px; }
+.kb-result-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.kb-status-idle { color: var(--muted); background: #eeeae2; }
+.kb-status-running { color: var(--info); background: var(--info-bg); }
+.kb-status-done, .kb-status-current { color: var(--ok); background: var(--ok-bg); }
+.kb-status-error, .kb-status-expired { color: #7a1d14; background: var(--danger-bg); }
+.kb-status-uncertain { color: #5f3e09; background: var(--warn-bg); }
 .stack { display: grid; gap: 12px; }
 .stack-sm { display: grid; gap: 8px; }
 .stack-lg { display: grid; gap: 18px; }
@@ -661,7 +671,8 @@ details.card[open] > summary { margin-bottom: 10px; padding-bottom: 10px; border
 /* ---- small screens ---- */
 @media (max-width: 1180px) {
   .tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .grid-3, .grid-4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kb-analysis-grid { grid-template-columns: 1fr; }
   .options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 1240px) {
@@ -681,7 +692,7 @@ details.card[open] > summary { margin-bottom: 10px; padding-bottom: 10px; border
   .matter-scrim { inset: 0; }
   .matter-drawer { left: 0; width: min(420px, 94vw); }
   .content { padding: 16px 14px 48px; }
-  .split, .grid-2, .grid-2.wide-left, .approval-grid, .doc-list, .auth-shell, .form-grid, .kb-steps, .kb-cards, .kb-tiles, .cal-layout, .ping-grid, .inbox-desk { grid-template-columns: 1fr; }
+  .split, .grid-2, .grid-2.wide-left, .grid-3, .approval-grid, .doc-list, .auth-shell, .form-grid, .kb-steps, .kb-cards, .kb-tiles, .kb-analysis-grid, .cal-layout, .ping-grid, .inbox-desk { grid-template-columns: 1fr; }
   .cal-cell { min-height: 84px; }
   .list { position: static; max-height: 46vh; }
   .auth-shell { gap: 28px; min-height: auto; }
