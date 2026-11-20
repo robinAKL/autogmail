@@ -27,6 +27,8 @@ UNREAD_QUERY = (
 DONE_LABEL = "autogmail-done"
 RETRY_LABEL = "autogmail-retry"
 RECENT_QUERY = "in:inbox -in:chats -in:spam -in:trash"
+# Received history for knowledge. No in:inbox, so archived mail still in the mailbox is included.
+RECEIVED_HISTORY_QUERY = "-in:sent -in:drafts -in:spam -in:trash -in:chats"
 SENT_QUERY = "in:sent -in:chats"
 
 
@@ -98,6 +100,13 @@ class GmailClient:
     def list_recent(self, limit: int = 25, full: bool = False) -> list[Mail]:
         return self._list(RECENT_QUERY, limit, full=full)
 
+    def list_received_history(self, limit: int = 25, full: bool = False) -> list[Mail]:
+        """Received mail, including archived mail that is still in the mailbox.
+
+        Sent, drafts, spam, and trash stay out. The inbox screen keeps list_recent.
+        """
+        return self._list(RECEIVED_HISTORY_QUERY, limit, full=full)
+
     def list_recent_page(self, limit: int = 20, token: str = "", full: bool = False) -> tuple[list[Mail], str]:
         """One inbox page of metadata, plus the token for the next page. Stops after this page."""
         want = max(1, min(int(limit), 100))
@@ -158,10 +167,20 @@ class GmailClient:
 
     def send_reply(self, mail: Mail, body: str, user_email: str, attachments: list | None = None) -> str:
         """attachments: (filename, mime, bytes) tuples."""
-        from gmail_auto.signatures import load_logo
+        from gmail_auto.signatures import load_logo, load_logo_layout
 
-        logo = load_logo("gmail", self.get_user_email())
-        message = build_reply_message(mail, body, user_email, attachments, logo=logo)
+        account = self.get_user_email()
+        logo = load_logo("gmail", account)
+        signature, logo_position = load_logo_layout("gmail", account)
+        message = build_reply_message(
+            mail,
+            body,
+            user_email,
+            attachments,
+            logo=logo,
+            signature=signature,
+            logo_position=logo_position,
+        )
         raw = message.as_bytes()
         if len(raw) > _SIMPLE_SEND_BYTES:
             return self._send_large(message, mail.thread_id)
@@ -190,7 +209,7 @@ class GmailClient:
 
     def send_new(self, to: str, subject: str, body: str, attachments: list | None = None, cc: str = "") -> None:
         """A new email (not a reply). to and cc may hold several addresses separated by commas."""
-        from gmail_auto.signatures import load_logo
+        from gmail_auto.signatures import load_logo, load_logo_layout
 
         message = EmailMessage()
         message["To"] = to
@@ -199,7 +218,14 @@ class GmailClient:
         account = self.get_user_email()
         message["From"] = account
         message["Subject"] = subject
-        _set_message_body(message, body, load_logo("gmail", account))
+        signature, logo_position = load_logo_layout("gmail", account)
+        _set_message_body(
+            message,
+            body,
+            load_logo("gmail", account),
+            signature=signature,
+            logo_position=logo_position,
+        )
         for filename, mime, data in attachments or []:
             maintype, _, subtype = (mime or "application/octet-stream").partition("/")
             message.add_attachment(data, maintype=maintype or "application", subtype=subtype or "octet-stream", filename=filename)
@@ -705,19 +731,26 @@ def decode_mime_header(value: str) -> str:
     return "".join(chunks)
 
 
-def _set_message_body(message: EmailMessage, body: str, logo: tuple[str, str, bytes] | None = None) -> None:
+def _set_message_body(
+    message: EmailMessage,
+    body: str,
+    logo: tuple[str, str, bytes] | None = None,
+    *,
+    signature: str = "",
+    logo_position: str = "bottom",
+) -> None:
     message.set_content(body, subtype="plain", charset="utf-8")
     if logo is None:
         return
 
+    from gmail_auto.signatures import render_body_with_logo_html
+
     filename, mime, content = logo
     maintype, subtype = mime.split("/", 1)
     content_id = f"{secrets.token_hex(12)}@autogmail"
-    escaped_body = html.escape(body).replace("\n", "<br>")
-    message.add_alternative(
-        f'<div>{escaped_body}</div><p><img src="cid:{content_id}" alt="Company logo" width="120"></p>',
-        subtype="html",
-    )
+    img_html = f'<img src="cid:{content_id}" alt="Company logo" width="120" style="display:block;max-width:160px;height:auto;">'
+    html_body = render_body_with_logo_html(body, signature=signature, img_html=img_html, position=logo_position)
+    message.add_alternative(html_body, subtype="html")
     message.get_payload()[-1].add_related(
         content, maintype=maintype, subtype=subtype, cid=f"<{content_id}>", filename=filename, disposition="inline"
     )
@@ -726,6 +759,8 @@ def _set_message_body(message: EmailMessage, body: str, logo: tuple[str, str, by
 def build_reply_message(
     mail: Mail, body: str, user_email: str, attachments: list | None = None, *,
     logo: tuple[str, str, bytes] | None = None,
+    signature: str = "",
+    logo_position: str = "bottom",
 ) -> EmailMessage:
     recipient = (mail.reply_email or mail.from_email).strip()
     if not recipient:
@@ -744,7 +779,7 @@ def build_reply_message(
     if message_id:
         message["In-Reply-To"] = message_id
         message["References"] = f"{references} {message_id}".strip()
-    _set_message_body(message, body, logo)
+    _set_message_body(message, body, logo, signature=signature, logo_position=logo_position)
     for filename, mime, data in attachments or []:
         maintype, _, subtype = (mime or "application/octet-stream").partition("/")
         message.add_attachment(data, maintype=maintype or "application", subtype=subtype or "octet-stream", filename=filename)

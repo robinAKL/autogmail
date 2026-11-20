@@ -751,9 +751,13 @@ def learn_from_mailbox(client, limit: int = 30) -> dict:
 
     from concurrent.futures import ThreadPoolExecutor
 
+    # direction inbox: received history, including mail archived but still in the mailbox.
+    receive = getattr(client, "list_received_history", None)
+    if not callable(receive):
+        receive = client.list_recent
     with ThreadPoolExecutor(max_workers=2) as pool:
         future_sent = pool.submit(collect, lambda: client.list_sent(take, full=want_full))
-        future_received = pool.submit(collect, lambda: client.list_recent(take, full=want_full))
+        future_received = pool.submit(collect, lambda: receive(take, full=want_full))
         sent, sent_error = future_sent.result()
         received, received_error = future_received.result()
     if sent_error:

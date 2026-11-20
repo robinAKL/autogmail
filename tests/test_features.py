@@ -211,6 +211,61 @@ class KnowledgeTests(TempHome):
         self.assertIn("healthy eating", seen[0])
         self.assertEqual(entry["title"], "What your email shows (robin@kiwiknowledge.co.nz)")
 
+    def test_received_history_keeps_archived_mail_and_skips_the_other_folders(self):
+        from gmail_auto.gmail_client import RECEIVED_HISTORY_QUERY, RECENT_QUERY, GmailClient
+        from gmail_auto.outlook_client import OutlookClient
+
+        self.assertTrue(RECENT_QUERY.startswith("in:inbox"))
+        self.assertNotIn("in:inbox", RECEIVED_HISTORY_QUERY)
+        for folder in ("sent", "drafts", "spam", "trash"):
+            self.assertIn(f"-in:{folder}", RECEIVED_HISTORY_QUERY)
+
+        gmail = GmailClient.__new__(GmailClient)
+        seen = []
+
+        def listed(query, limit, full=False):
+            seen.append((query, limit, full))
+            return []
+
+        gmail._list = listed
+        gmail.list_received_history(8, full=True)
+        self.assertEqual(seen, [(RECEIVED_HISTORY_QUERY, 8, True)])
+
+        outlook = OutlookClient.__new__(OutlookClient)
+        folders = []
+
+        def newest(folder, limit, field):
+            folders.append(folder)
+            if folder == "archive":
+                return [sample(id="arch", provider="outlook", subject="Old thread", received_ts=10)]
+            return [sample(id="in", provider="outlook", subject="New thread", received_ts=20)]
+
+        outlook._list_newest = newest
+        mails = outlook.list_received_history(5, full=False)
+        self.assertEqual(folders, ["inbox", "archive"])
+        self.assertEqual([mail.id for mail in mails], ["in", "arch"])
+
+        class Box(FakeGmail):
+            def list_sent(self, limit=30, full=False):
+                return []
+
+            def list_recent(self, limit=30, full=False):
+                raise AssertionError("knowledge must not use the inbox-only list")
+
+            def list_received_history(self, limit=30, full=False):
+                return [sample(id="arch", body="The archived note is still here.", label_ids=["IMPORTANT"])]
+
+        seen = []
+
+        def fake_complete(_system, user, **_kwargs):
+            seen.append(user)
+            return "## People and organisations\n- Lee."
+
+        with patch("gmail_auto.knowledge.complete", fake_complete):
+            entry = knowledge.learn_from_mailbox(Box([]))
+        self.assertEqual(entry["meta"]["letters"], 1)
+        self.assertIn("archived note", seen[0])
+
 
 class CalendarTests(TempHome):
     def test_meeting_mail_becomes_a_calendar_draft_and_job_alerts_do_not(self):
