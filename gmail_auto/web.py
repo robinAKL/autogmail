@@ -5,8 +5,10 @@ import re
 import secrets
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
+from urllib.parse import urlsplit
 
-from flask import Flask, Response, abort, flash, redirect, request, session, url_for
+from flask import Flask, Response, abort, flash, g, redirect, request, session, url_for
 from markupsafe import Markup
 
 from gmail_auto import approvals, files, knowledge, microsoft, sharepoint, stats, whatsapp
@@ -34,6 +36,7 @@ from gmail_auto.importance import (
     preset_of,
 )
 from gmail_auto.storage import persistent
+from gmail_auto.tenant import saas_enabled, user_scope
 from gmail_auto.token_store import storage_hint, storage_kind, storage_ready
 from gmail_auto.store import get_state, is_live, list_processed, load_last_run, load_processed, now_text, set_state
 from gmail_auto.story import attach_stories, hide_story, story_board, story_detail, story_view
@@ -81,7 +84,7 @@ def configure_app(app: Flask) -> None:
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
     app.secret_key = _secret()
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-    app.config["SESSION_COOKIE_SECURE"] = hosted
+    app.config["SESSION_COOKIE_SECURE"] = hosted or saas_enabled()
     app.jinja_env.filters["md"] = render_markdown
 
     @app.before_request
@@ -94,7 +97,36 @@ def configure_app(app: Flask) -> None:
             origin = request.headers.get("Origin", "")
             if origin and not _host_allowed(_origin_host(origin)):
                 abort(403)
+            if origin and saas_enabled() and urlsplit(origin).netloc.lower() != request.host.lower():
+                abort(403)
         return None
+
+    @app.before_request
+    def workspace_scope():
+        if not saas_enabled():
+            return None
+        if request.path in {
+            "/cron", "/whatsapp/webhook", "/connections/whatsapp"
+        }:
+            abort(404)
+        if request.endpoint in {"login_page", "login_code", "login_submit", "logout", "privacy_page", "static"}:
+            return None
+        if not session.get("user_id"):
+            return redirect(url_for("login_page"))
+        scope = user_scope(session["user_id"])
+        try:
+            scope.__enter__()
+        except ConfigError:
+            session.clear()
+            return redirect(url_for("login_page"))
+        g.workspace_scope = scope
+        return None
+
+    @app.teardown_request
+    def close_workspace(_error):
+        scope = g.pop("workspace_scope", None)
+        if scope is not None:
+            scope.__exit__(None, None, None)
 
     @app.context_processor
     def shell():
@@ -332,7 +364,7 @@ def configure_app(app: Flask) -> None:
         if blocked:
             return blocked
         mode = request.form.get("mode", "")
-        if mode not in _MODES:
+        if mode not in _available_modes():
             abort(400)
         try:
             if mode == "draft":
@@ -2208,10 +2240,19 @@ def _home_context() -> dict:
     }
 
 
+def _request_inbox_cache() -> dict:
+    if not saas_enabled():
+        return _inbox_cache
+    if "workspace_inbox_cache" not in g:
+        g.workspace_inbox_cache = {"at": 0.0, "who": None, "data": None}
+    return g.workspace_inbox_cache
+
+
 def _inbox(live: bool = True) -> dict:
     who = session.get("user", "")
-    cached = _inbox_cache["data"]
-    if cached is not None and _inbox_cache["who"] == who and time.time() - _inbox_cache["at"] < _INBOX_TTL:
+    cache = _request_inbox_cache()
+    cached = cache["data"]
+    if cached is not None and cache["who"] == who and time.time() - cache["at"] < _INBOX_TTL:
         # Statuses change when a reply is approved, so they are always read fresh.
         _refresh_status(cached)
         cached["needs_fetch"] = False
@@ -2221,7 +2262,7 @@ def _inbox(live: bool = True) -> dict:
         if snapshot is not None:
             _refresh_status(snapshot)
             snapshot["needs_fetch"] = False
-            _inbox_cache.update({"at": time.time(), "who": who, "data": snapshot})
+            cache.update({"at": time.time(), "who": who, "data": snapshot})
             return snapshot
         rows = _rows_from_store()
         return {
@@ -2267,7 +2308,7 @@ def _inbox(live: bool = True) -> dict:
         data["offline"] = bool(data["rows"])
     data["at"] = time.time()
     data["needs_fetch"] = False
-    _inbox_cache.update({"at": data["at"], "who": who, "data": data})
+    cache.update({"at": data["at"], "who": who, "data": data})
     _write_inbox_snapshot(who, data)
     return data
 
@@ -2299,7 +2340,7 @@ def _list_mailboxes(clients) -> list[tuple]:
     wrapped = [copy_current_request_context(lambda client=client: _list_one_mailbox(client)) for client in clients]
     out = []
     with ThreadPoolExecutor(max_workers=len(wrapped)) as pool:
-        futures = [pool.submit(item) for item in wrapped]
+        futures = [pool.submit(copy_context().run, item) for item in wrapped]
         for future in as_completed(futures):
             out.append(future.result())
     return out
@@ -2327,7 +2368,7 @@ def _known_account(client, email: str) -> dict:
 
 
 def _forget_inbox() -> None:
-    _inbox_cache.update({"at": 0.0, "data": None})
+    _request_inbox_cache().update({"at": 0.0, "data": None})
     try:
         from gmail_auto.storage import delete_doc
 
@@ -2391,9 +2432,10 @@ def _write_inbox_snapshot(who: str, data: dict) -> None:
 def _find_mail(key: str):
     if not key:
         return None
-    cached = _inbox_cache["data"]
+    cache = _request_inbox_cache()
+    cached = cache["data"]
     listed = None
-    if cached is not None and _inbox_cache["who"] == session.get("user", ""):
+    if cached is not None and cache["who"] == session.get("user", ""):
         listed = cached["mails"].get(key)
         if listed is not None and (listed.html or listed.body):
             return listed
@@ -2850,7 +2892,7 @@ def _connections_context() -> dict:
 def _provider_connected(provider: str) -> bool:
     if provider == "outlook":
         return microsoft.status("outlook")["connected"]
-    cached = _inbox_cache["data"]
+    cached = _request_inbox_cache()["data"]
     if cached is not None and any(item["provider"] == "gmail" for item in cached["accounts"]):
         return True
     try:
@@ -2860,11 +2902,17 @@ def _provider_connected(provider: str) -> bool:
     return True
 
 
+def _available_modes() -> dict:
+    if saas_enabled():
+        return {mode: _MODES[mode] for mode in ("draft", "always")}
+    return _MODES
+
+
 def _current_mode() -> str:
     try:
         if not is_live():
             return "draft"
-        return load_settings()["approval_mode"]
+        return "always" if saas_enabled() else load_settings()["approval_mode"]
     except ConfigError:
         return "draft"
 
@@ -2886,6 +2934,8 @@ def _auth_failed(message: str) -> None:
 
 
 def _login_required():
+    if saas_enabled() and not session.get("user_id"):
+        return redirect(url_for("login_page"))
     if os.environ.get("VERCEL") and not session.get("user"):
         return redirect(url_for("login_page"))
     return None
@@ -2918,7 +2968,7 @@ def _profile_context(form=None) -> dict:
         "settings": settings,
         "languages": LANGUAGES,
         "approval_labels": APPROVALS,
-        "modes": _MODES,
+        "modes": _available_modes(),
         "mode": _current_mode(),
         "whatsapp_ready": whatsapp.ready(),
         "cleanup_limit": LIMIT,
@@ -3039,6 +3089,8 @@ def _secret() -> str:
     configured = os.environ.get("FLASK_SECRET_KEY", "").strip()
     if configured:
         return configured
+    if saas_enabled():
+        raise ConfigError("Set a private FLASK_SECRET_KEY before enabling SaaS mode.")
     if os.environ.get("VERCEL"):
         return "autogmail-vercel"
     try:

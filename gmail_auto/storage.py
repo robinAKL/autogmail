@@ -11,6 +11,7 @@ import threading
 
 from gmail_auto.errors import ConfigError
 from gmail_auto.paths import atomic_write, data_dir
+from gmail_auto.tenant import require_user_id, saas_enabled
 from gmail_auto.token_store import kv_delete, kv_get, kv_set, storage_ready
 
 _PREFIX = "autogmail:"
@@ -27,7 +28,7 @@ def load_doc(name: str, default=None):
     _check(name)
     if storage_ready():
         try:
-            raw = kv_get(_PREFIX + name)
+            raw = kv_get(_key(name))
         except ConfigError:
             raise
         except Exception as exc:
@@ -52,7 +53,7 @@ def load_doc(name: str, default=None):
 def save_doc(name: str, data) -> None:
     _check(name)
     if storage_ready():
-        kv_set(_PREFIX + name, json.dumps(data, ensure_ascii=False))
+        kv_set(_key(name), json.dumps(data, ensure_ascii=False))
         return
     try:
         atomic_write(data_dir() / f"{name}.json", json.dumps(data, ensure_ascii=False, indent=2) + "\n")
@@ -65,13 +66,19 @@ def save_doc(name: str, data) -> None:
 def delete_doc(name: str) -> None:
     _check(name)
     if storage_ready():
-        kv_delete(_PREFIX + name)
+        kv_delete(_key(name))
         return
     path = data_dir(create=False) / f"{name}.json"
     try:
         path.unlink(missing_ok=True)
     except OSError:
         return
+
+
+def _key(name: str) -> str:
+    if saas_enabled():
+        return f"{_PREFIX}u:{require_user_id()}:{name}"
+    return _PREFIX + name
 
 
 def _check(name: str) -> None:

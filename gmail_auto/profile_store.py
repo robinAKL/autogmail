@@ -2,8 +2,9 @@ import json
 import re
 
 from gmail_auto.errors import ConfigError, ProfileError
-from gmail_auto.paths import atomic_write, root
+from gmail_auto.paths import atomic_write, data_dir, root
 from gmail_auto.storage import load_doc, save_doc
+from gmail_auto.tenant import saas_enabled
 from gmail_auto.token_store import storage_ready
 
 _SECRET = re.compile(r"sk-[A-Za-z0-9]{10,}|BEGIN PRIVATE KEY")
@@ -12,7 +13,8 @@ _PLACEHOLDER_MARKS = ("请填写", "请用几句", "请描述", "(please fill", 
 
 
 def profile_path():
-    return root() / "profile.json"
+    directory = data_dir(create=False) if saas_enabled() else root()
+    return directory / "profile.json"
 
 
 def clean_profile(data: object) -> dict:

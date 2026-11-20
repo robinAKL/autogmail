@@ -4,6 +4,7 @@ import re
 
 from gmail_auto.errors import ConfigError
 from gmail_auto.storage import load_doc, save_doc
+from gmail_auto.tenant import saas_enabled
 
 _CLEANUP_LINES = 60
 _CLEANUP_CHARS = 200
@@ -131,7 +132,7 @@ def _clean(data: dict, strict: bool = False) -> dict:
 
     return {
         "reply_language": language,
-        "approval_mode": approval,
+        "approval_mode": "always" if saas_enabled() else approval,
         "ai_model": ai_model,
         "super_model": super_model,
         "whatsapp_to": phone,

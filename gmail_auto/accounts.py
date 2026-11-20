@@ -143,7 +143,7 @@ def _load() -> dict:
             return {"users": {}, "otp": {}, "gmail": {}}
         raw = kv_get(_KEY)
         return _parse(raw)
-    path = data_dir(create=False) / "accounts.json"
+    path = data_dir(create=False, platform=True) / "accounts.json"
     if not path.exists():
         return {"users": {}, "otp": {}, "gmail": {}}
     try:
@@ -180,4 +180,4 @@ def _save(data: dict) -> None:
             return
         kv_set(_KEY, raw)
         return
-    atomic_write(data_dir() / "accounts.json", raw + "\n")
+    atomic_write(data_dir(platform=True) / "accounts.json", raw + "\n")
