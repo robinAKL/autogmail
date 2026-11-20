@@ -298,6 +298,24 @@ def configure_app(app: Flask) -> None:
             }
         return redirect(url_for("home", **_inbox_query()))
 
+    @app.get("/inbox/more")
+    def inbox_more():
+        """One more metadata page per mailbox. The browser asks again until each box hits 100."""
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        who = session.get("user", "")
+        data = _inbox(live=False)
+        if not data.get("rows") and not data.get("cursors"):
+            data = _inbox(live=True, force=True)
+        added = _fetch_inbox_slice(who, data) if _inbox_has_more(data) else 0
+        return {
+            "ok": True,
+            "added": added,
+            "count": len(data.get("rows") or []),
+            "hasMore": _inbox_has_more(data),
+        }
+
     @app.get("/sent")
     def sent_page():
         blocked = _login_required()
@@ -2500,6 +2518,7 @@ def _home_context() -> dict:
         "offline": inbox["offline"],
         "errors": errors,
         "rows": listed,
+        "inbox_more": _inbox_has_more(inbox),
         "pager": {
             "page": page,
             "pages": pages,

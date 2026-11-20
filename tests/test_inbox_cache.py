@@ -137,6 +137,39 @@ class InboxCacheTests(unittest.TestCase):
             self.assertNotIn("Letter 020", body)
             self.assertIn("Gmail timed out", body)
 
+    def test_more_reads_the_next_server_page_until_the_cap(self):
+        os.environ["VERCEL"] = "1"
+        fake = _PagedMailbox()
+        app = create_app()
+        client = app.test_client()
+        with client.session_transaction() as sess:
+            sess["user"] = "owner@example.com"
+        with patch("gmail_auto.web.connected_clients", return_value=([fake], [])):
+            client.get("/inbox/refresh", headers={"Accept": "application/json"})
+            first = client.get("/").get_data(as_text=True)
+            self.assertIn('data-inbox-more="1"', first)
+            self.assertIn("/inbox/more", first)
+            self.assertNotIn("Letter 020", first)
+            body = {"hasMore": True}
+            while body.get("hasMore"):
+                body = client.get("/inbox/more", headers={"Accept": "application/json"}).get_json()
+                self.assertTrue(body["ok"])
+            self.assertEqual(body["count"], 100)
+            self.assertEqual(body["added"], 20)
+            self.assertEqual(len(fake.calls), 5)
+            self.assertEqual(fake.calls[-1][0], "80")
+            filled = client.get("/").get_data(as_text=True)
+            self.assertIn("All<span>100</span>", filled)
+            self.assertNotIn('data-inbox-more="1"', filled)
+
+    def test_outgoing_translation_checkbox_sits_beside_its_label(self):
+        os.environ.pop("VERCEL", None)
+        app = create_app()
+        page = app.test_client().get("/profile").get_data(as_text=True)
+        self.assertIn('class="span-2 check"', page)
+        self.assertIn('name="translate_outgoing"', page)
+        self.assertNotIn("inline-check", page)
+
 
 class _PagedMailbox:
     provider = "gmail"
