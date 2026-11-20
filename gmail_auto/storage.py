@@ -8,15 +8,40 @@ import json
 import os
 import re
 import threading
+import secrets
+from contextlib import contextmanager
 
 from gmail_auto.errors import ConfigError
 from gmail_auto.paths import atomic_write, data_dir
 from gmail_auto.tenant import require_user_id, saas_enabled
-from gmail_auto.token_store import kv_delete, kv_get, kv_set, storage_ready
+from gmail_auto.token_store import (
+    kv_delete, kv_delete_if_value, kv_get, kv_set, kv_set_if_absent, storage_ready,
+)
 
 _PREFIX = "autogmail:"
 _NAME = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 LOCK = threading.RLock()
+
+
+@contextmanager
+def workspace_operation(name: str):
+    """Serialize a workspace operation across instances when using hosted storage."""
+    if not saas_enabled() or not storage_ready():
+        with LOCK:
+            yield
+        return
+    key = f"{_PREFIX}u:{require_user_id()}:operation:{name}"
+    owner = secrets.token_hex(16)
+    if not kv_set_if_absent(key, owner, 120):
+        raise ConfigError("This workspace operation is already in progress. Try again shortly.")
+    try:
+        yield
+    finally:
+        try:
+            kv_delete_if_value(key, owner)
+        except ConfigError:
+            # The lease will expire even if storage is temporarily unavailable.
+            pass
 
 
 def persistent() -> bool:

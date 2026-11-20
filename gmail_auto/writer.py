@@ -12,7 +12,8 @@ import time
 
 from gmail_auto import approvals, contacts, knowledge, outgoing
 from gmail_auto.errors import ConfigError, ReplyError
-from gmail_auto.storage import LOCK, load_doc, save_doc
+from gmail_auto.storage import LOCK, load_doc, save_doc, workspace_operation
+from gmail_auto.tenant import saas_enabled
 
 _KEEP = 25
 LANGUAGES = {"auto": "Match the person", "en": "English", "zh": "Chinese", "bilingual": "Chinese and English"}
@@ -282,6 +283,13 @@ def relanguage(session_id: str, profile: dict, complete=None) -> dict:
 
 def queue(session_id: str, provider: str = "") -> dict:
     """Put the finished email in the approvals queue (or update the one already there). Returns the item."""
+    if saas_enabled():
+        with workspace_operation(f"writer:{session_id}"):
+            return _queue(session_id, provider)
+    return _queue(session_id, provider)
+
+
+def _queue(session_id: str, provider: str) -> dict:
     session = _open(session_id)
     to = outgoing.clean_recipients(_resolve_to(session["to"]))
     cc = outgoing.clean_recipients(_resolve_to(session.get("cc") or "")) if (session.get("cc") or "").strip() else ""
@@ -289,6 +297,8 @@ def queue(session_id: str, provider: str = "") -> dict:
         raise ConfigError("The email is empty.")
     subject = session["subject"] or "Hello"
     item = approvals.get(session["approval_id"]) if session.get("approval_id") else None
+    if saas_enabled() and item and item.get("status") in {"sending", "send_unconfirmed", "sent"}:
+        raise ConfigError("This message was already sent or is awaiting delivery confirmation. Check Sent mail.")
     if item is None or item.get("status") != "pending":
         item = approvals.create_new(to, subject, session["body"], provider=provider or outgoing.default_provider(), cc=cc)
         session["approval_id"] = item["id"]

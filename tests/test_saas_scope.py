@@ -81,3 +81,35 @@ def test_saas_requires_explicit_session_secret(saas, monkeypatch):
     with pytest.raises(ConfigError, match="FLASK_SECRET_KEY"):
         create_app()
 
+
+
+def test_uncertain_provider_delivery_cannot_be_retried(saas):
+    from unittest.mock import Mock
+
+    from gmail_auto import approvals
+
+    client = Mock()
+    client.send_notice.side_effect = TimeoutError("provider did not respond")
+    with user_scope(USER_A):
+        item = approvals.create_new("b@example.com", "Hello", "Hello")
+        with pytest.raises(ConfigError, match="Delivery could not be confirmed"):
+            approvals.approve(item["id"], "web", client)
+        assert approvals.get(item["id"])["status"] == "send_unconfirmed"
+        with pytest.raises(ConfigError, match="no longer waiting"):
+            approvals.approve(item["id"], "web", client)
+    client.send_notice.assert_called_once()
+
+
+def test_approval_lock_uses_atomic_redis_claim(saas):
+    from gmail_auto.storage import workspace_operation
+
+    with patch("gmail_auto.storage.storage_ready", return_value=True), patch(
+        "gmail_auto.storage.kv_set_if_absent", side_effect=[True, False]
+    ) as claim, patch("gmail_auto.storage.kv_delete_if_value") as release:
+        with user_scope(USER_A), workspace_operation("approvals"):
+            with pytest.raises(ConfigError, match="already in progress"):
+                with workspace_operation("approvals"):
+                    pytest.fail("A second worker entered the critical section.")
+    key = f"autogmail:u:{USER_A}:operation:approvals"
+    assert claim.call_args_list[0].args[0] == claim.call_args_list[1].args[0] == key
+    release.assert_called_once_with(key, claim.call_args_list[0].args[1])

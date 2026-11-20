@@ -11,7 +11,8 @@ from datetime import datetime
 from gmail_auto import stats
 from gmail_auto.errors import ConfigError
 from gmail_auto.models import Mail
-from gmail_auto.storage import LOCK, load_doc, save_doc
+from gmail_auto.storage import load_doc, save_doc, workspace_operation
+from gmail_auto.tenant import saas_enabled
 from gmail_auto.store import update_processed
 
 EXPIRE_AFTER = 7 * 24 * 3600
@@ -19,7 +20,7 @@ _KEEP_DECIDED = 200
 
 
 def create(mail: Mail, draft, language: str, role: str = "ask", kind: str = "") -> dict:
-    with LOCK:
+    with workspace_operation("approvals"):
         data = _load()
         data["seq"] = int(data.get("seq", 0)) + 1
         item = {
@@ -64,7 +65,7 @@ NEW_EMAIL_NOTE = "(This is a new email the owner is writing, not a reply to a le
 
 def create_new(to: str, subject: str, body: str, provider: str = "gmail", language: str = "en", reason: str = "", sources=None, cc: str = "") -> dict:
     """A new email the owner asked for. It waits here like a reply, and is sent as a new message."""
-    with LOCK:
+    with workspace_operation("approvals"):
         data = _load()
         data["seq"] = int(data.get("seq", 0)) + 1
         item_id = str(data["seq"])
@@ -109,7 +110,7 @@ def create_new(to: str, subject: str, body: str, provider: str = "gmail", langua
 
 
 def set_new_fields(item_id: str, to: str, subject: str, cc: str | None = None) -> dict:
-    with LOCK:
+    with workspace_operation("approvals"):
         data = _load()
         item = _pending_item(data, item_id)
         if item.get("mode") != "new":
@@ -166,7 +167,8 @@ def find_by_hint(text: str) -> list[dict]:
 
 
 def recent(limit: int = 20) -> list[dict]:
-    items = [item for item in _load()["items"].values() if item.get("status") not in ("pending", "sending")]
+    hidden = {"pending"} if saas_enabled() else {"pending", "sending"}
+    items = [item for item in _load()["items"].values() if item.get("status") not in hidden]
     items.sort(key=lambda item: item.get("decided_at", 0), reverse=True)
     return items[:limit]
 
@@ -188,7 +190,7 @@ def remember_whatsapp(item_id: str, message_ids: list[str]) -> None:
     ids = [value for value in message_ids if value]
     if not ids:
         return
-    with LOCK:
+    with workspace_operation("approvals"):
         data = _load()
         item = data["items"].get(str(item_id))
         if item is None:
@@ -203,7 +205,7 @@ def set_draft(item_id: str, text: str) -> dict:
         raise ConfigError("The reply is empty.")
     if len(text) > 5000:
         raise ConfigError("The reply is too long.")
-    with LOCK:
+    with workspace_operation("approvals"):
         data = _load()
         item = _pending_item(data, item_id)
         if text != item.get("draft"):
@@ -218,7 +220,7 @@ def attach(item_id: str, record: dict) -> dict:
     """Add a kept file (see files.py) to a waiting reply."""
     from gmail_auto.files import MAX_TOTAL_BYTES
 
-    with LOCK:
+    with workspace_operation("approvals"):
         data = _load()
         item = _pending_item(data, item_id)
         listed = list(item.get("attachments") or [])
@@ -234,7 +236,7 @@ def attach(item_id: str, record: dict) -> dict:
 
 
 def detach(item_id: str, file_id: str) -> dict:
-    with LOCK:
+    with workspace_operation("approvals"):
         data = _load()
         item = _pending_item(data, item_id)
         item["attachments"] = [entry for entry in item.get("attachments") or [] if entry.get("id") != file_id]
@@ -255,11 +257,12 @@ def revise(item_id: str, instruction: str, profile: dict, rewrite=None) -> dict:
 
 def approve(item_id: str, via: str, client=None) -> dict:
     """Send the waiting reply. Safe to call twice: only the first call sends."""
-    with LOCK:
+    with workspace_operation("approvals"):
         data = _load()
         item = _pending_item(data, item_id)
         item["status"] = "sending"
         _save(data)
+    dispatch_started = False
     try:
         if client is None:
             from gmail_auto.mailboxes import client_for
@@ -267,7 +270,10 @@ def approve(item_id: str, via: str, client=None) -> dict:
             client = client_for(item.get("provider") or "gmail")
         mail = _mail(item)
         attached = _attachment_bytes(item)
-        if item.get("mode") == "new":
+        is_new = item.get("mode") == "new"
+        user_email = "" if is_new else client.get_user_email()
+        dispatch_started = True
+        if is_new:
             if item.get("cc"):
                 client.send_new(item["to"], item.get("subject") or "", item["draft"], attachments=attached or None, cc=item["cc"])
             elif attached:
@@ -275,10 +281,13 @@ def approve(item_id: str, via: str, client=None) -> dict:
             else:
                 client.send_notice(item["to"], item.get("subject") or "", item["draft"])
         elif attached:
-            client.send_reply(mail, item["draft"], client.get_user_email(), attachments=attached)
+            client.send_reply(mail, item["draft"], user_email, attachments=attached)
         else:
-            client.send_reply(mail, item["draft"], client.get_user_email())
-    except Exception:
+            client.send_reply(mail, item["draft"], user_email)
+    except Exception as exc:
+        if saas_enabled() and dispatch_started:
+            _decide(item_id, "send_unconfirmed", via)
+            raise ConfigError("Delivery could not be confirmed. Check Sent mail before trying a new reply.") from exc
         _set_status(item_id, "pending")
         raise
     waited = time.time() - float(item.get("created_at") or time.time())
@@ -301,17 +310,18 @@ def approve(item_id: str, via: str, client=None) -> dict:
 
 
 def reject(item_id: str, via: str) -> dict:
-    with LOCK:
-        _pending_item(_load(), item_id)
-    if (get(item_id) or {}).get("role") == "notice":
-        # A notice had nothing to send: closing it means the owner dealt with it, not that a reply was turned down.
-        item = _decide(item_id, "handled", via)
+    with workspace_operation("approvals"):
+        data = _load()
+        item = _pending_item(data, item_id)
+        handled = item.get("role") == "notice"
+        waited_from = float(item.get("created_at") or time.time())
+        item = _record_decision(data, item, "handled" if handled else "rejected", via)
+    if handled:
+        # Closing a notice records that its owner dealt with it.
         from gmail_auto.store import set_handled
 
         set_handled(item["key"], True)
         return item
-    waited_from = float((get(item_id) or {}).get("created_at") or time.time())
-    item = _decide(item_id, "rejected", via)
     update_processed(item["key"], {"action": "rejected", "via": via})
     stats.note_outcome("rejected")
     stats.note_decision(time.time() - waited_from)
@@ -321,7 +331,7 @@ def reject(item_id: str, via: str) -> dict:
 def expire_old(now: float | None = None) -> int:
     now = now or time.time()
     expired = []
-    with LOCK:
+    with workspace_operation("approvals"):
         data = _load()
         for item in data["items"].values():
             if item.get("status") == "pending" and now - float(item.get("created_at") or now) > EXPIRE_AFTER:
@@ -336,21 +346,25 @@ def expire_old(now: float | None = None) -> int:
 
 
 def _decide(item_id: str, status: str, via: str) -> dict:
-    with LOCK:
+    with workspace_operation("approvals"):
         data = _load()
         item = data["items"][str(item_id)]
-        item.update({"status": status, "decided_at": time.time(), "decided_text": _now(), "via": via})
-        decided = [value for value in data["items"].values() if value.get("status") not in ("pending", "sending")]
-        if len(decided) > _KEEP_DECIDED:
-            decided.sort(key=lambda value: value.get("decided_at", 0))
-            for old in decided[: len(decided) - _KEEP_DECIDED]:
-                data["items"].pop(old["id"], None)
-        _save(data)
-        return item
+        return _record_decision(data, item, status, via)
+
+
+def _record_decision(data: dict, item: dict, status: str, via: str) -> dict:
+    item.update({"status": status, "decided_at": time.time(), "decided_text": _now(), "via": via})
+    decided = [value for value in data["items"].values() if value.get("status") not in ("pending", "sending", "send_unconfirmed")]
+    if len(decided) > _KEEP_DECIDED:
+        decided.sort(key=lambda value: value.get("decided_at", 0))
+        for old in decided[: len(decided) - _KEEP_DECIDED]:
+            data["items"].pop(old["id"], None)
+    _save(data)
+    return item
 
 
 def _set_status(item_id: str, status: str) -> None:
-    with LOCK:
+    with workspace_operation("approvals"):
         data = _load()
         item = data["items"].get(str(item_id))
         if item is not None:

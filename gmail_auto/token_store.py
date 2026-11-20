@@ -70,6 +70,17 @@ def kv_set(key: str, value: str) -> None:
     _command(["SET", key, value])
 
 
+def kv_set_if_absent(key: str, value: str, ttl: int) -> bool:
+    if not storage_ready():
+        raise ConfigError("Persistent workspace coordination is unavailable.")
+    return bool(_command(["SET", key, value, "NX", "EX", str(ttl)]))
+
+
+def kv_delete_if_value(key: str, value: str) -> None:
+    script = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end"
+    _command(["EVAL", script, "1", key, value])
+
+
 def kv_delete(key: str) -> None:
     if not storage_ready():
         return
