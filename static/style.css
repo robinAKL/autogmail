@@ -114,6 +114,9 @@ code { font-family: Consolas, "SF Mono", monospace; font-size: 0.9em; background
 .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .section-head h2 { font-size: 19px; }
 .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.grid-2:has(> .card.conn) { align-items: stretch; }
+.card.conn { height: 100%; }
+.card.conn > .button-row { margin-top: auto; }
 .grid-2.wide-left { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); }
 .grid-2.flush { gap: 28px; }
 .grid-4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; align-items: stretch; }
