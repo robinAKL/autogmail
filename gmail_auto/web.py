@@ -369,9 +369,14 @@ def configure_app(app: Flask) -> None:
         if blocked:
             return blocked
         waiting = approvals.pending()
+        settings = load_settings()
+        translation_languages = {
+            item["id"]: approvals.draft_translation_languages(item, settings) for item in waiting
+        }
         return _render(
             "approvals.html",
             waiting=waiting,
+            translation_languages=translation_languages,
             decided=approvals.recent(15),
             whatsapp_ready=whatsapp.ready(),
             **_attach_context(bool(waiting)),
@@ -395,14 +400,17 @@ def configure_app(app: Flask) -> None:
                     item_id, clean_recipients(request.form.get("to", "")), request.form.get("subject", ""),
                     cc=clean_recipients(cc) if cc.strip() else "",
                 )
-            if action in ("send", "attach", "detach") and request.form.get("draft") is not None:
-                approvals.set_draft(item_id, request.form.get("draft"))
+            if action in ("send", "save", "attach", "detach") and "draft" in request.form:
+                approvals.set_draft(
+                    item_id, request.form["draft"], translate=request.form.get("translate_draft") == "1"
+                )
             if action == "send":
                 _attach_to(item_id)
                 item = approvals.approve(item_id, "web")
                 flash(f"Reply sent to {item.get('from_name') or item.get('from_email')}.")
             elif action == "save":
-                approvals.set_draft(item_id, request.form.get("draft", ""))
+                if "draft" not in request.form:
+                    raise ConfigError("The reply is empty.")
                 _attach_to(item_id)
                 flash("Draft saved. It is still waiting for your OK.")
             elif action == "rewrite":

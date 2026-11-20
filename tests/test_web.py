@@ -519,6 +519,29 @@ class ApprovalPageTests(WebCase):
         outside = self.client.post(f"/approvals/{first['id']}/reject", data={"next": "https://evil.example/"})
         self.assertEqual(outside.headers["Location"], "/approvals")
 
+    def test_approval_translates_an_explicit_first_language_edit(self):
+        from gmail_auto.settings import save_settings
+
+        save_settings({"first_language": "en", "translation_mode": "seamless", "translate_outgoing": True})
+        mail = sample(id="french-reply", subject="Bonjour")
+        fake = FakeGmail([mail])
+        item = approvals.create(mail, Draft(action="ask", reply="Bonjour, merci.", reply_lang="fr"), "fr")
+        _, page = self.page("/approvals")
+        self.assertIn("Translate my edit from EN to FR", page)
+
+        url = f"/approvals/{item['id']}/send"
+        data = {"draft": "Thank you. The price is $50.", "translate_draft": "1"}
+        with patch("gmail_auto.mailboxes.client_for", return_value=fake), patch(
+            "gmail_auto.translator.model_ready", return_value=True
+        ), patch("gmail_auto.translator.complete", side_effect=["Merci.", "Merci. Le prix est $50."]):
+            rejected = self.client.post(url, data=data, follow_redirects=True)
+            self.assertIn("translation changed", rejected.get_data(as_text=True))
+            self.assertFalse(fake.sent)
+            self.assertEqual(approvals.get(item["id"])["draft"], "Bonjour, merci.")
+            self.client.post(url, data=data, follow_redirects=True)
+        self.assertEqual(fake.sent[0][1], "Merci. Le prix est $50.")
+
+
         _, board = self.page("/dashboard")
         self.assertIn("What happened to each day", board)
         self.assertIn("View as a table", board)

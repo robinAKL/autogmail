@@ -63,7 +63,9 @@ def reply_language(setting: str, detected: str) -> str:
     if setting == "bilingual":
         return "bilingual"
     if setting == "match":
-        return "zh" if detected == "zh" else "en"
+        from gmail_auto.translator import SUPPORTED_LANGUAGES
+
+        return detected if detected in SUPPORTED_LANGUAGES else "en"
     return "en"
 
 
@@ -72,7 +74,13 @@ def draft_reply(mail: Mail, profile: dict, detected: str) -> Draft:
     from gmail_auto.knowledge import context_for, render_context
     from gmail_auto.settings import load_settings
 
-    language = reply_language(load_settings()["reply_language"], detected)
+    settings = load_settings()
+    translation_mode = settings.get("translation_mode", "off")
+    if settings["reply_language"] == "match" and translation_mode != "off":
+        from gmail_auto.translator import detect_language
+
+        detected = mail.detected_lang or detect_language(f"{mail.subject}\n{mail.body}")
+    language = reply_language(settings["reply_language"], detected)
     context = context_for(mail)
     knowledge = render_context(context)
     from gmail_auto.story import format_history, history_for_mail
@@ -93,8 +101,7 @@ def draft_reply(mail: Mail, profile: dict, detected: str) -> Draft:
         )
     draft.sources = context["sources"]
     draft.reply_lang = language
-    translation_mode = load_settings().get("translation_mode", "off")
-    first_lang = load_settings().get("first_language", "zh")
+    first_lang = settings.get("first_language", "zh")
     if translation_mode != "off" and draft.reply:
         if language.lower() != first_lang.lower():
             try:
@@ -128,7 +135,9 @@ def revise_reply(item: dict, instruction: str, profile: dict) -> str:
     from gmail_auto.settings import load_settings
 
     index = load_index()
-    language = reply_language(load_settings()["reply_language"], item.get("language") or "en")
+    language = item.get("reply_lang") or reply_language(
+        load_settings()["reply_language"], item.get("detected_lang") or item.get("language") or "en"
+    )
     prompt = (
         "PROFILE:\n" + profile_as_prompt(profile) + "\n\n"
         + ("KNOWLEDGE BASE BRIEFING:\n" + index["brief"]["text"] + "\n\n" if index["brief"]["text"] else "")
@@ -136,7 +145,7 @@ def revise_reply(item: dict, instruction: str, profile: dict) -> str:
         f"Subject: {item.get('subject') or '(no subject)'}\n{_clip(item.get('body', ''), 4000)}\n\n"
         f"CURRENT DRAFT:\n{item.get('draft', '')}\n\n"
         f"OWNER'S INSTRUCTION:\n{instruction.strip()}\n\n"
-        f"{_LANGUAGE_LINES[language]}"
+        + _lang_instruction(language)
     )
     reply = clean_reply(complete(_REVISE_SYSTEM, prompt, role="worker"))
     check_basics(reply)

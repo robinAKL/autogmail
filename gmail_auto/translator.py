@@ -4,6 +4,7 @@ import re
 import logging
 from typing import Tuple, List, Dict
 
+from gmail_auto.errors import ConfigError
 from gmail_auto.llm import complete, model_ready
 from gmail_auto.models import Mail
 
@@ -131,13 +132,15 @@ def split_mail_body(body: str) -> Tuple[str, str]:
     return body.strip(), ""
 
 
-def translate_text(text: str, from_lang: str, to_lang: str, context: str = "") -> str:
+def translate_text(text: str, from_lang: str, to_lang: str, context: str = "", *, required: bool = False) -> str:
     """Translate text from from_lang to to_lang with entity protection and business tone."""
     if not text or not text.strip():
         return text
     if from_lang and to_lang and from_lang.lower() == to_lang.lower():
         return text
     if not model_ready():
+        if required:
+            raise ConfigError("Set up a writing model before translating a reply.")
         return text
 
     target_name = SUPPORTED_LANGUAGES.get(to_lang.lower(), to_lang)
@@ -161,10 +164,15 @@ def translate_text(text: str, from_lang: str, to_lang: str, context: str = "") -
 
     try:
         translated = complete(system_prompt, user_prompt, max_tokens=1500, temperature=0.2, role="worker")
-        return translated.strip() if translated else text
     except Exception as exc:
+        if required:
+            raise ConfigError("The reply could not be translated. Please try again.") from exc
         logger.warning(f"Translation failed: {exc}")
         return text
+    translated = (translated or "").strip()
+    if required and not translated:
+        raise ConfigError("The reply translation was empty. Please try again.")
+    return translated or text
 
 
 def translate_inbound_mail(mail: Mail, user_lang: str = "zh", preserve_langs: List[str] | None = None) -> Mail:
@@ -219,7 +227,11 @@ def translate_outbound_reply(reply_text: str, target_lang: str, user_lang: str =
     if target_lang.lower() == user_lang.lower():
         return reply_text
 
-    return translate_text(reply_text, user_lang, target_lang)
+    translated = translate_text(reply_text, user_lang, target_lang, required=True)
+    preserved, _ = verify_entities_preserved(reply_text, translated)
+    if not preserved:
+        raise ConfigError("The translation changed an email address, link, or amount. Check the reply and try again.")
+    return translated
 
 
 def extract_entities(text: str) -> Dict[str, List[str]]:

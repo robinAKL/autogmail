@@ -71,6 +71,13 @@
         <div style="font-size:12px;font-weight:600;color:#64748b;margin-bottom:4px;">Actual reply to send ({{ item.reply_lang|upper if item.reply_lang else 'Recipient language' }}):</div>
         {% endif %}
         <textarea id="draft{{ item.id }}" name="draft" rows="10" maxlength="5000" required>{{ item.draft }}</textarea>
+        {% set languages = (translation_languages|default({})).get(item.id) %}
+        {% if languages %}
+        <label class="inline-check">
+          <input type="checkbox" name="translate_draft" value="1">
+          Translate my edit from {{ languages[0]|upper }} to {{ languages[1]|upper }}
+        </label>
+        {% endif %}
         {% if item.sources %}
         <p class="sources">Written using {% for title in item.sources %}<span class="chip tiny">{{ title }}</span>{% endfor %}</p>
         {% endif %}
