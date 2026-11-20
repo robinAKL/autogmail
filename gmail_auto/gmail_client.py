@@ -698,7 +698,28 @@ def decode_mime_header(value: str) -> str:
     return "".join(chunks)
 
 
-def build_reply_message(mail: Mail, body: str, user_email: str, attachments: list | None = None) -> EmailMessage:
+def _set_message_body(message: EmailMessage, body: str, logo: tuple[str, str, bytes] | None = None) -> None:
+    message.set_content(body, subtype="plain", charset="utf-8")
+    if logo is None:
+        return
+
+    filename, mime, content = logo
+    maintype, subtype = mime.split("/", 1)
+    content_id = f"{secrets.token_hex(12)}@autogmail"
+    escaped_body = html.escape(body).replace("\n", "<br>")
+    message.add_alternative(
+        f'<div>{escaped_body}</div><p><img src="cid:{content_id}" alt="Company logo" width="120"></p>',
+        subtype="html",
+    )
+    message.get_payload()[-1].add_related(
+        content, maintype=maintype, subtype=subtype, cid=f"<{content_id}>", filename=filename, disposition="inline"
+    )
+
+
+def build_reply_message(
+    mail: Mail, body: str, user_email: str, attachments: list | None = None, *,
+    logo: tuple[str, str, bytes] | None = None,
+) -> EmailMessage:
     recipient = (mail.reply_email or mail.from_email).strip()
     if not recipient:
         raise ConfigError("This letter has no address to reply to.")
@@ -716,7 +737,7 @@ def build_reply_message(mail: Mail, body: str, user_email: str, attachments: lis
     if message_id:
         message["In-Reply-To"] = message_id
         message["References"] = f"{references} {message_id}".strip()
-    message.set_content(body, subtype="plain", charset="utf-8")
+    _set_message_body(message, body, logo)
     for filename, mime, data in attachments or []:
         maintype, _, subtype = (mime or "application/octet-stream").partition("/")
         message.add_attachment(data, maintype=maintype or "application", subtype=subtype or "octet-stream", filename=filename)
