@@ -2540,12 +2540,14 @@ def _attach_review(opened: dict) -> None:
     from gmail_auto.llm import model_ready
     from gmail_auto.models import Mail
     from gmail_auto.screen import screen_mail
-    from gmail_auto.worker import brief_mail, load_review, remember_verdict
+    from gmail_auto.worker import brief_mail, clean_summary, load_review, remember_verdict
 
     key = opened.get("key") or ""
+    if opened.get("summary"):
+        opened["summary"] = clean_summary(opened.get("summary"), 800)
     review = load_review(key)
     if review.get("summary") and not opened.get("summary"):
-        opened["summary"] = review["summary"]
+        opened["summary"] = clean_summary(review["summary"], 800)
     if review.get("disposition"):
         opened["advice"] = _advice_line(review.get("disposition"), review.get("advice") or review.get("summary"))
         return
@@ -2565,7 +2567,7 @@ def _attach_review(opened: dict) -> None:
     )
     brief = brief_mail(mail)
     if brief.get("summary") and not opened.get("summary"):
-        opened["summary"] = brief["summary"]
+        opened["summary"] = clean_summary(brief["summary"], 800)
     verdict = screen_mail(mail, brief)
     if verdict is None:
         return

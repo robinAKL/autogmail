@@ -88,5 +88,6 @@ def screen_mail(mail: Mail, brief: dict | None = None) -> Screen | None:
 
 
 def _line(value) -> str:
-    text = " ".join(str(value or "").split())
-    return text[:300]
+    from gmail_auto.worker import clean_summary
+
+    return clean_summary(value, 300)
