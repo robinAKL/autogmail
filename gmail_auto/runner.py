@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 import threading
@@ -14,6 +15,9 @@ from gmail_auto.models import Draft, Mail
 from gmail_auto.screen import screen_mail
 from gmail_auto.profile_store import load_profile, profile_is_placeholder
 from gmail_auto.settings import load_settings
+from gmail_auto.storage import workspace_operation
+from gmail_auto.tenant import require_user_id, saas_enabled
+from gmail_auto.token_store import kv_set_if_absent, storage_ready
 from gmail_auto.store import (
     bump_failure,
     clear_failure,
@@ -53,6 +57,9 @@ class RunReport:
 
 
 def run_once(gmail=None, generate=None) -> RunReport:
+    if saas_enabled():
+        with workspace_operation("mail-check"):
+            return _execute(gmail, generate)
     with LOCK:
         return _execute(gmail, generate)
 
@@ -366,7 +373,8 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
                 report.asked += 1
                 report.lines.append(f"Waiting for your OK: {subject}" + _ask_owner(item))
             else:
-                client.send_reply(mail, draft.reply, user)
+                if not _deliver_reply(client, mail, draft, decision.language, user, report):
+                    continue
                 mark_processed(_record(mail, "sent", draft.reason, draft.reply, decision.language, False, "", draft))
                 clear_failure(mail.key)
                 stats.note_outcome("auto_sent", mail, sources=draft.sources)
@@ -382,6 +390,29 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
         except ConfigError as exc:
             _fail(client, mail, report, str(exc))
     return already
+
+
+def _deliver_reply(client, mail: Mail, draft: Draft, language: str, user: str, report: RunReport) -> bool:
+    if not saas_enabled():
+        client.send_reply(mail, draft.reply, user)
+        return True
+
+    if storage_ready():
+        digest = hashlib.sha256(f"{user.casefold()}\n{mail.key}".encode("utf-8")).hexdigest()
+        key = f"autogmail:u:{require_user_id()}:dispatch:{digest}"
+        if not kv_set_if_absent(key, "1", 30 * 24 * 60 * 60):
+            return False
+
+    # Keep an attempt record before dispatch so a worker crash cannot make it retry blindly.
+    reason = "Delivery could not be confirmed. Check Sent mail before sending another reply."
+    mark_processed(_record(mail, "send_unconfirmed", reason, draft.reply, language, False, "", draft))
+    try:
+        client.send_reply(mail, draft.reply, user)
+    except Exception:
+        report.failed += 1
+        report.lines.append(f"Delivery unconfirmed: {short_subject(mail.subject)}. Check Sent mail.")
+        return False
+    return True
 
 
 def _ask_owner(item: dict) -> str:

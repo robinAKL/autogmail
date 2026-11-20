@@ -40,7 +40,7 @@ from gmail_auto.importance import (
     known_from_knowledge,
     preset_of,
 )
-from gmail_auto.storage import persistent
+from gmail_auto.storage import persistent, workspace_operation
 from gmail_auto.tenant import require_user_id, saas_enabled, user_scope
 from gmail_auto.token_store import storage_hint, storage_kind, storage_ready
 from gmail_auto.store import get_state, is_live, list_processed, load_last_run, load_processed, now_text, set_state
@@ -292,9 +292,17 @@ def configure_app(app: Flask) -> None:
             return {
                 "ok": True,
                 "count": len(inbox.get("rows") or []),
+                "provider_counts": inbox.get("provider_counts", {}),
                 "errors": inbox.get("errors") or [],
             }
         return redirect(url_for("home", **_inbox_query()))
+
+    @app.get("/sent")
+    def sent_page():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        return _render("sent.html", **_sent())
 
     @app.post("/inbox/story/hide")
     def story_hide():
@@ -411,14 +419,21 @@ def configure_app(app: Flask) -> None:
         if blocked:
             return blocked
         mode = request.form.get("mode", "")
-        if mode not in _available_modes():
+        if mode not in _MODES:
             abort(400)
+        confirmed = request.form.get("confirm") == "1"
         try:
-            if mode == "draft":
-                switch_live(False)
-            else:
-                switch_live(True, request.form.get("confirm") == "1")
-                save_settings({"approval_mode": mode})
+            with workspace_operation("mail-check"):
+                if mode == "draft":
+                    switch_live(False)
+                elif saas_enabled():
+                    if mode != _current_mode() and (mode in {"smart", "never"} or not is_live()) and not confirmed:
+                        raise ConfigError("Confirm before enabling this sending mode.")
+                    save_settings({"approval_mode": mode})
+                    switch_live(True, confirmed)
+                else:
+                    switch_live(True, confirmed)
+                    save_settings({"approval_mode": mode})
         except ConfigError as exc:
             flash(str(exc), "error")
             return redirect(url_for("profile_page") + "#send")
@@ -731,7 +746,12 @@ def configure_app(app: Flask) -> None:
 
             to = (invoices.get(request.args["invoice"]) or {}).get("client_email") or ""
         try:
-            session = writer.start(to=to, subject=request.args.get("subject", ""), refs=refs)
+            session = writer.start(
+                to=to,
+                subject=request.args.get("subject", ""),
+                refs=refs,
+                provider=request.args.get("provider", ""),
+            )
         except ConfigError as exc:
             flash(str(exc), "error")
             return redirect(url_for("compose_page"))
@@ -749,8 +769,20 @@ def configure_app(app: Flask) -> None:
         if session is None:
             flash("That draft is no longer here. Start a new email.", "error")
             return redirect(url_for("write_start"))
-        from gmail_auto import contracts, invoices
+        from gmail_auto import contracts, invoices, outgoing
         from gmail_auto.writer import LANGUAGES
+
+        mailboxes = _compose_mailboxes()
+        available = [box["provider"] for box in mailboxes]
+        approval = approvals.get(session.get("approval_id") or "") if session.get("approval_id") else None
+        reply_locked = bool(approval and approval.get("mode") != "new")
+        if reply_locked:
+            chosen_provider = (approval.get("provider") or session.get("provider") or "").strip().lower()
+        else:
+            chosen_provider = (session.get("provider") or "").strip().lower()
+            if chosen_provider not in available:
+                preferred = outgoing.default_provider(available)
+                chosen_provider = preferred if preferred in available else (available[0] if available else chosen_provider)
 
         attached = {item.get("ref") for item in session.get("attachments") or []}
         choices = []
@@ -775,6 +807,9 @@ def configure_app(app: Flask) -> None:
             "write.html",
             languages=LANGUAGES,
             session=session,
+            mailboxes=mailboxes,
+            chosen_provider=chosen_provider,
+            reply_locked=reply_locked,
             people=_people_for_compose(),
             has_model=model_ready(),
             files_ready=files.ready(),
@@ -803,11 +838,12 @@ def configure_app(app: Flask) -> None:
                     detach=request.form.get("detach", ""),
                     language=request.form.get("language"),
                     cc=request.form.get("cc"),
+                    provider=request.form.get("provider"),
                 )
                 if session.get("language") != before and session["body"].strip():
                     writer.relanguage(session_id, load_profile())
             elif action == "upload":
-                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"), provider=request.form.get("provider"))
                 if not files.ready():
                     raise ConfigError("Set up R2 file storage to attach files.")
                 for record in _uploads("reply"):
@@ -817,19 +853,19 @@ def configure_app(app: Flask) -> None:
                         files.remove(record["id"])
                         raise
             elif action == "pick":
-                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"), provider=request.form.get("provider"))
                 if request.form.get("ref"):
                     writer.attach_ref(session_id, request.form["ref"])
             elif action == "issue":
-                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"), provider=request.form.get("provider"))
                 writer.issue_draft(session_id, request.form.get("invoice", ""))
             elif action == "queue":
-                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"), provider=request.form.get("provider"))
                 item = writer.queue(session_id)
                 flash(f"The email to {item['to']} is waiting in Approvals. Send it from there, or on WhatsApp.")
                 return redirect(url_for("approvals_page") + f"#a{item['id']}")
             elif action == "send":
-                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"), provider=request.form.get("provider"))
                 item = writer.send(session_id)
                 flash(f"Sent to {item['to']}.")
                 return redirect(url_for("home"))
@@ -846,17 +882,25 @@ def configure_app(app: Flask) -> None:
         blocked = _login_required()
         if blocked:
             return blocked
-        from gmail_auto import contracts, invoices
+        from gmail_auto import contracts, invoices, outgoing
         from gmail_auto.llm import model_ready
 
         issued = [item for item in invoices.list_invoices() if item.get("status") == "issued"]
         ready = [item for item in contracts.list_drafts() if not contracts.empty_fields(item)]
         chosen_invoice = invoices.get(request.args.get("invoice", ""))
+        mailboxes = _compose_mailboxes()
+        available = [box["provider"] for box in mailboxes]
+        chosen_provider = (request.args.get("provider") or "").strip().lower()
+        if chosen_provider not in available:
+            preferred = outgoing.default_provider(available)
+            chosen_provider = preferred if preferred in available else (available[0] if available else "")
         return _render(
             "compose.html",
             to=request.args.get("to") or (chosen_invoice or {}).get("client_email") or "",
             subject=request.args.get("subject", ""),
             points=request.args.get("points", ""),
+            mailboxes=mailboxes,
+            chosen_provider=chosen_provider,
             docs=knowledge.attachable_documents(),
             people=_people_for_compose(),
             issued=issued,
@@ -892,7 +936,15 @@ def configure_app(app: Flask) -> None:
             for record in _uploads("reply"):
                 uploaded.append(record)
                 records.append(record)
-            item = outgoing.start(to, request.form.get("points", ""), request.form.get("subject", ""), load_profile(), records, cc=request.form.get("cc", ""))
+            item = outgoing.start(
+                to,
+                request.form.get("points", ""),
+                request.form.get("subject", ""),
+                load_profile(),
+                records,
+                provider=request.form.get("provider", ""),
+                cc=request.form.get("cc", ""),
+            )
         except (ConfigError, ReplyError) as exc:
             for record in uploaded:
                 files.remove(record["id"])
@@ -903,6 +955,7 @@ def configure_app(app: Flask) -> None:
                     to=request.form.get("to", ""),
                     subject=request.form.get("subject", ""),
                     points=request.form.get("points", "")[:1500] or None,
+                    provider=request.form.get("provider") or None,
                     invoice=request.form.get("invoice") or None,
                     contract=request.form.get("contract") or None,
                 )
@@ -1934,6 +1987,8 @@ def configure_app(app: Flask) -> None:
             if "preserve_langs" in request.form:
                 raw_preserve = request.form.get("preserve_langs", "")
                 changes["preserve_langs"] = [p.strip().lower() for p in raw_preserve.split(",") if p.strip()]
+            if "default_sender" in request.form:
+                changes["default_sender"] = request.form.get("default_sender", "")
             if "notify_preset" in request.form:
                 changes["notify_auto_replies"] = request.form.get("notify_auto_replies") == "1"
                 changes["notify_important"] = request.form.get("notify_important") == "1"
@@ -1956,6 +2011,8 @@ def configure_app(app: Flask) -> None:
         except ConfigError as exc:
             flash(str(exc), "error")
         nxt = request.form.get("next") or "#interrupt"
+        if nxt == "connections":
+            return redirect(url_for("connections_page"))
         if not nxt.startswith("#"):
             nxt = "#interrupt"
         return redirect(url_for("profile_page") + nxt)
@@ -2344,8 +2401,14 @@ def _home_context() -> dict:
     hosted = bool(os.environ.get("VERCEL"))
     inbox = _inbox(live=not hosted or request.args.get("live") == "1")
     errors.extend(inbox["errors"])
-    rows = attach_stories(_merge_history(inbox["rows"]))
     accounts = _account_chips() or inbox["accounts"]
+    mailbox = request.args.get("mailbox", "")
+    if not any(item["provider"] == mailbox for item in accounts):
+        mailbox = None
+    rows = _merge_history(inbox["rows"])
+    if mailbox:
+        rows = [row for row in rows if row.get("provider") == mailbox]
+    rows = attach_stories(rows)
     from gmail_auto.importance import inbox_kinds
 
     kinds = set(inbox_kinds(load_settings()))
@@ -2387,6 +2450,8 @@ def _home_context() -> dict:
         "live": is_live(),
         "placeholder": placeholder,
         "accounts": accounts,
+        "mailbox": mailbox,
+        "provider_counts": inbox.get("provider_counts", {}),
         "connected": bool(accounts),
         "offline": inbox["offline"],
         "errors": errors,
@@ -2448,14 +2513,17 @@ def _inbox(live: bool = True) -> dict:
             "needs_fetch": False,
             "at": 0.0,
         }
-    data = {"rows": [], "mails": {}, "accounts": [], "errors": [], "offline": False, "needs_fetch": False, "at": time.time()}
+    data = {
+        "rows": [], "mails": {}, "accounts": [], "provider_counts": {}, "errors": [],
+        "offline": False, "needs_fetch": False, "at": time.time(),
+    }
     try:
         clients, problems = connected_clients()
     except Exception as exc:
         clients, problems = [], [_safe_error(exc)]
     data["errors"].extend(problems)
     pairs = []
-    fetched = _list_mailboxes(clients)
+    fetched = _list_mailboxes(clients, "recent")
     for account, mails, error in fetched:
         if account.get("provider"):
             provider = account["provider"]
@@ -2464,6 +2532,8 @@ def _inbox(live: bool = True) -> dict:
         if error:
             data["errors"].append(error)
             continue
+        if account.get("provider"):
+            data["provider_counts"][account["provider"]] = len(mails)
         for mail in mails:
             if not mail.account:
                 mail.account = account["email"]
@@ -2503,36 +2573,85 @@ def _refresh_status(data: dict) -> None:
     data["rows"] = rows
 
 
-def _list_mailboxes(clients) -> list[tuple]:
+def _sent() -> dict:
+    """Sent mail from the mailboxes connected to the signed-in workspace."""
+    data = {"rows": [], "accounts": [], "errors": [], "connected": False}
+    try:
+        clients, problems = connected_clients()
+    except Exception as exc:
+        clients, problems = [], [_safe_error(exc)]
+    data["errors"].extend(problems)
+    for account, mails, error in _list_mailboxes(clients, "sent"):
+        if account.get("provider"):
+            provider = account["provider"]
+            label = PROVIDERS.get(provider, "Mailbox")
+            data["accounts"].append({"provider": provider, "label": label, "email": account.get("email") or label})
+            data["connected"] = True
+        if error:
+            data["errors"].append(error)
+            continue
+        for mail in mails:
+            if not mail.account:
+                mail.account = account.get("email") or ""
+            data["rows"].append(_sent_row(mail, account))
+    data["rows"].sort(key=lambda row: row.get("received_ts") or 0, reverse=True)
+    return data
+
+
+def _sent_row(mail, account: dict) -> dict:
+    mailbox = (account.get("email") or mail.account or "").strip()
+    recipient = (mail.headers or {}).get("to") or ""
+    return {
+        "key": mail.key,
+        "who": recipient or mail.from_name or mail.from_email or "Unknown",
+        "subject": mail.subject or "(no subject)",
+        "snippet": " ".join((mail.snippet or mail.body or "").split())[:160],
+        "short_date": _short_date(mail.date),
+        "provider": mail.provider,
+        "provider_label": PROVIDERS.get(mail.provider, "Mail"),
+        "mailbox": mailbox or PROVIDERS.get(account.get("provider"), "Mailbox"),
+        "received_ts": float(mail.received_ts or 0),
+    }
+
+
+def _list_mailboxes(clients, reader: str = "recent") -> list[tuple]:
     """Read each mailbox on its own thread so Gmail and Outlook do not wait for each other."""
     if not clients:
         return []
     if len(clients) == 1:
-        return [_list_one_mailbox(clients[0])]
+        return [_list_one_mailbox(clients[0], reader)]
     from flask import copy_current_request_context
 
     with ThreadPoolExecutor(max_workers=len(clients)) as pool:
         if saas_enabled():
             user_id = require_user_id()
 
-            def read_in_workspace(client):
+            def read_in_workspace(client, reader=reader):
                 with user_scope(user_id):
-                    return _list_one_mailbox(client)
+                    return _list_one_mailbox(client, reader)
 
             futures = [pool.submit(read_in_workspace, client) for client in clients]
         else:
-            readers = [copy_current_request_context(lambda client=client: _list_one_mailbox(client)) for client in clients]
+            readers = [
+                copy_current_request_context(lambda client=client, reader=reader: _list_one_mailbox(client, reader))
+                for client in clients
+            ]
             futures = [pool.submit(reader) for reader in readers]
         return [future.result() for future in as_completed(futures)]
 
 
-def _list_one_mailbox(client) -> tuple:
+def _list_one_mailbox(client, reader: str = "recent") -> tuple:
     label = PROVIDERS.get(getattr(client, "provider", "gmail"), "Mailbox")
     email = ""
     try:
         email = client.get_user_email()
-        mails = client.list_recent(_INBOX_PAGE, full=False)
+        if reader == "sent":
+            mails = client.list_sent(_INBOX_PAGE, full=False)
+        else:
+            mails = client.list_recent(_INBOX_PAGE, full=False)
         return ({"provider": client.provider, "email": email}, mails, "")
+    except NotConnected:
+        return ({}, [], "")
     except ConfigError as exc:
         return (_known_account(client, email), [], named_error(label, exc))
     except Exception as extra:
@@ -2541,7 +2660,10 @@ def _list_one_mailbox(client) -> tuple:
 
 def _known_account(client, email: str) -> dict:
     if not email and getattr(client, "provider", "") == "outlook":
-        email = (microsoft.status("outlook").get("account") or "").strip()
+        try:
+            email = (microsoft.status("outlook").get("account") or "").strip()
+        except ConfigError:
+            return {}
     if not email:
         return {}
     return {"provider": client.provider, "email": email}
@@ -2583,6 +2705,7 @@ def _read_inbox_snapshot(who: str) -> dict | None:
         "rows": list(saved.get("rows") or []),
         "mails": {},
         "accounts": list(saved.get("accounts") or []),
+        "provider_counts": dict(saved.get("provider_counts") or {}),
         "errors": list(saved.get("errors") or []),
         "offline": bool(saved.get("offline")),
         "needs_fetch": False,
@@ -2601,6 +2724,7 @@ def _write_inbox_snapshot(who: str, data: dict) -> None:
                 "at": data.get("at") or time.time(),
                 "rows": data.get("rows") or [],
                 "accounts": data.get("accounts") or [],
+                "provider_counts": data.get("provider_counts") or {},
                 "errors": data.get("errors") or [],
                 "offline": bool(data.get("offline")),
             },
@@ -2639,6 +2763,9 @@ def _find_mail(key: str):
 
 def _inbox_query() -> dict:
     query = {}
+    mailbox = request.args.get("mailbox", "")
+    if mailbox in PROVIDERS:
+        query["mailbox"] = mailbox
     show = request.args.get("show", "")
     show = _OLD_FILTERS.get(show, show)
     if show in _FILTERS and show != _DEFAULT_FILTER:
@@ -2792,7 +2919,7 @@ def _bucket(row: dict, kinds: set[str]) -> str:
     it matters and that kind is switched on in Settings.
     """
     kind = row.get("kind")
-    if kind in ("waiting", "drafted"):
+    if kind in ("waiting", "drafted", "send_unconfirmed"):
         return "todo"
     if row.get("handled"):
         # Dealt with: out of To do and Notices, still under All.
@@ -2892,6 +3019,8 @@ def _describe_record(record: dict) -> tuple[str, str, str]:
         return ("Draft saved, needs a look" if record.get("needs_review") else "Draft saved"), "drafted", "drafts"
     if action == "waiting":
         return "Waiting for your OK", "waiting", "needs"
+    if action == "send_unconfirmed":
+        return "Delivery unconfirmed. Check Sent mail.", "send_unconfirmed", "needs"
     if action == "rejected":
         return "Not sent: you declined", "skipped", "skipped"
     if action == "expired":
@@ -3087,8 +3216,35 @@ def _connections_context() -> dict:
             "super_model": active_model("super"),
             "gateway": using_gateway(),
         },
+        "default_sender": load_settings().get("default_sender", ""),
         "local": local,
     }
+
+
+def _compose_mailboxes() -> list[dict]:
+    try:
+        clients, _ = connected_clients()
+    except Exception:
+        return []
+    boxes = []
+    for client in clients:
+        provider = getattr(client, "provider", "") or ""
+        if provider not in PROVIDERS:
+            continue
+        account = ""
+        try:
+            account = (client.get_user_email() or "").strip()
+        except Exception:
+            account = ""
+        label = PROVIDERS[provider]
+        boxes.append(
+            {
+                "provider": provider,
+                "label": f"{label} ({account})" if account else label,
+                "account": account,
+            }
+        )
+    return boxes
 
 
 def _provider_connected(provider: str) -> bool:
@@ -3104,17 +3260,22 @@ def _provider_connected(provider: str) -> bool:
     return True
 
 
-def _available_modes() -> dict:
-    if saas_enabled():
-        return {mode: _MODES[mode] for mode in ("draft", "always")}
-    return _MODES
+def _sending_mode_options() -> dict:
+    if not saas_enabled():
+        return _MODES
+    return {
+        **_MODES,
+        "draft": (_MODES["draft"][0], "Checking mail saves drafts for you to review."),
+        "always": (_MODES["always"][0], "All replies wait for your approval in the web app."),
+        "never": (_MODES["never"][0], "Sends eligible replies after you check mail. Replies held by safeguards still wait for approval."),
+    }
 
 
 def _current_mode() -> str:
     try:
         if not is_live():
             return "draft"
-        return "always" if saas_enabled() else load_settings()["approval_mode"]
+        return load_settings()["approval_mode"]
     except ConfigError:
         return "draft"
 
@@ -3176,7 +3337,8 @@ def _profile_context(form=None) -> dict:
         "supported_languages": SUPPORTED_LANGUAGES,
         "preserve_langs_text": ", ".join(settings.get("preserve_langs", [])),
         "approval_labels": APPROVALS,
-        "modes": _available_modes(),
+        "modes": _sending_mode_options(),
+        "saas_mode": saas_enabled(),
         "mode": _current_mode(),
         "whatsapp_ready": whatsapp.ready(),
         "cleanup_limit": LIMIT,

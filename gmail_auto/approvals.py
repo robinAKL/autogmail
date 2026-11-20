@@ -114,7 +114,7 @@ def create_new(to: str, subject: str, body: str, provider: str = "gmail", langua
         return item
 
 
-def set_new_fields(item_id: str, to: str, subject: str, cc: str | None = None) -> dict:
+def set_new_fields(item_id: str, to: str, subject: str, cc: str | None = None, provider: str | None = None) -> dict:
     with workspace_operation("approvals"):
         data = _load()
         item = _pending_item(data, item_id)
@@ -127,6 +127,8 @@ def set_new_fields(item_id: str, to: str, subject: str, cc: str | None = None) -
             item["subject"] = subject[:200]
         if cc is not None:
             item["cc"] = cc.strip()
+        if provider in ("gmail", "outlook"):
+            item["provider"] = provider
         _save(data)
         return item
 

@@ -24,6 +24,10 @@
         <span>Inbox</span>
         {% if nav_waiting %}<b class="badge" title="Drafts waiting for your OK">{{ nav_waiting }}</b>{% endif %}
       </a>
+      <a href="{{ url_for('sent_page') }}" class="{% if here == 'sent_page' %}on{% endif %}" title="Sent">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4z"/><path d="M4 7l8 6 8-6"/></svg>
+        <span>Sent</span>
+      </a>
       <a href="{{ url_for('dashboard_page') }}" class="{% if here == 'dashboard_page' %}on{% endif %}" title="Dashboard">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-7"/></svg>
         <span>Dashboard</span>

@@ -4,7 +4,6 @@ import re
 
 from gmail_auto.errors import ConfigError
 from gmail_auto.storage import load_doc, save_doc
-from gmail_auto.tenant import saas_enabled
 
 _CLEANUP_LINES = 60
 _CLEANUP_CHARS = 200
@@ -57,6 +56,7 @@ DEFAULTS = {
     "translation_mode": "seamless",
     "translate_outgoing": True,
     "preserve_langs": [],
+    "default_sender": "",
 }
 
 
@@ -150,10 +150,15 @@ def _clean(data: dict, strict: bool = False) -> dict:
         preserve_langs = [str(p).strip().lower() for p in raw_preserve if str(p).strip()]
     else:
         preserve_langs = list(DEFAULTS["preserve_langs"])
+    default_sender = str(data.get("default_sender") or "").strip().lower()
+    if default_sender not in {"", "gmail", "outlook"}:
+        if strict:
+            raise ConfigError("Choose Gmail, Outlook, or automatic for the default sender.")
+        default_sender = ""
 
     return {
         "reply_language": language,
-        "approval_mode": "always" if saas_enabled() else approval,
+        "approval_mode": approval,
         "ai_model": ai_model,
         "super_model": super_model,
         "whatsapp_to": phone,
@@ -175,6 +180,7 @@ def _clean(data: dict, strict: bool = False) -> dict:
         "translation_mode": translation_mode,
         "translate_outgoing": bool(data.get("translate_outgoing", DEFAULTS["translate_outgoing"])),
         "preserve_langs": preserve_langs,
+        "default_sender": default_sender,
     }
 
 

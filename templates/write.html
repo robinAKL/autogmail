@@ -45,6 +45,20 @@
 
   <section class="card write-draft" aria-label="Draft">
     <form method="post" action="{{ url_for('write_act', session_id=session.id, action='edit') }}" class="draft-form" enctype="multipart/form-data" data-busy="Saving…">
+      {% if reply_locked %}
+      <p class="hint">Replying from <strong>{{ (chosen_provider or 'gmail')|title }}</strong> (locked to the receiving mailbox).</p>
+      {% elif mailboxes|length > 1 %}
+      <label>From
+        <select name="provider">
+          {% for box in mailboxes %}
+          <option value="{{ box.provider }}" {% if box.provider == chosen_provider %}selected{% endif %}>{{ box.label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      {% elif mailboxes|length == 1 %}
+      <input type="hidden" name="provider" value="{{ mailboxes[0].provider }}">
+      <p class="hint">Sending from <strong>{{ mailboxes[0].label }}</strong></p>
+      {% endif %}
       <div class="draft-top">
         <label>To <input name="to" value="{{ session.to }}" maxlength="600" list="people" placeholder="Name or email address"></label>
         <label>Email language

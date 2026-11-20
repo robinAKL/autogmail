@@ -38,7 +38,7 @@
       </label>
       {% endfor %}
     </div>
-    {% if mode == 'draft' %}
+    {% if mode == 'draft' or saas_mode %}
     <label class="check" data-confirm-row>
       <input type="checkbox" name="confirm" value="1">
       <span>I understand that replies will really be sent from my mailbox.</span>
@@ -46,7 +46,30 @@
     {% endif %}
     <div class="button-row">
       <button type="submit">Save sending mode</button>
-      {% if not whatsapp_ready %}<span class="hint">Approvals show on the Approvals page. <a href="{{ url_for('connections_page') }}#whatsapp">Connect WhatsApp</a> to be asked on your phone too.</span>{% endif %}
+      {% if saas_mode %}
+      <span class="hint">This setting applies when you select Check mail now.</span>
+      {% elif not whatsapp_ready %}
+      <span class="hint">Approvals show on the Approvals page. <a href="{{ url_for('connections_page') }}#whatsapp">Connect WhatsApp</a> to be asked on your phone too.</span>
+      {% endif %}
+    </div>
+  </form>
+</section>
+
+<section class="card" id="default-sender">
+  <h2 class="card-title">Default sending mailbox</h2>
+  <p class="muted">Used as the initial sender when you write a new email. Replies always go from the mailbox that received the original letter.</p>
+  <form method="post" action="{{ url_for('settings_save') }}" class="stack">
+    <input type="hidden" name="next" value="#send">
+    <label>
+      Default sender for new emails
+      <select name="default_sender" aria-label="Default sending mailbox">
+        <option value="" {% if not settings.default_sender %}selected{% endif %}>Automatic (first connected mailbox)</option>
+        <option value="gmail" {% if settings.default_sender == 'gmail' %}selected{% endif %}>Gmail</option>
+        <option value="outlook" {% if settings.default_sender == 'outlook' %}selected{% endif %}>Outlook</option>
+      </select>
+    </label>
+    <div class="button-row">
+      <button type="submit">Save default sender</button>
     </div>
   </form>
 </section>
