@@ -85,7 +85,7 @@
   {% if show == 'todo' and nav_waiting %}<a class="tab-side" href="{{ url_for('approvals_page') }}">All {{ nav_waiting }} drafts on one page</a>{% endif %}
 </nav>
 
-<div class="inbox-desk">
+<div class="inbox-desk" {% if inbox_more %}data-inbox-more="1"{% endif %}>
 <div class="split">
   <section class="list" aria-label="Emails">
     {% for row in rows %}
@@ -309,5 +309,33 @@
   </form>
 </aside>
 {% endif %}
+{% endif %}
+{% if inbox_more %}
+<script>
+(function () {
+  var key = "autopilot-inbox-fill";
+  if (Number(sessionStorage.getItem(key) || "0") >= 6) {
+    sessionStorage.removeItem(key);
+    return;
+  }
+  function finish() {
+    sessionStorage.removeItem(key);
+    location.reload();
+  }
+  function step() {
+    var seen = Number(sessionStorage.getItem(key) || "0") + 1;
+    sessionStorage.setItem(key, String(seen));
+    if (seen > 6) { finish(); return; }
+    fetch("{{ url_for('inbox_more') }}", { headers: { "Accept": "application/json" } })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (data && data.hasMore && data.added) step();
+        else finish();
+      })
+      .catch(function () { sessionStorage.removeItem(key); });
+  }
+  step();
+})();
+</script>
 {% endif %}
 {% endblock %}
