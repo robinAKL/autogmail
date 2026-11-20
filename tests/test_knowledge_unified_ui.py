@@ -108,17 +108,12 @@ class KnowledgeUnifiedUITests(unittest.TestCase):
 
         with mock.patch.object(knowledge, "load_index", return_value=fake_index):
             html = self.client.get("/knowledge").get_data(as_text=True)
-        self.assertIn("Business knowledge", html)
-        self.assertIn("Reply preferences, tone &amp; rules", html)
-        self.assertIn("Time-scoped facts", html)
-        self.assertIn("Handbook.pdf, Sent mail 2026-11-01", html)
-        self.assertIn("clients@example.com", html)
-        self.assertIn("Warm &amp; concise", html)
-        self.assertIn("kb-status-current", html)
-        self.assertIn("kb-status-expired", html)
-        self.assertIn("kb-status-uncertain", html)
-        self.assertIn("Applies 2025-05-01 – 2025-06-30", html)
-        self.assertIn("Validity window not specified", html)
+        self.assertIn("Storylines", html)
+        self.assertNotIn("Business knowledge", html)
+        self.assertNotIn("Time-scoped facts", html)
+        self.assertIn("Office hours are 9am-5pm NZT.", html)
+        self.assertIn("Keep replies concise with a warm sign-off.", html)
+        self.assertIn("Rules that always win", html)
 
 
 if __name__ == "__main__":

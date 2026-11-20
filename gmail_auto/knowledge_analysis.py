@@ -22,12 +22,13 @@ IDs or payment details. Templates may contain fictional examples or placeholders
 Return JSON {"items":[{"kind":"fact","text":"...","evidence":[{"ref":"1","quote":"short exact source excerpt"}],
 "temporal":"stable","valid_from":"","valid_until":"","recipient":"","tone":""}]}.
 
-Facts are business information directly stated in the sources. Distinguish a claim made by someone else from an
-owner-confirmed fact. Only infer experience, preference, or rule from messages marked sent; a rule or preference needs
-evidence from two separate sent messages. Explain which correspondent or type of email the pattern applies to.
-For reply patterns, optionally provide a short recipient or audience and tone; leave these fields blank for other items.
-An inferred rule is an observed practice, never a directive. Use kinds fact, person, topic, experience, preference, rule
-or decision. Use short, exact quotes and at most eight items. Use empty strings for fields that do not apply. Return an empty items list if no knowledge is supported.
+Facts are business information the owner would want a reply to rely on. Keep one fact per source and combine its points.
+Skip signature lines, sales-deck prices, sample quotes, and claims the owner did not make. Do not emit a fact that only
+has an observation date.
+Only infer experience, preference, or rule from messages marked sent; a rule or preference needs evidence from two
+separate sent messages. Write a preference or rule as an instruction the owner can edit, and name who it applies to.
+Use kinds fact, person, topic, experience, preference, rule or decision. Do not emit storylines.
+Use short, exact quotes and at most eight items. Use empty strings for fields that do not apply. Return an empty items list if no knowledge is supported.
 Use temporal "stable" for enduring information, "dated" for facts with evidence of their effective or expiry dates, and
 "unknown" when a changing fact only has an observation date. Use dates in YYYY-MM-DD. Subscriptions, quotes, availability
 and commitments are time-sensitive. A bill this month is evidence for that billing period only. Never extrapolate a
@@ -37,7 +38,7 @@ Only give validity dates stated in the evidence. Use none for fields that do not
 
 _ITEM_FIELDS = {
     **{key: {"type": "string"} for key in ("text", "valid_from", "valid_until", "recipient", "tone")},
-    "kind": {"type": "string", "enum": list(knowledge.KINDS)},
+    "kind": {"type": "string", "enum": [kind for kind in knowledge.KINDS if kind != "storyline"]},
     "temporal": {"type": "string", "enum": ["stable", "dated", "unknown"]},
     "evidence": {
         "type": "array",
@@ -111,7 +112,10 @@ def start(clients, problems=()) -> dict:
             "cursor": "",
             "documents": 0,
             "emails": 0,
+            "received": 0,
+            "sent": 0,
             "skipped": 0,
+            "threads": {},
             "issues": issues,
         }
         save_doc(_JOB, job)
@@ -191,13 +195,21 @@ def _mail_step(job: dict, client_for) -> None:
             "type": direction, "observed_at": observed,
             "text": f"{'To' if direction == 'sent' else 'From'}: {parties}\n{text[:2_000]}",
         })
+        _note_thread(job, provider, mail, direction, text)
     _analyze(records)
-    job["emails"] += len(records)
+    job.setdefault("received", 0)
+    job.setdefault("sent", 0)
+    if direction == "sent":
+        job["sent"] += len(records)
+    else:
+        job["received"] += len(records)
+    job["emails"] = job["received"] + job["sent"]
     job["cursor"] = cursor
     if not cursor:
         if direction == "inbox":
             job["direction"] = "sent"
         else:
+            _flush_storylines(job)
             job["direction"] = "inbox"
             job["mailbox_index"] += 1
 
@@ -215,7 +227,7 @@ def _analyze(records: list[dict]) -> None:
         item = _supported_item(candidate, refs)
         if item is not None:
             extracted.append(item)
-    knowledge.merge_analysis(extracted)
+    knowledge.merge_analysis(_collapse_facts(extracted))
 
 
 def _request_items(prompt: str) -> list:
@@ -250,7 +262,7 @@ def _request_items(prompt: str) -> list:
 
 
 def _supported_item(raw, refs: dict) -> dict | None:
-    if not isinstance(raw, dict) or raw.get("kind") not in knowledge.KINDS:
+    if not isinstance(raw, dict) or raw.get("kind") not in knowledge.KINDS or raw.get("kind") == "storyline":
         return None
     evidence = raw.get("evidence")
     if not isinstance(evidence, list):
@@ -281,6 +293,8 @@ def _supported_item(raw, refs: dict) -> dict | None:
     valid_until = _evidenced_date(raw.get("valid_until"), quotes) if temporal == "dated" else ""
     if temporal == "dated" and (not valid_until or valid_from and valid_until < valid_from):
         temporal, valid_from, valid_until = "unknown", "", ""
+    if kind == "fact" and temporal == "unknown":
+        return None
     primary = max(sources, key=lambda item: item["observed_at"])
     return {
         "kind": kind, "text": raw.get("text"), "source": primary["source"],
@@ -310,9 +324,90 @@ def _evidenced_date(value, quotes: list[str]) -> str:
     return ""
 
 
+def _note_thread(job: dict, provider: str, mail, direction: str, text: str) -> None:
+    thread = (getattr(mail, "thread_id", "") or "").strip()
+    if not thread:
+        return
+    threads = job.setdefault("threads", {})
+    key = f"{provider}:{thread}"
+    entry = threads.get(key) or {
+        "count": 0, "sent": 0, "subject": (mail.subject or "(no subject)")[:160],
+        "parties": [], "sample": "",
+    }
+    entry["count"] += 1
+    if direction == "sent":
+        entry["sent"] += 1
+        entry["sample"] = " ".join(text.split())[:160]
+    party = (mail.headers.get("to") if direction == "sent" else mail.from_email) or ""
+    party = " ".join(str(party).split())[:80]
+    if party and party not in entry["parties"] and len(entry["parties"]) < 3:
+        entry["parties"].append(party)
+    threads[key] = entry
+
+
+def _flush_storylines(job: dict) -> None:
+    extracted = []
+    for key, entry in (job.get("threads") or {}).items():
+        if entry["count"] < 2 or entry["sent"] < 2:
+            continue
+        parties = ", ".join(entry["parties"]) or "the correspondent"
+        text = (
+            f"With {parties} about {entry['subject']}. "
+            f"{entry['count']} letters, {entry['sent']} written by you."
+        )
+        if entry["sample"]:
+            text = f"{text} Latest: {entry['sample']}"
+        extracted.append({
+            "kind": "storyline",
+            "text": text[:300],
+            "source": entry["subject"],
+            "temporal": "stable",
+            "evidence": [{
+                "source_id": key,
+                "source": entry["subject"],
+                "type": "thread",
+                "observed_at": "",
+            }],
+        })
+    job["threads"] = {}
+    knowledge.merge_analysis(extracted)
+
+
+def _collapse_facts(extracted: list[dict]) -> list[dict]:
+    """One fact per source. Points from the same letter or document stay together."""
+    grouped: dict[str, dict] = {}
+    order: list[str] = []
+    other = []
+    for item in extracted:
+        if item["kind"] != "fact":
+            other.append(item)
+            continue
+        source_id = item["evidence"][0]["source_id"]
+        if source_id not in grouped:
+            grouped[source_id] = dict(item)
+            order.append(source_id)
+            continue
+        current = grouped[source_id]
+        lines = [part.strip() for part in current["text"].split(";") if part.strip()]
+        extra = item["text"].strip().rstrip(".")
+        if extra and extra.casefold() not in {line.casefold() for line in lines}:
+            lines.append(extra)
+        current["text"] = "; ".join(lines)[:300]
+        seen = {source["source_id"] for source in current["evidence"]}
+        for source in item["evidence"]:
+            if source["source_id"] not in seen and len(current["evidence"]) < 5:
+                current["evidence"].append(source)
+                seen.add(source["source_id"])
+    return other + [grouped[key] for key in order]
+
+
 def _public(job: dict) -> dict:
+    received = job.get("received", 0)
+    sent = job.get("sent", 0)
     return {
         "status": job.get("status", "idle"), "documents": job.get("documents", 0),
-        "emails": job.get("emails", 0), "skipped": job.get("skipped", 0),
+        "emails": job.get("emails", received + sent),
+        "received": received, "sent": sent,
+        "skipped": job.get("skipped", 0),
         "message": job.get("message", ""),
     }
