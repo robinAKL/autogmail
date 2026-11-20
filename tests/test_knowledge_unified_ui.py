@@ -152,16 +152,17 @@ class KnowledgeUnifiedUITests(unittest.TestCase):
             ],
         }]
         with mock.patch.object(knowledge, "load_index", return_value=fake_index):
-            closed = self.client.get("/knowledge").get_data(as_text=True)
-            html = self.client.get("/knowledge?story=story-1").get_data(as_text=True)
-        self.assertIn("Fixed Term Lease Expiry - 5/9/2026", closed)
-        self.assertNotIn("story-line", closed)
-        self.assertNotIn("more storylines", closed)
+            html = self.client.get("/knowledge").get_data(as_text=True)
+        self.assertIn("Fixed Term Lease Expiry - 5/9/2026", html)
+        self.assertIn('<details class="kb-story"', html)
+        self.assertNotIn('href="/knowledge?story=', html)
         self.assertIn("Waiting on them", html)
         self.assertIn("Yvette Lin", html)
         self.assertIn("Timeline", html)
         self.assertIn("<b>Status</b>", html)
-        self.assertLess(html.index("2 Sep"), html.index("1 Sep"))
+        timeline = html.split('class="story-line"', 1)[1]
+        self.assertLess(timeline.index("1 Sep"), timeline.index("2 Sep"))
+        self.assertIn("2 Sep", html)
         self.assertNotIn("With Yvette Lin", html)
         self.assertNotIn("Latest:", html)
 
