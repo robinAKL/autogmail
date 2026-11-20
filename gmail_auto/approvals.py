@@ -11,7 +11,6 @@ from datetime import datetime
 from gmail_auto import stats
 from gmail_auto.errors import ConfigError
 from gmail_auto.models import Mail
-from gmail_auto.settings import append_signature, load_settings, signature_for_mailbox
 from gmail_auto.storage import load_doc, save_doc, workspace_operation
 from gmail_auto.tenant import saas_enabled
 from gmail_auto.store import update_processed
@@ -306,30 +305,41 @@ def approve(item_id: str, via: str, client=None) -> dict:
         mail = _mail(item)
         attached = _attachment_bytes(item)
         is_new = item.get("mode") == "new"
-        user_email = "" if is_new else client.get_user_email()
+        if is_new:
+            try:
+                sender = (client.get_user_email() or "").strip()
+            except Exception:
+                sender = ""
+            user_email = ""
+        else:
+            user_email = client.get_user_email()
+            sender = (user_email or "").strip()
         if saas_enabled() and not is_new:
             original_account = (item.get("account") or "").strip().casefold()
             if not original_account or original_account != user_email.strip().casefold():
                 raise ConfigError("Reconnect the mailbox that received this email before sending its reply.")
-        draft = item["draft"]
-        if is_new:
-            settings = load_settings()
-            configured = settings.get("mail_signatures") or {}
-            account = client.get_user_email() if any("@" in key for key in configured) else ""
-            provider = getattr(client, "provider", "") or item.get("provider") or "gmail"
-            draft = append_signature(draft, signature_for_mailbox(settings, provider=provider, email=account))
+        from gmail_auto.settings import append_signature, load_settings, signature_for_mailbox
+
+        body = append_signature(
+            item["draft"],
+            signature_for_mailbox(
+                load_settings(),
+                provider=item.get("provider") or getattr(client, "provider", ""),
+                email=sender,
+            ),
+        )
         dispatch_started = True
         if is_new:
             if item.get("cc"):
-                client.send_new(item["to"], item.get("subject") or "", draft, attachments=attached or None, cc=item["cc"])
+                client.send_new(item["to"], item.get("subject") or "", body, attachments=attached or None, cc=item["cc"])
             elif attached:
-                client.send_new(item["to"], item.get("subject") or "", draft, attachments=attached)
+                client.send_new(item["to"], item.get("subject") or "", body, attachments=attached)
             else:
-                client.send_notice(item["to"], item.get("subject") or "", draft)
+                client.send_notice(item["to"], item.get("subject") or "", body)
         elif attached:
-            client.send_reply(mail, item["draft"], user_email, attachments=attached)
+            client.send_reply(mail, body, user_email, attachments=attached)
         else:
-            client.send_reply(mail, item["draft"], user_email)
+            client.send_reply(mail, body, user_email)
     except Exception as exc:
         if saas_enabled() and dispatch_started:
             _decide(item_id, "send_unconfirmed", via)
