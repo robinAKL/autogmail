@@ -1,5 +1,8 @@
 """The clerk agent: read, summarise and write. It does not decide send / ignore / ask."""
 
+import ast
+import json
+
 from gmail_auto.errors import ConfigError, ReplyError
 from gmail_auto.filters import rule_signals
 from gmail_auto.llm import complete, model_ready, parse_json
@@ -9,7 +12,7 @@ from gmail_auto.storage import load_doc, save_doc
 _BRIEF_SYSTEM = """You are the owner's mail clerk. Read the letter and extract a brief.
 Do not decide whether to reply, ignore, or ask the owner. Do not write a reply.
 Return JSON only:
-{"summary":"5-8 short lines of what the letter is","facts":["sender=...","asks=...","deadline=..."],"quotes":["short phrases copied from the letter"],"spam_cues":["gambling bonus","QQ id","old date", ...],"sender":{"company":"","title":"","phone":"","address":""}}
+{"summary":"one concise plain-text paragraph (not a JSON list) saying what the letter is","facts":["sender=...","asks=...","deadline=..."],"quotes":["short phrases copied from the letter"],"spam_cues":["gambling bonus","QQ id","old date", ...],"sender":{"company":"","title":"","phone":"","address":""}}
 sender: the SENDER's own details as written in their signature or letterhead; empty strings when not shown. Never the owner's details, and never guess.
 facts.asks must be what the SENDER is requesting of the owner. FAQ headings in a notice ("How can I see the result?") are not asks. If the letter tells the owner a process is complete and how to look it up, set asks=none (status notice).
 """
@@ -43,7 +46,7 @@ def brief_mail(mail: Mail, use_cache: bool = True) -> dict:
         return fallback
     data = parse_json(raw) if raw else None
     if not isinstance(data, dict):
-        fallback["summary"] = (raw or fallback["summary"])[:800]
+        fallback["summary"] = _line(raw or fallback["summary"], 800) or fallback["summary"]
         _store(mail.key, fallback)
         return fallback
     brief = {
@@ -108,7 +111,12 @@ def _load_cached(mail_key: str) -> dict | None:
     if not isinstance(data, dict):
         return None
     item = data.get(mail_key)
-    return item if isinstance(item, dict) else None
+    if not isinstance(item, dict):
+        return None
+    if "summary" in item:
+        item = dict(item)
+        item["summary"] = clean_summary(item.get("summary"), 800)
+    return item
 
 
 def _store(mail_key: str, brief: dict) -> None:
@@ -125,8 +133,38 @@ def _store(mail_key: str, brief: dict) -> None:
     save_doc("mail_briefs", data)
 
 
+def clean_summary(value, limit: int = 300) -> str:
+    """Flatten LLM summary values (str, list, dict, or stringified list) into readable prose."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        parts = [clean_summary(item, limit) for item in value]
+        text = "; ".join(part for part in parts if part)
+        return " ".join(text.split())[:limit]
+    if isinstance(value, dict):
+        for key in ("summary", "text", "message", "reason"):
+            if value.get(key):
+                return clean_summary(value.get(key), limit)
+        parts = [clean_summary(v, limit) for v in value.values()]
+        text = "; ".join(part for part in parts if part)
+        return " ".join(text.split())[:limit]
+    raw = str(value).strip()
+    if (raw.startswith("[") and raw.endswith("]")) or (raw.startswith("{") and raw.endswith("}")):
+        parsed = None
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            try:
+                parsed = ast.literal_eval(raw)
+            except (ValueError, SyntaxError):
+                parsed = None
+        if isinstance(parsed, (list, tuple, dict)):
+            return clean_summary(parsed, limit)
+    return " ".join(raw.split())[:limit]
+
+
 def _line(value, limit: int = 300) -> str:
-    return " ".join(str(value or "").split())[:limit]
+    return clean_summary(value, limit)
 
 
 def _list(value) -> list[str]:
