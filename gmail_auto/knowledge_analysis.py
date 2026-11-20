@@ -101,6 +101,10 @@ def start(clients, problems=()) -> dict:
                 existing.pop("message", None)
                 save_doc(_JOB, existing)
                 return _public(existing)
+        try:
+            voice_profile = _apply_learned_voice(None)
+        except ReplyError:
+            voice_profile = {}
         job = {
             "status": "running",
             "document_ids": docs,
@@ -117,6 +121,7 @@ def start(clients, problems=()) -> dict:
             "skipped": 0,
             "threads": {},
             "issues": issues,
+            "voice_profile": voice_profile,
         }
         save_doc(_JOB, job)
         return _public(job)
@@ -136,6 +141,8 @@ def step(client_for) -> dict:
             elif job["mailbox_index"] < len(job["mailboxes"]):
                 _mail_step(job, client_for)
             else:
+                written = _apply_learned_voice(job.get("voice_profile"))
+                job["voice_profile"] = written
                 job["status"] = "done"
                 if job["issues"]:
                     job["message"] = "Some mailboxes could not be read. Check Connections and run analysis again."
@@ -399,6 +406,160 @@ def _collapse_facts(extracted: list[dict]) -> list[dict]:
                 current["evidence"].append(source)
                 seen.add(source["source_id"])
     return other + [grouped[key] for key in order]
+
+
+_EXAMPLE_RULES = [
+    "Always ask me before agreeing to a meeting or a price.",
+    "Never reply to recruiters.",
+    "Emails from school are important: always ask me first.",
+]
+_DEFAULT_PROFILE = {
+    "name": "Mailbox owner",
+    "role": "The person sending this reply",
+    "introduction": "No personal or business details have been supplied.",
+    "tone": "Clear, polite, and concise. Do not add a name or signature unless supplied.",
+    "cannot_promise": ["Do not invent facts, commitments, contact details, or a signature."],
+    "sample_phrases": ["Thank you for your message."],
+}
+_VOICE_SYSTEM = """Fill the editable profile, reply rules, and auto-reply keywords from the knowledge notes.
+Use only the notes. Do not invent a name, role, phone number, or promise.
+Return JSON with name, role, introduction, tone, cannot_promise, sample_phrases, rules, auto_reply_allow, auto_reply_block.
+name and role are the mailbox owner, short. introduction is a few sentences of who they are and what the business does.
+tone describes how they write. cannot_promise and sample_phrases are short lines.
+rules are instructions for what a reply should do, one line each, something the owner can edit.
+auto_reply_allow and auto_reply_block are short keywords, sender names, or @domains, not sentences.
+Leave a string empty or a list empty when the notes do not support it."""
+_VOICE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "learned_voice",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "role": {"type": "string"},
+                "introduction": {"type": "string"},
+                "tone": {"type": "string"},
+                "cannot_promise": {"type": "array", "items": {"type": "string"}},
+                "sample_phrases": {"type": "array", "items": {"type": "string"}},
+                "rules": {"type": "array", "items": {"type": "string"}},
+                "auto_reply_allow": {"type": "array", "items": {"type": "string"}},
+                "auto_reply_block": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": [
+                "name", "role", "introduction", "tone", "cannot_promise", "sample_phrases",
+                "rules", "auto_reply_allow", "auto_reply_block",
+            ],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def _apply_learned_voice(previous: dict | None) -> dict:
+    """Write knowledge into the profile, reply rules, and auto-reply keywords the user can edit."""
+    notes = _voice_notes()
+    if not notes:
+        return previous or {}
+    from gmail_auto.profile_store import load_profile, save_profile
+    from gmail_auto.settings import load_settings, save_settings
+
+    parsed = parse_json(complete(
+        _VOICE_SYSTEM, notes, max_tokens=1600, temperature=0.1,
+        response_format=_VOICE_FORMAT, timeout=45.0,
+    ))
+    if not isinstance(parsed, dict):
+        raise ReplyError("The model did not return the profile and rules. Retry this batch.")
+    previous = previous or {}
+    written = dict(previous)
+    try:
+        profile = load_profile()
+    except ConfigError:
+        profile = None
+    if profile is not None:
+        changed = False
+        for key, limit in (("name", 80), ("role", 120), ("introduction", 800), ("tone", 400)):
+            value = _voice_text(parsed.get(key), limit)
+            if value and _voice_field_open(key, profile.get(key), previous.get(key)):
+                profile[key] = value
+                written[key] = value
+                changed = True
+        for key in ("cannot_promise", "sample_phrases"):
+            values = _voice_lines(parsed.get(key), 160, 8)
+            if values and _voice_field_open(key, profile.get(key), previous.get(key)):
+                profile[key] = values
+                written[key] = values
+                changed = True
+        if changed:
+            save_profile(profile)
+    learned_rules = _voice_lines(parsed.get("rules"), 300, 12)
+    if learned_rules:
+        current = knowledge.load_index()["rules"]
+        if current == _EXAMPLE_RULES or current == (previous.get("rules") or []):
+            knowledge.save_rules(learned_rules)
+        else:
+            knowledge.save_rules(knowledge._extend_rules(current, learned_rules))
+        written["rules"] = knowledge.load_index()["rules"]
+    settings = load_settings()
+    allow = _voice_keywords(settings.get("auto_reply_allow") or [], parsed.get("auto_reply_allow"))
+    block = _voice_keywords(settings.get("auto_reply_block") or [], parsed.get("auto_reply_block"))
+    if allow != settings.get("auto_reply_allow") or block != settings.get("auto_reply_block"):
+        save_settings({"auto_reply_allow": allow, "auto_reply_block": block})
+    return written
+
+
+def _voice_notes() -> str:
+    lines = []
+    for item in knowledge.list_items(active_only=True):
+        if not knowledge.is_shown(item):
+            continue
+        if item.get("kind") not in ("fact", "person", "preference", "rule", "experience", "decision"):
+            continue
+        lines.append(f"{item['kind']}: {item['text']}")
+        if len(lines) >= 60:
+            break
+    return "\n".join(lines)
+
+
+def _voice_field_open(key: str, current, previous) -> bool:
+    if current == _DEFAULT_PROFILE[key]:
+        return True
+    return previous is not None and current == previous
+
+
+def _voice_text(value, limit: int) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    if not text or text.casefold() in ("mailbox owner", "the person sending this reply"):
+        return ""
+    return text[:limit]
+
+
+def _voice_lines(value, limit: int, cap: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out = []
+    seen = set()
+    for raw in value:
+        text = re.sub(r"\s+", " ", str(raw or "").strip())
+        if not text or len(text) > limit or text.casefold() in seen:
+            continue
+        seen.add(text.casefold())
+        out.append(text[:limit])
+        if len(out) >= cap:
+            break
+    return out
+
+
+def _voice_keywords(current: list[str], extra) -> list[str]:
+    out = list(current)
+    seen = {item.casefold() for item in out}
+    for text in _voice_lines(extra, 60, 12):
+        if len(text.split()) > 6 or text.casefold() in seen:
+            continue
+        out.append(text)
+        seen.add(text.casefold())
+    return out[:60]
 
 
 def _public(job: dict) -> dict:

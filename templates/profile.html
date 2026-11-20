@@ -76,7 +76,7 @@
 
 <section class="card" id="auto-reply-rules">
   <h2 class="card-title">Auto-reply rules</h2>
-  <p class="muted">Decide when a reply may go out automatically in Send the easy ones or Send whenever it can mode. In Write only or Show me every reply mode, nothing sends on its own. For what a reply says, use Rules that always win in Knowledge.</p>
+  <p class="muted">Decide when a reply may go out automatically in Send the easy ones or Send whenever it can mode. In Write only or Show me every reply mode, nothing sends on its own. Analyse knowledge adds keywords here from your mail. Lines you already saved stay. For what a reply says, use Rules that always win in Knowledge.</p>
   <form method="post" action="{{ url_for('settings_save') }}" class="stack">
     <input type="hidden" name="next" value="#send">
     <label>
@@ -340,6 +340,7 @@
     <div class="span-2"><button type="submit">Save translation settings</button></div>
   </form>
   <form method="post" action="{{ url_for('profile_save') }}" class="form-grid">
+    <p class="hint span-2">Analyse knowledge fills these from your mail and documents while they are still the defaults. A name or line you have edited is left as you saved it.</p>
     <label>
       Name
       <input name="name" maxlength="80" required value="{{ profile.name }}">

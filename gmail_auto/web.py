@@ -1426,6 +1426,11 @@ def configure_app(app: Flask) -> None:
         try:
             return knowledge_analysis.step(client_for)
         except ConfigError as exc:
+            if "already in progress" in str(exc):
+                state = knowledge_analysis.status()
+                state["status"] = "running"
+                state["message"] = "Still reading the previous batch."
+                return state
             return {**knowledge_analysis.status(), "status": "error", "message": str(exc)}, 409
 
     @app.post("/knowledge/learn")
