@@ -14,10 +14,7 @@
     </ul>
   </section>
   <section class="auth-card">
-    <div class="tabs">
-      <a class="{% if mode == 'login' %}on{% endif %}" href="{{ url_for('login_page', mode='login') }}">Sign in</a>
-      <a class="{% if mode == 'register' %}on{% endif %}" href="{{ url_for('login_page', mode='register') }}">Register</a>
-    </div>
+    <h2>Sign in</h2>
     {% if error %}
     <p class="banner danger">{{ error }}</p>
     {% endif %}
@@ -28,25 +25,23 @@
     {% endwith %}
     {% if not sent %}
     <form method="post" action="{{ url_for('login_code') }}" class="stack">
-      <input type="hidden" name="mode" value="{{ mode }}">
       <label>
         Email
         <input name="email" type="email" autocomplete="username" inputmode="email" maxlength="254" required placeholder="you@example.com" value="{{ email }}">
       </label>
-      <button type="submit">{% if mode == 'register' %}Email me a code to register{% else %}Email me a code to sign in{% endif %}</button>
+      <button type="submit">Email me a code to sign in</button>
       <p class="hint">Your email is your username. A 6-digit code is sent to it and works for 10 minutes.</p>
     </form>
     {% else %}
     <form method="post" action="{{ url_for('login_submit') }}" class="stack">
-      <input type="hidden" name="mode" value="{{ mode }}">
       <input type="hidden" name="email" value="{{ email }}">
       <p class="account-line">A code was sent to {{ email }}</p>
       <label>
         Code
         <input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="8" required placeholder="6 digits">
       </label>
-      <button type="submit">{% if mode == 'register' %}Verify and register{% else %}Verify and sign in{% endif %}</button>
-      <p class="hint"><a href="{{ url_for('login_page', mode=mode) }}">Use a different email</a></p>
+      <button type="submit">Verify and sign in</button>
+      <p class="hint"><a href="{{ url_for('login_page') }}">Use a different email</a></p>
     </form>
     {% endif %}
   </section>

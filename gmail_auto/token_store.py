@@ -18,6 +18,23 @@ _STORAGE_NAME = re.compile(r"KV|REDIS|UPSTASH", re.IGNORECASE)
 _client: dict = {"url": None, "client": None}
 
 
+def _tenant_scope() -> tuple[bool, str]:
+    try:
+        from gmail_auto.tenant import current_user_id, saas_enabled
+    except ImportError:
+        return False, ""
+    return bool(saas_enabled()), str(current_user_id() or "").strip()
+
+
+def _token_key() -> str:
+    saas, uid = _tenant_scope()
+    if saas and not uid:
+        raise ConfigError("Sign in before reading or saving a Gmail connection.")
+    if uid:
+        return f"autogmail:u:{uid}:token"
+    return _KEY
+
+
 def storage_ready() -> bool:
     return _redis() is not None or _tcp_url() is not None
 
@@ -47,15 +64,18 @@ def storage_hint() -> str:
 
 
 def load_token_raw() -> str | None:
+    from gmail_auto.token_crypto import decrypt_token
+
+    key = _token_key()
     if not storage_ready():
         return None
     try:
-        result = _command(["GET", _KEY])
+        result = _command(["GET", key])
     except Exception as exc:
         raise ConfigError("Could not read the saved Gmail grant from storage.") from exc
     if not result:
         return None
-    return str(result)
+    return decrypt_token(str(result))
 
 
 def kv_get(key: str):
@@ -70,6 +90,23 @@ def kv_set(key: str, value: str) -> None:
     _command(["SET", key, value])
 
 
+def kv_set_with_ttl(key: str, value: str, ttl: int) -> None:
+    if not storage_ready():
+        raise ConfigError("Persistent storage is unavailable.")
+    _command(["SET", key, value, "EX", str(ttl)])
+
+
+def kv_set_if_absent(key: str, value: str, ttl: int) -> bool:
+    if not storage_ready():
+        raise ConfigError("Persistent workspace coordination is unavailable.")
+    return bool(_command(["SET", key, value, "NX", "EX", str(ttl)]))
+
+
+def kv_delete_if_value(key: str, value: str) -> None:
+    script = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) end"
+    _command(["EVAL", script, "1", key, value])
+
+
 def kv_delete(key: str) -> None:
     if not storage_ready():
         return
@@ -77,18 +114,23 @@ def kv_delete(key: str) -> None:
 
 
 def save_token_raw(raw: str) -> bool:
+    from gmail_auto.token_crypto import encrypt_token
+
+    key = _token_key()
     if not storage_ready():
         return False
+    payload = encrypt_token(raw)
     try:
-        _command(["SET", _KEY, raw])
+        _command(["SET", key, payload])
     except Exception as exc:
         raise ConfigError("The Gmail grant was not saved to storage.") from exc
     return True
 
 
 def clear_token() -> None:
+    key = _token_key()
     if storage_ready():
-        _command(["DEL", _KEY])
+        _command(["DEL", key])
 
 
 def _redis() -> tuple[str, str] | None:

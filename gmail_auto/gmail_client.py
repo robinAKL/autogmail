@@ -3,6 +3,7 @@ import html
 import json
 import os
 import re
+import secrets
 from email.message import EmailMessage
 from email.header import decode_header
 from email.utils import formataddr, parseaddr
@@ -294,6 +295,23 @@ class GmailClient:
         return mail
 
 
+def _tenant_scope() -> tuple[bool, str]:
+    try:
+        from gmail_auto.tenant import current_user_id, saas_enabled
+    except ImportError:
+        return False, ""
+    return bool(saas_enabled()), str(current_user_id() or "").strip()
+
+
+def local_token_path():
+    saas, uid = _tenant_scope()
+    if saas and not uid:
+        raise NotConnected("Sign in before connecting Gmail.")
+    if uid:
+        return root() / "data" / "users" / uid / "token.json"
+    return root() / "token.json"
+
+
 def web_client_config() -> dict | None:
     client_id = os.getenv("GMAIL_CLIENT_ID", "").strip()
     client_secret = os.getenv("GMAIL_CLIENT_SECRET", "").strip()
@@ -309,42 +327,66 @@ def web_client_config() -> dict | None:
     }
 
 
+def _token_gen(raw: str | None) -> str:
+    if not raw:
+        return ""
+    try:
+        info = json.loads(raw)
+        return str((info or {}).get("_conn_gen") or "")
+    except (ValueError, TypeError):
+        return ""
+
+
+def stamp_token_gen(raw: str, gen: str = "") -> str:
+    info = json.loads(raw)
+    info["_conn_gen"] = gen or secrets.token_hex(8)
+    return json.dumps(info)
+
+
 def load_credentials(allow_browser: bool):
-    from gmail_auto.token_store import load_token_raw
+    from gmail_auto.token_crypto import decrypt_token
+    from gmail_auto.token_store import load_token_raw, storage_ready
+
+    saas, uid = _tenant_scope()
+    if saas and not uid:
+        raise NotConnected("Sign in before connecting Gmail.")
+    if saas and os.environ.get("VERCEL") and not storage_ready():
+        raise ConfigError("Persistent storage is required in hosted SaaS mode.")
 
     stored = load_token_raw()
     if stored:
-        return _refresh_saved(_credentials_from_raw(stored), None, persist_remote=True)
+        return _refresh_saved(_credentials_from_raw(stored), None, persist_remote=True, expected_gen=_token_gen(stored))
 
-    in_session = _session_token()
-    if in_session:
-        return _refresh_saved(_credentials_from_raw(in_session), None, persist_remote=False, persist_session=True)
+    if not saas:
+        in_session = _session_token()
+        if in_session:
+            return _refresh_saved(_credentials_from_raw(in_session), None, persist_remote=False, persist_session=True)
 
-    env_creds = _credentials_from_env()
-    if env_creds is not None:
-        return _refresh_saved(env_creds, None, persist_remote=False)
+        env_creds = _credentials_from_env()
+        if env_creds is not None:
+            return _refresh_saved(env_creds, None, persist_remote=False)
 
-    token_path = root() / "token.json"
+    token_path = local_token_path()
     creds = None
-    if token_path.exists():
+    raw = ""
+    if token_path.exists() and not (saas and os.environ.get("VERCEL")):
         try:
-            from google.oauth2.credentials import Credentials
-        except ImportError as exc:
-            raise ConfigError("Dependencies are not installed. Run: pip install -r requirements.txt") from exc
-        try:
-            creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
-        except (ValueError, OSError) as exc:
+            raw = decrypt_token(token_path.read_text(encoding="utf-8"))
+            creds = _credentials_from_raw(raw)
+        except ConfigError:
+            raise
+        except OSError as exc:
             if not allow_browser:
                 raise ConfigError("token.json could not be opened. Delete it and start the program again.") from exc
             creds = None
-        creds = _refresh_saved(creds, token_path, persist_remote=False)
+        creds = _refresh_saved(creds, token_path, persist_remote=False, expected_gen=_token_gen(raw))
         if creds and creds.valid and creds.has_scopes(SCOPES):
             return creds
 
-    if not allow_browser or os.environ.get("VERCEL"):
+    if saas or not allow_browser or os.environ.get("VERCEL"):
         if creds and not creds.has_scopes(SCOPES):
             raise ConfigError("The saved grant is missing permission to read or send mail. Connect Gmail again.")
-        if os.environ.get("VERCEL"):
+        if saas or os.environ.get("VERCEL"):
             raise NotConnected("Gmail is not connected yet. Open Connections and choose Connect Gmail.")
         raise NotConnected("Gmail is not connected on this computer yet. Start the program again and approve it in the browser that opens.")
 
@@ -415,7 +457,7 @@ def _remember_session_token(raw: str) -> None:
         session.modified = True
 
 
-def _refresh_saved(creds, token_path, persist_remote: bool, persist_session: bool = False):
+def _refresh_saved(creds, token_path, persist_remote: bool, persist_session: bool = False, expected_gen: str = ""):
     if not (creds and creds.expired and creds.refresh_token):
         return creds
     try:
@@ -423,28 +465,51 @@ def _refresh_saved(creds, token_path, persist_remote: bool, persist_session: boo
         from google.auth.transport.requests import Request
     except ImportError as exc:
         raise ConfigError("Dependencies are not installed. Run: pip install -r requirements.txt") from exc
-    try:
-        creds.refresh(Request())
-    except RefreshError as exc:
-        if token_path is not None:
-            token_path.unlink(missing_ok=True)
-        again = "Open Connections and connect Gmail again." if token_path is None else "Start the program again and approve it once more."
-        raise ConfigError(f"The saved Gmail grant has expired. {again}") from exc
-    except Exception as exc:
-        raise ConfigError("The Gmail grant could not be refreshed. Check the network and try again.") from exc
-    raw = creds.to_json()
-    if token_path is not None:
-        try:
-            atomic_write(token_path, raw)
-        except OSError:
-            pass
-    if persist_remote:
-        from gmail_auto.token_store import save_token_raw
+    from gmail_auto.storage import workspace_operation
+    from gmail_auto.token_crypto import decrypt_token, encrypt_token
+    from gmail_auto.token_store import load_token_raw, save_token_raw
 
-        save_token_raw(raw)
-    if persist_session:
-        _remember_session_token(raw)
-    return creds
+    def _current_raw() -> str | None:
+        if persist_remote:
+            return load_token_raw()
+        if token_path is not None:
+            if not token_path.exists():
+                return None
+            return decrypt_token(token_path.read_text(encoding="utf-8"))
+        return None
+
+    with workspace_operation("oauth_gmail"):
+        if persist_remote or token_path is not None:
+            latest_raw = _current_raw()
+            if latest_raw is None or (expected_gen and _token_gen(latest_raw) != expected_gen):
+                raise NotConnected("Gmail was disconnected or reconnected while refreshing.")
+            latest_creds = _credentials_from_raw(latest_raw)
+            if latest_creds and latest_creds.valid:
+                return latest_creds
+        try:
+            creds.refresh(Request())
+        except RefreshError as exc:
+            if token_path is not None:
+                token_path.unlink(missing_ok=True)
+            again = "Open Connections and connect Gmail again." if token_path is None else "Start the program again and approve it once more."
+            raise ConfigError(f"The saved Gmail grant has expired. {again}") from exc
+        except Exception as exc:
+            raise ConfigError("The Gmail grant could not be refreshed. Check the network and try again.") from exc
+        if persist_remote or token_path is not None:
+            latest_raw = _current_raw()
+            if latest_raw is None or (expected_gen and _token_gen(latest_raw) != expected_gen):
+                raise NotConnected("Gmail was disconnected or reconnected while refreshing.")
+        raw = stamp_token_gen(creds.to_json(), expected_gen) if expected_gen else creds.to_json()
+        if token_path is not None:
+            try:
+                atomic_write(token_path, encrypt_token(raw))
+            except OSError:
+                pass
+        if persist_remote:
+            save_token_raw(raw)
+        if persist_session:
+            _remember_session_token(raw)
+        return creds
 
 
 def find_client_file():

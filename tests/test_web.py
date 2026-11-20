@@ -5,6 +5,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -38,6 +39,12 @@ _ENV = (
     "WHATSAPP_APP_SECRET",
     "WHATSAPP_VERIFY_TOKEN",
     "TWILIO_ACCOUNT_SID",
+    "AUTOMAIL_SAAS",
+    "ALLOWED_EMAILS",
+    "SMTP_USER",
+    "SMTP_PASSWORD",
+    "RESEND_API_KEY",
+    "MAIL_FROM",
 )
 
 
@@ -864,33 +871,77 @@ class SignInTests(WebCase):
         page = self.client.get("/oauth", follow_redirects=True)
         self.assertIn("GMAIL_CLIENT_ID", page.get_data(as_text=True))
 
-    def test_register_verifies_the_code_then_login_uses_it(self):
+    def test_any_email_signs_in_once_and_replaces_the_old_session(self):
         sent = {}
         _, text = self.page("/login")
         self.assertNotIn("assword", text)
-        rejected = self.client.post("/login/code", data={"email": "not an email", "mode": "register"})
+        self.assertNotIn(">Register<", text)
+        rejected = self.client.post("/login/code", data={"email": "not an email"})
         self.assertEqual(rejected.status_code, 400)
+        with self.client.session_transaction() as current:
+            current["gmail_token"] = "old-grant"
+            current["user"] = "other@example.com"
+            current["user_id"] = "old-user"
         with patch("gmail_auto.web.deliver_code", lambda _to, code: sent.update(code=code)):
-            started = self.client.post("/login/code", data={"email": "lee@example.com", "mode": "register"}, follow_redirects=True)
-        self.assertIn("A code was sent to lee@example.com", started.get_data(as_text=True))
-        wrong = self.client.post("/login", data={"email": "lee@example.com", "mode": "register", "code": "000000"})
+            started = self.client.post("/login/code", data={"email": "Lee@QQ.com"}, follow_redirects=True)
+        self.assertIn("A code was sent to lee@qq.com", started.get_data(as_text=True))
+        with self.client.session_transaction() as current:
+            blob = json.dumps(dict(current))
+            self.assertNotIn("otp", current)
+            self.assertNotIn(sent["code"], blob)
+        wrong = self.client.post("/login", data={"email": "lee@qq.com", "code": "000000"})
         self.assertEqual(wrong.status_code, 400)
-        done = self.client.post("/login", data={"email": "lee@example.com", "mode": "register", "code": sent["code"]}, follow_redirects=True)
+        done = self.client.post("/login", data={"email": "lee@qq.com", "code": sent["code"]}, follow_redirects=True)
         self.assertIn("You are signed in", done.get_data(as_text=True))
-        again = self.client.post("/login/code", data={"email": "lee@example.com", "mode": "register"})
-        self.assertIn("already registered", again.get_data(as_text=True))
-        missing = self.client.post("/login/code", data={"email": "new@example.com", "mode": "login"})
-        self.assertIn("not registered yet", missing.get_data(as_text=True))
+        with self.client.session_transaction() as current:
+            self.assertEqual(current.get("user"), "lee@qq.com")
+            self.assertRegex(current.get("user_id", ""), r"^[0-9a-f]{32}$")
+            self.assertNotIn("gmail_token", current)
+            self.assertNotEqual(current.get("user_id"), "old-user")
+            first_id = current["user_id"]
+        reused = self.client.post("/login", data={"email": "lee@qq.com", "code": sent["code"]})
+        self.assertEqual(reused.status_code, 400)
+        self.assertIn("Ask for a code first", reused.get_data(as_text=True))
+        later = time.time() + 120
+        with patch("gmail_auto.accounts.time.time", return_value=later):
+            with patch("gmail_auto.web.deliver_code", lambda _to, code: sent.update(code=code)):
+                self.client.post("/login/code", data={"email": "lee@qq.com"})
+        again = self.client.post("/login", data={"email": "lee@qq.com", "code": sent["code"]}, follow_redirects=True)
+        self.assertIn("You are signed in", again.get_data(as_text=True))
+        with self.client.session_transaction() as current:
+            self.assertEqual(current.get("user_id"), first_id)
+        other = {}
+        with patch("gmail_auto.accounts.time.time", return_value=later + 120):
+            with patch("gmail_auto.web.deliver_code", lambda _to, code: other.update(code=code)):
+                self.client.post("/login/code", data={"email": "lee@outlook.com"})
+        self.client.post("/login", data={"email": "lee@outlook.com", "code": other["code"]}, follow_redirects=True)
+        with self.client.session_transaction() as current:
+            self.assertEqual(current.get("user"), "lee@outlook.com")
+            self.assertNotEqual(current.get("user_id"), first_id)
+        self.client.get("/logout")
+        os.environ["AUTOMAIL_SAAS"] = "1"
+        blocked = self.client.get("/")
+        self.assertEqual(blocked.status_code, 302)
+        self.assertIn("/login", blocked.headers["Location"])
+        with self.client.session_transaction() as current:
+            current["user"] = "lee@qq.com"
+        still = self.client.get("/approvals")
+        self.assertEqual(still.status_code, 302)
+        self.assertIn("/login", still.headers["Location"])
 
     def test_verification_code_does_not_need_vercel_kv(self):
         os.environ["VERCEL"] = "1"
+        os.environ["ALLOWED_EMAILS"] = "lee@example.com"
         sent = {}
         with patch("gmail_auto.web.deliver_code", lambda _to, code: sent.update(code=code)):
-            started = self.client.post("/login/code", data={"email": "lee@example.com", "mode": "register"}, follow_redirects=True)
+            started = self.client.post("/login/code", data={"email": "lee@example.com"}, follow_redirects=True)
         self.assertNotIn("Vercel KV", started.get_data(as_text=True))
-        done = self.client.post("/login", data={"email": "lee@example.com", "mode": "register", "code": sent["code"]}, follow_redirects=True)
+        done = self.client.post("/login", data={"email": "lee@example.com", "code": sent["code"]}, follow_redirects=True)
         text = done.get_data(as_text=True)
         self.assertIn("You are signed in", text)
+        with self.client.session_transaction() as current:
+            self.assertTrue(current.get("user_id"))
+            self.assertNotIn(sent["code"], json.dumps(dict(current)))
         _, connections = self.page("/connections")
         self.assertIn("has no storage connected", connections)
 

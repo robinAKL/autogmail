@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from gmail_auto.errors import ConfigError, NotConnected
 from gmail_auto.settings import load_settings, normalize_phone
+from gmail_auto.tenant import saas_enabled
 
 _META_LIMIT = 3800
 _TWILIO_LIMIT = 1500
@@ -37,6 +38,8 @@ class Incoming:
 
 
 def provider() -> str:
+    if saas_enabled():
+        return ""
     if os.getenv("WHATSAPP_TOKEN", "").strip() and os.getenv("WHATSAPP_PHONE_NUMBER_ID", "").strip():
         return "meta"
     if all(os.getenv(name, "").strip() for name in ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_WHATSAPP_FROM")):
