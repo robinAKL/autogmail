@@ -99,7 +99,7 @@ class PageTests(WebCase):
             ("/", "Connect a mailbox to begin"),
             ("/approvals", "Nothing is waiting for you"),
             ("/dashboard", "No history yet"),
-            ("/knowledge", "Reorganise knowledge"),
+            ("/knowledge", "Analyse knowledge"),
             ("/knowledge", "Each file under"),
             ("/knowledge", "Memory"),
             ("/knowledge?view=timeline", "Timeline"),

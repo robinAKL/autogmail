@@ -314,6 +314,101 @@
     activateTab(hashToTab(window.location.hash));
   }
 
+  var analyzeForm = document.getElementById("kb-analyze-form");
+  var analyzeBtn = document.getElementById("kb-analyze-btn");
+  var analyzeCard = document.getElementById("kb-analyze-status");
+  if (analyzeForm && analyzeBtn && analyzeCard) {
+    var analyzeBadge = document.getElementById("kb-analyze-badge");
+    var analyzeMsg = document.getElementById("kb-analyze-message");
+    var statDocs = document.getElementById("kb-stat-docs");
+    var statEmails = document.getElementById("kb-stat-emails");
+    var statSkipped = document.getElementById("kb-stat-skipped");
+    var analysisKey = "kb_analyze_summary";
+    var inFlight = false;
+    var statusLabels = { idle: "Idle", running: "Running", done: "Done", error: "Error" };
+    var renderAnalyzeState = function (payload) {
+      var st = (payload && payload.status) || "idle";
+      if (["idle", "running", "done", "error"].indexOf(st) === -1) { st = "idle"; }
+      analyzeCard.hidden = false;
+      if (analyzeBadge) {
+        analyzeBadge.className = "tag kb-status-" + st;
+        analyzeBadge.setAttribute("data-status", st);
+        analyzeBadge.textContent = statusLabels[st] || st;
+      }
+      if (statDocs) { statDocs.textContent = String((payload && payload.documents) || 0); }
+      if (statEmails) { statEmails.textContent = String((payload && payload.emails) || 0); }
+      if (statSkipped) { statSkipped.textContent = String((payload && payload.skipped) || 0); }
+      if (analyzeMsg && payload && payload.message) { analyzeMsg.textContent = payload.message; }
+    };
+    try {
+      var saved = window.sessionStorage ? window.sessionStorage.getItem(analysisKey) : null;
+      if (saved) {
+        window.sessionStorage.removeItem(analysisKey);
+        renderAnalyzeState(JSON.parse(saved));
+      }
+    } catch (e) {}
+    var postJson = function (url) {
+      return fetch(url, { method: "POST", headers: { "Accept": "application/json" } }).then(function (resp) {
+        return resp.json().catch(function () { return null; }).then(function (data) {
+          if (!resp.ok) {
+            throw new Error((data && data.message) || (data && data.error) || ("Request failed (" + resp.status + ")."));
+          }
+          return data || { status: "error", documents: 0, emails: 0, skipped: 0, message: "Empty response." };
+        });
+      });
+    };
+    var stepLoop = function () {
+      return postJson("/knowledge/analyze/step").then(function (data) {
+        renderAnalyzeState(data);
+        if (data.status === "running") {
+          return new Promise(function (resolve) { window.setTimeout(resolve, 250); }).then(stepLoop);
+        }
+        return data;
+      });
+    };
+    analyzeForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (inFlight || analyzeBtn.disabled) { return; }
+      inFlight = true;
+      analyzeBtn.disabled = true;
+      analyzeBtn.classList.add("busy");
+      analyzeBtn.setAttribute("aria-busy", "true");
+      analyzeBtn.textContent = "Analysing…";
+      renderAnalyzeState({ status: "running", documents: 0, emails: 0, skipped: 0, message: "Starting knowledge analysis…" });
+      postJson(analyzeForm.action).then(function (data) {
+        renderAnalyzeState(data);
+        if (data.status === "running") { return stepLoop(); }
+        return data;
+      }).then(function (finalData) {
+        inFlight = false;
+        analyzeBtn.classList.remove("busy");
+        analyzeBtn.removeAttribute("aria-busy");
+        analyzeBtn.textContent = "Analyse knowledge";
+        analyzeBtn.disabled = false;
+        if (finalData && finalData.status === "done") {
+          try {
+            if (window.sessionStorage) { window.sessionStorage.setItem(analysisKey, JSON.stringify(finalData)); }
+          } catch (e) {}
+          window.location.hash = "analysis-results";
+          window.location.reload();
+        }
+      }).catch(function (err) {
+        inFlight = false;
+        analyzeBtn.classList.remove("busy");
+        analyzeBtn.removeAttribute("aria-busy");
+        analyzeBtn.textContent = "Analyse knowledge";
+        analyzeBtn.disabled = false;
+        renderAnalyzeState({
+          status: "error",
+          documents: parseInt((statDocs && statDocs.textContent) || "0", 10) || 0,
+          emails: parseInt((statEmails && statEmails.textContent) || "0", 10) || 0,
+          skipped: parseInt((statSkipped && statSkipped.textContent) || "0", 10) || 0,
+          message: (err && err.message) || "Analysis could not complete."
+        });
+      });
+    });
+  }
+
   document.addEventListener("keydown", function (event) {
     if (event.key !== "Escape") { return; }
     var close = document.querySelector(".matter-drawer a[aria-label='Close storyline'], .matter-drawer-head a");

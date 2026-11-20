@@ -1247,6 +1247,71 @@ def configure_app(app: Flask) -> None:
 
     # ---- knowledge -----------------------------------------------------------
 
+    def _knowledge_item_sources(item: dict) -> list[str]:
+        raw_sources = item.get("sources")
+        if isinstance(raw_sources, (list, tuple)):
+            items = [str(part).strip() for part in raw_sources if str(part).strip()]
+            if items:
+                return items
+        source = str(item.get("source") or "").strip()
+        if source:
+            return [source]
+        if item.get("origin") == "user":
+            return ["added by you"]
+        return []
+
+    def _knowledge_temporal_status(item: dict) -> tuple[str, str]:
+        raw = str(item.get("temporal_status") or item.get("validity_status") or "").strip().lower()
+        if raw in ("current", "expired", "uncertain"):
+            labels = {"current": "Current", "expired": "Expired", "uncertain": "Timing uncertain"}
+            return raw, labels[raw]
+        if not knowledge.is_active(item):
+            return "expired", "Expired"
+        observed = str(item.get("observed_at") or item.get("at") or "").strip()
+        valid_from = str(item.get("valid_from") or "").strip()
+        valid_until = str(item.get("valid_until") or "").strip()
+        if not (observed or valid_from or valid_until):
+            return "uncertain", "Timing uncertain"
+        return "current", "Current"
+
+    def _knowledge_analysis_sections(all_items: list[dict]) -> dict:
+        business_knowledge = []
+        reply_guidance = []
+        time_scoped_facts = []
+        for item in all_items:
+            kind_name = item.get("kind", "")
+            sources_list = _knowledge_item_sources(item)
+            observed_at = str(item.get("observed_at") or item.get("at") or "").strip()
+            valid_from = str(item.get("valid_from") or "").strip()
+            valid_until = str(item.get("valid_until") or "").strip()
+            temporal_status, temporal_label = _knowledge_temporal_status(item)
+            entry = {
+                "id": item.get("id", ""),
+                "kind": kind_name,
+                "kind_label": knowledge.KINDS.get(kind_name, {}).get("label", kind_name.title()),
+                "text": item.get("text", ""),
+                "sources": sources_list,
+                "observed_at": observed_at,
+                "valid_from": valid_from,
+                "valid_until": valid_until,
+                "temporal_status": temporal_status,
+                "temporal_label": temporal_label,
+                "target": str(item.get("recipient") or item.get("sender") or item.get("contact") or "").strip(),
+                "tone": str(item.get("tone") or "").strip(),
+            }
+            if kind_name == "fact":
+                time_scoped_facts.append(entry)
+            if knowledge.is_active(item):
+                if kind_name in ("fact", "topic", "decision"):
+                    business_knowledge.append(entry)
+                elif kind_name in ("preference", "rule", "experience", "person"):
+                    reply_guidance.append(entry)
+        return {
+            "business_knowledge": business_knowledge,
+            "reply_guidance": reply_guidance,
+            "time_scoped_facts": time_scoped_facts,
+        }
+
     @app.get("/knowledge")
     def knowledge_page():
         blocked = _login_required()
@@ -1291,6 +1356,8 @@ def configure_app(app: Flask) -> None:
             view=view,
             hits=knowledge.search(query, 5) if query else [],
             has_key=has_openai_key(),
+            has_sources=bool(mailboxes or index["docs"] or index["rules"]),
+            analysis_sections=_knowledge_analysis_sections(all_items),
             editing=request.args.get("edit") == "brief",
             edit_item=request.args.get("item", ""),
             file_types=", ".join(sorted(item.lstrip(".") for item in SUPPORTED)),
@@ -1432,17 +1499,11 @@ def configure_app(app: Flask) -> None:
         blocked = _login_required()
         if blocked:
             return blocked
-        provider = request.form.get("provider", "gmail")
-        if provider not in PROVIDERS:
-            abort(400)
-        try:
-            entry = knowledge.learn_from_mailbox(client_for(provider), limit=12 if provider == "outlook" else 30)
-            flash(f"Read {entry['meta']['letters']} letters from {entry['meta']['account']} and saved what they show.")
-        except ConfigError as exc:
-            flash(str(exc), "error")
-        except Exception:
-            flash("Could not summarise that mailbox right now. Outlook was too slow or returned nothing readable.", "error")
-        return redirect(url_for("knowledge_page") + "#documents")
+        message = "Separate mailbox summarisation has been retired. Use Analyse knowledge to analyse connected mailboxes and documents together."
+        if "application/json" in (request.headers.get("Accept") or ""):
+            return {"ok": False, "deprecated": True, "message": message}, 410
+        flash(message, "error")
+        return redirect(url_for("knowledge_page") + "#sources")
 
     @app.post("/knowledge/sharepoint")
     def knowledge_sharepoint():
