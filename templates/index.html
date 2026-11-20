@@ -329,8 +329,10 @@
     fetch("{{ url_for('inbox_more') }}", { headers: { "Accept": "application/json" } })
       .then(function (res) { return res.ok ? res.json() : null; })
       .then(function (data) {
-        if (data && data.hasMore && data.added) step();
-        else finish();
+        if (!data) { sessionStorage.removeItem(key); return; }
+        if (data.hasMore && data.added) step();
+        else if (!data.hasMore) finish();
+        else sessionStorage.removeItem(key);
       })
       .catch(function () { sessionStorage.removeItem(key); });
   }
