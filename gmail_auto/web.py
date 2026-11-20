@@ -746,7 +746,12 @@ def configure_app(app: Flask) -> None:
 
             to = (invoices.get(request.args["invoice"]) or {}).get("client_email") or ""
         try:
-            session = writer.start(to=to, subject=request.args.get("subject", ""), refs=refs)
+            session = writer.start(
+                to=to,
+                subject=request.args.get("subject", ""),
+                refs=refs,
+                provider=request.args.get("provider", ""),
+            )
         except ConfigError as exc:
             flash(str(exc), "error")
             return redirect(url_for("compose_page"))
@@ -764,8 +769,20 @@ def configure_app(app: Flask) -> None:
         if session is None:
             flash("That draft is no longer here. Start a new email.", "error")
             return redirect(url_for("write_start"))
-        from gmail_auto import contracts, invoices
+        from gmail_auto import contracts, invoices, outgoing
         from gmail_auto.writer import LANGUAGES
+
+        mailboxes = _compose_mailboxes()
+        available = [box["provider"] for box in mailboxes]
+        approval = approvals.get(session.get("approval_id") or "") if session.get("approval_id") else None
+        reply_locked = bool(approval and approval.get("mode") != "new")
+        if reply_locked:
+            chosen_provider = (approval.get("provider") or session.get("provider") or "").strip().lower()
+        else:
+            chosen_provider = (session.get("provider") or "").strip().lower()
+            if chosen_provider not in available:
+                preferred = outgoing.default_provider(available)
+                chosen_provider = preferred if preferred in available else (available[0] if available else chosen_provider)
 
         attached = {item.get("ref") for item in session.get("attachments") or []}
         choices = []
@@ -790,6 +807,9 @@ def configure_app(app: Flask) -> None:
             "write.html",
             languages=LANGUAGES,
             session=session,
+            mailboxes=mailboxes,
+            chosen_provider=chosen_provider,
+            reply_locked=reply_locked,
             people=_people_for_compose(),
             has_model=model_ready(),
             files_ready=files.ready(),
@@ -818,11 +838,12 @@ def configure_app(app: Flask) -> None:
                     detach=request.form.get("detach", ""),
                     language=request.form.get("language"),
                     cc=request.form.get("cc"),
+                    provider=request.form.get("provider"),
                 )
                 if session.get("language") != before and session["body"].strip():
                     writer.relanguage(session_id, load_profile())
             elif action == "upload":
-                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"), provider=request.form.get("provider"))
                 if not files.ready():
                     raise ConfigError("Set up R2 file storage to attach files.")
                 for record in _uploads("reply"):
@@ -832,19 +853,19 @@ def configure_app(app: Flask) -> None:
                         files.remove(record["id"])
                         raise
             elif action == "pick":
-                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"), provider=request.form.get("provider"))
                 if request.form.get("ref"):
                     writer.attach_ref(session_id, request.form["ref"])
             elif action == "issue":
-                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"), provider=request.form.get("provider"))
                 writer.issue_draft(session_id, request.form.get("invoice", ""))
             elif action == "queue":
-                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"), provider=request.form.get("provider"))
                 item = writer.queue(session_id)
                 flash(f"The email to {item['to']} is waiting in Approvals. Send it from there, or on WhatsApp.")
                 return redirect(url_for("approvals_page") + f"#a{item['id']}")
             elif action == "send":
-                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"), provider=request.form.get("provider"))
                 item = writer.send(session_id)
                 flash(f"Sent to {item['to']}.")
                 return redirect(url_for("home"))

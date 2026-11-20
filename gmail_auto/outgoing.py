@@ -73,23 +73,30 @@ def write(to: str, points: str, subject: str, profile: dict, attached: list[str]
     return subject or " ".join(str(data.get("subject") or "").split())[:120] or "Hello", body, _unique(hit["title"] for hit in hits)
 
 
-def start(to: str, points: str, subject: str, profile: dict, records: list[dict], provider: str = "", complete=None, cc: str = "") -> dict:
-    """Write the email, put it in the queue and attach the files. Returns the waiting item."""
+def validate_provider(provider: str) -> str:
+    """Normalise and check an explicitly chosen sending mailbox provider."""
     from gmail_auto.mailboxes import PROVIDERS, connected_clients
 
+    chosen = (provider or "").strip().lower()
+    if not chosen:
+        return ""
+    if chosen not in PROVIDERS:
+        raise ConfigError("Choose a connected mailbox to send from.")
+    try:
+        clients, _ = connected_clients()
+    except Exception:
+        clients = []
+    available = {getattr(client, "provider", "") for client in clients}
+    if available and chosen not in available:
+        raise ConfigError(f"{PROVIDERS[chosen]} is not connected.")
+    return chosen
+
+
+def start(to: str, points: str, subject: str, profile: dict, records: list[dict], provider: str = "", complete=None, cc: str = "") -> dict:
+    """Write the email, put it in the queue and attach the files. Returns the waiting item."""
     to = clean_recipients(to)
     cc = clean_recipients(cc) if (cc or "").strip() else ""
-    chosen_provider = (provider or "").strip().lower()
-    if chosen_provider:
-        if chosen_provider not in PROVIDERS:
-            raise ConfigError("Choose a connected mailbox to send from.")
-        try:
-            clients, _ = connected_clients()
-        except Exception:
-            clients = []
-        available = {getattr(client, "provider", "") for client in clients}
-        if available and chosen_provider not in available:
-            raise ConfigError(f"{PROVIDERS[chosen_provider]} is not connected.")
+    chosen_provider = validate_provider(provider)
     subject, body, sources = write(to, points, subject, profile, [record["name"] for record in records], complete=complete)
     item = approvals.create_new(to, subject, body, provider=chosen_provider or default_provider(), sources=sources, cc=cc)
     for record in records:
