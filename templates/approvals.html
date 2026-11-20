@@ -73,7 +73,7 @@
         <textarea id="draft{{ item.id }}" name="draft" rows="10" maxlength="5000" required>{{ item.draft }}</textarea>
         {% set languages = (translation_languages|default({})).get(item.id) %}
         {% if languages %}
-        <label class="inline-check">
+        <label class="check">
           <input type="checkbox" name="translate_draft" value="1">
           Translate my edit from {{ languages[0]|upper }} to {{ languages[1]|upper }}
         </label>
