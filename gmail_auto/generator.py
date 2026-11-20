@@ -273,7 +273,9 @@ def _echoes_notice_help(mail: Mail, reply: str) -> bool:
 
 
 def _line(value) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip()[:300]
+    from gmail_auto.worker import clean_summary
+
+    return clean_summary(value, 300)
 
 
 def _clip(text: str, limit: int = 6000) -> str:
