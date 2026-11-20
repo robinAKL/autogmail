@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import patch
 
-from gmail_auto import files
+from gmail_auto import files, login_sessions
 from gmail_auto.errors import ConfigError
 from gmail_auto.profile_store import profile_path
 from gmail_auto.storage import load_doc, save_doc
@@ -71,6 +71,7 @@ def test_business_requests_use_only_verified_session_workspace(saas):
     assert client.get("/login").status_code == 200
     with client.session_transaction() as session:
         session["user_id"] = USER_B
+        session["login_session_id"] = login_sessions.create(USER_B)
         session["user"] = "b@example.com"
     assert client.get("/workspace-test").json == {"workspace": USER_B, "data": None}
     assert current_user_id() is None
@@ -180,3 +181,65 @@ def test_saas_opened_mail_is_stamped_with_the_connected_mailbox(saas):
         mailbox.return_value.get_user_email.return_value = "connected@example.com"
         mailbox.return_value.get_message.return_value = mail
         assert _find_mail(mail.id).account == "connected@example.com"
+
+
+def test_bound_gmail_login_opens_a_distinct_workspace_and_logout_revokes_old_cookie(saas, monkeypatch):
+    from unittest.mock import Mock
+
+    from gmail_auto.accounts import gmail_status
+    from gmail_auto.gmail_client import local_token_path
+
+    monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", "test-only-token-key")
+    monkeypatch.setenv("GMAIL_CLIENT_ID", "test-google-client")
+    monkeypatch.setenv("GMAIL_CLIENT_SECRET", "test-google-secret")
+    monkeypatch.setenv("AUTOMAIL_PUBLIC_ORIGIN", "https://mail.example")
+    app = create_app()
+
+    @app.get("/workspace-proof")
+    def workspace_proof():
+        return {
+            "user_id": current_user_id(),
+            "bound": gmail_status()["email"],
+            "encrypted": local_token_path().read_text(encoding="utf-8").startswith("enc:v1:")
+            if local_token_path().exists() else False,
+        }
+
+    host = "https://mail.example"
+    browser = app.test_client()
+    codes = {}
+    flow = Mock()
+    flow.authorization_url.return_value = ("https://accounts.google.com/test", "provider-state")
+    flow.code_verifier = "provider-verifier"
+    flow.credentials.refresh_token = "fake-refresh"
+    flow.credentials.to_json.return_value = '{"refresh_token":"fake-refresh"}'
+    service = Mock()
+    service.users.return_value.getProfile.return_value.execute.return_value = {
+        "emailAddress": "bound@gmail.com"
+    }
+
+    def login(email):
+        started = browser.post("/login/code", base_url=host, data={"email": email})
+        assert started.status_code == 302
+        completed = browser.post("/login", base_url=host, data={"email": email, "code": codes[email]})
+        assert completed.status_code == 302
+
+    with patch("gmail_auto.web.deliver_code", side_effect=lambda email, code: codes.update({email: code})), patch(
+        "google_auth_oauthlib.flow.Flow.from_client_config", return_value=flow
+    ), patch("gmail_auto.gmail_client._build_service", return_value=service):
+        login("sign-in@other.example")
+        assert browser.get("/oauth", base_url=host).location == "https://accounts.google.com/test"
+        result = browser.get("/oauth/callback?state=provider-state&code=one-use", base_url=host)
+        assert result.status_code == 302
+        first = browser.get("/workspace-proof", base_url=host).json
+        assert first["bound"] == "bound@gmail.com" and first["encrypted"]
+        saved_cookie = browser.get_cookie(app.config["SESSION_COOKIE_NAME"], domain="mail.example").value
+        browser.get("/logout", base_url=host)
+
+        replay = app.test_client()
+        replay.set_cookie(app.config["SESSION_COOKIE_NAME"], saved_cookie, domain="mail.example", secure=True)
+        assert replay.get("/workspace-proof", base_url=host).status_code == 302
+
+        login("bound@gmail.com")
+        second = browser.get("/workspace-proof", base_url=host).json
+        assert second["user_id"] != first["user_id"]
+        assert second["bound"] == "" and not second["encrypted"]

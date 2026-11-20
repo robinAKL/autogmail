@@ -6,6 +6,7 @@ so signing in with a mailbox that someone else has connected opens a new account
 """
 
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -60,7 +61,7 @@ def start_verification(email: str, ip: str = "") -> str:
     return code
 
 
-def cancel_verification(email: str) -> None:
+def cancel_verification(email: str, code: str) -> None:
     """Drop a challenge when the platform could not send it. Rate-limit stamps stay."""
     try:
         email = _valid_email(email)
@@ -69,9 +70,10 @@ def cancel_verification(email: str) -> None:
     with workspace_operation("accounts", platform=True):
         data = _load()
         otp = data.get("otp")
-        if isinstance(otp, dict):
-            otp.pop(email, None)
-        _save(data)
+        current = otp.get(email) if isinstance(otp, dict) else None
+        if current and secrets.compare_digest(_digest(current["salt"], code), current["hash"]):
+            otp.pop(email)
+            _save(data)
 
 
 def finish_verification(email: str, code: str, ip: str = "") -> dict:
@@ -259,7 +261,13 @@ def _ensure_allowed(email: str) -> None:
 
 
 def _digest(salt: str, code: str) -> str:
-    return hashlib.sha256(f"{salt}:{code}".encode("utf-8")).hexdigest()
+    value = f"{salt}:{code}".encode("utf-8")
+    if saas_enabled():
+        secret = os.environ.get("FLASK_SECRET_KEY", "").strip()
+        if not secret:
+            raise ConfigError("Sign-in is temporarily unavailable.")
+        return hmac.digest(secret.encode("utf-8"), value, "sha256").hex()
+    return hashlib.sha256(value).hexdigest()
 
 
 def _when(timestamp: float) -> str:

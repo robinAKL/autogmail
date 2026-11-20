@@ -90,6 +90,12 @@ def kv_set(key: str, value: str) -> None:
     _command(["SET", key, value])
 
 
+def kv_set_with_ttl(key: str, value: str, ttl: int) -> None:
+    if not storage_ready():
+        raise ConfigError("Persistent storage is unavailable.")
+    _command(["SET", key, value, "EX", str(ttl)])
+
+
 def kv_set_if_absent(key: str, value: str, ttl: int) -> bool:
     if not storage_ready():
         raise ConfigError("Persistent workspace coordination is unavailable.")

@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 from flask import Flask, Response, abort, flash, g, redirect, request, session, url_for
 from markupsafe import Markup
 
-from gmail_auto import approvals, files, knowledge, microsoft, sharepoint, stats, whatsapp
+from gmail_auto import approvals, files, knowledge, login_sessions, microsoft, sharepoint, stats, whatsapp
 from gmail_auto.console import say
 from gmail_auto.accounts import (
     cancel_verification,
@@ -124,9 +124,17 @@ def configure_app(app: Flask) -> None:
             abort(404)
         if request.endpoint in {"login_page", "login_code", "login_submit", "logout", "privacy_page", "static"}:
             return None
-        if not session.get("user_id"):
+        user_id = session.get("user_id")
+        if not user_id:
             return redirect(url_for("login_page"))
-        scope = user_scope(session["user_id"])
+        try:
+            active = login_sessions.is_active(session.get("login_session_id"), user_id)
+        except ConfigError:
+            abort(503)
+        if not active:
+            session.clear()
+            return redirect(url_for("login_page"))
+        scope = user_scope(user_id)
         try:
             scope.__enter__()
         except ConfigError:
@@ -159,6 +167,12 @@ def configure_app(app: Flask) -> None:
             "file_max": files.MAX_FILE_BYTES,
             "ui_lang": _ui_language(),
         }
+
+    @app.after_request
+    def private_workspace_responses(response):
+        if saas_enabled() and request.endpoint != "static":
+            response.headers["Cache-Control"] = "private, no-store"
+        return response
 
     @app.after_request
     def interface_language(response):
@@ -207,7 +221,7 @@ def configure_app(app: Flask) -> None:
             try:
                 deliver_code(email, code)
             except ConfigError:
-                cancel_verification(email)
+                cancel_verification(email, code)
                 raise
         except ConfigError as exc:
             return _login_view(email=email, error=str(exc)), 400
@@ -225,11 +239,17 @@ def configure_app(app: Flask) -> None:
             return _login_view(email=email, sent=True, error="Enter the code from the email."), 400
         try:
             account = finish_verification(email, code, _client_ip())
+            login_session_id = None
+            if saas_enabled():
+                login_sessions.revoke(session.get("login_session_id"))
+                login_session_id = login_sessions.create(account["user_id"])
         except ConfigError as exc:
             return _login_view(email=email, sent=True, error=str(exc)), 400
         session.clear()
         session["user"] = account["email"]
         session["user_id"] = account["user_id"]
+        if login_session_id:
+            session["login_session_id"] = login_session_id
         flash("You are signed in.")
         return redirect(url_for("home"))
 
@@ -246,6 +266,11 @@ def configure_app(app: Flask) -> None:
 
     @app.get("/logout")
     def logout():
+        if saas_enabled():
+            try:
+                login_sessions.revoke(session.get("login_session_id"))
+            except (ConfigError, OSError):
+                abort(503)
         session.clear()
         return redirect(url_for("login_page"))
 
@@ -1539,7 +1564,7 @@ def configure_app(app: Flask) -> None:
             return redirect(url_for("connections_page"))
         from google_auth_oauthlib.flow import Flow
 
-        flow = Flow.from_client_config(config, SCOPES)
+        flow = Flow.from_client_config(config, SCOPES, autogenerate_code_verifier=True)
         flow.redirect_uri = _oauth_redirect()
         hint = session.get("user") or ""
         options = {"access_type": "offline", "prompt": "consent"}
@@ -1597,34 +1622,37 @@ def configure_app(app: Flask) -> None:
             gmail_email = (profile.get("emailAddress") or "").strip()
         except Exception:
             gmail_email = ""
+        if saas and not gmail_email:
+            flash("Could not confirm the Gmail address. Choose Connect Gmail again.", "error")
+            return redirect(url_for("connections_page"))
         raw = creds.to_json()
-        if not getattr(creds, "refresh_token", None):
-            existing_email = (gmail_status().get("email") or "").strip()
-            existing_raw = load_token_raw() if storage_ready() else ""
-            if not existing_raw and not os.environ.get("VERCEL"):
-                try:
-                    token_file = local_token_path()
-                    if token_file.exists():
-                        existing_raw = decrypt_token(token_file.read_text(encoding="utf-8"))
-                except (ConfigError, OSError):
-                    existing_raw = ""
-            existing_refresh = ""
-            if existing_raw:
-                try:
-                    existing_refresh = (json.loads(existing_raw) or {}).get("refresh_token") or ""
-                except (ValueError, TypeError):
-                    existing_refresh = ""
-            same_identity = bool(existing_email and gmail_email and existing_email.lower() == gmail_email.lower())
-            if existing_refresh and (same_identity or not saas):
-                merged = json.loads(raw)
-                merged["refresh_token"] = existing_refresh
-                raw = json.dumps(merged)
-            else:
-                flash("Google did not return a long-lived grant for this mailbox. Choose Connect Gmail again.", "error")
-                return redirect(url_for("connections_page"))
-        session.pop("auth_error", None)
-        raw = stamp_token_gen(raw)
         with workspace_operation("oauth_gmail"):
+            if not getattr(creds, "refresh_token", None):
+                existing_email = (gmail_status().get("email") or "").strip()
+                existing_raw = load_token_raw() if storage_ready() else ""
+                if not existing_raw and not os.environ.get("VERCEL"):
+                    try:
+                        token_file = local_token_path()
+                        if token_file.exists():
+                            existing_raw = decrypt_token(token_file.read_text(encoding="utf-8"))
+                    except (ConfigError, OSError):
+                        existing_raw = ""
+                existing_refresh = ""
+                if existing_raw:
+                    try:
+                        existing_refresh = (json.loads(existing_raw) or {}).get("refresh_token") or ""
+                    except (ValueError, TypeError):
+                        existing_refresh = ""
+                same_identity = bool(existing_email and gmail_email and existing_email.lower() == gmail_email.lower())
+                if existing_refresh and (same_identity or not saas):
+                    merged = json.loads(raw)
+                    merged["refresh_token"] = existing_refresh
+                    raw = json.dumps(merged)
+                else:
+                    flash("Google did not return a long-lived grant for this mailbox. Choose Connect Gmail again.", "error")
+                    return redirect(url_for("connections_page"))
+            session.pop("auth_error", None)
+            raw = stamp_token_gen(raw)
             if storage_ready():
                 save_token_raw(raw)
                 session.pop("gmail_token", None)
@@ -3229,6 +3257,10 @@ def _origin_host(origin: str) -> str:
 
 
 def _host_allowed(host: str) -> bool:
+    if saas_enabled():
+        origin = _configured_saas_origin()
+        if origin:
+            return host == urlsplit(origin).hostname
     if os.environ.get("VERCEL"):
         return True
     return host in _ALLOWED_HOSTS

@@ -289,7 +289,7 @@ def test_microsoft_s256_pkce_flow(tmp_path, monkeypatch):
     import base64
     import hashlib
     import urllib.parse
-    from gmail_auto import web
+    from gmail_auto import login_sessions, web
 
     monkeypatch.setenv("AUTOMAIL_HOME", str(tmp_path))
     monkeypatch.setenv("AUTOMAIL_SAAS", "1")
@@ -305,6 +305,7 @@ def test_microsoft_s256_pkce_flow(tmp_path, monkeypatch):
     with client.session_transaction() as sess:
         sess["user"] = "a@example.com"
         sess["user_id"] = "a" * 32
+        sess["login_session_id"] = login_sessions.create(sess["user_id"])
 
     resp = client.get("/oauth/microsoft/outlook")
     assert resp.status_code == 302
