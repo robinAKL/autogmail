@@ -305,23 +305,41 @@ def approve(item_id: str, via: str, client=None) -> dict:
         mail = _mail(item)
         attached = _attachment_bytes(item)
         is_new = item.get("mode") == "new"
-        user_email = "" if is_new else client.get_user_email()
+        if is_new:
+            try:
+                sender = (client.get_user_email() or "").strip()
+            except Exception:
+                sender = ""
+            user_email = ""
+        else:
+            user_email = client.get_user_email()
+            sender = (user_email or "").strip()
         if saas_enabled() and not is_new:
             original_account = (item.get("account") or "").strip().casefold()
             if not original_account or original_account != user_email.strip().casefold():
                 raise ConfigError("Reconnect the mailbox that received this email before sending its reply.")
+        from gmail_auto.settings import append_signature, load_settings, signature_for_mailbox
+
+        body = append_signature(
+            item["draft"],
+            signature_for_mailbox(
+                load_settings(),
+                provider=item.get("provider") or getattr(client, "provider", ""),
+                email=sender,
+            ),
+        )
         dispatch_started = True
         if is_new:
             if item.get("cc"):
-                client.send_new(item["to"], item.get("subject") or "", item["draft"], attachments=attached or None, cc=item["cc"])
+                client.send_new(item["to"], item.get("subject") or "", body, attachments=attached or None, cc=item["cc"])
             elif attached:
-                client.send_new(item["to"], item.get("subject") or "", item["draft"], attachments=attached)
+                client.send_new(item["to"], item.get("subject") or "", body, attachments=attached)
             else:
-                client.send_notice(item["to"], item.get("subject") or "", item["draft"])
+                client.send_notice(item["to"], item.get("subject") or "", body)
         elif attached:
-            client.send_reply(mail, item["draft"], user_email, attachments=attached)
+            client.send_reply(mail, body, user_email, attachments=attached)
         else:
-            client.send_reply(mail, item["draft"], user_email)
+            client.send_reply(mail, body, user_email)
     except Exception as exc:
         if saas_enabled() and dispatch_started:
             _decide(item_id, "send_unconfirmed", via)
