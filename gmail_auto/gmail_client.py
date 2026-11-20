@@ -109,8 +109,15 @@ class GmailClient:
 
     def list_recent_page(self, limit: int = 20, token: str = "", full: bool = False) -> tuple[list[Mail], str]:
         """One inbox page of metadata, plus the token for the next page. Stops after this page."""
+        return self._list_page(RECENT_QUERY, limit, token, full)
+
+    def list_history_page(self, direction: str, limit: int, token: str = "") -> tuple[list[Mail], str]:
+        query = SENT_QUERY + " -in:drafts -in:spam -in:trash" if direction == "sent" else RECEIVED_HISTORY_QUERY
+        return self._list_page(query, limit, token, True)
+
+    def _list_page(self, query: str, limit: int, token: str, full: bool) -> tuple[list[Mail], str]:
         want = max(1, min(int(limit), 100))
-        kwargs = {"userId": "me", "q": RECENT_QUERY, "maxResults": want}
+        kwargs = {"userId": "me", "q": query, "maxResults": want}
         if token:
             kwargs["pageToken"] = token
         try:

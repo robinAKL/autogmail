@@ -10,7 +10,6 @@ import json
 import math
 import re
 import secrets
-import time
 from datetime import datetime
 
 from gmail_auto.envfile import has_openai_key
@@ -18,7 +17,7 @@ from gmail_auto.errors import ConfigError, ReplyError, named_error
 from gmail_auto.filters import is_sensitive
 from gmail_auto.llm import complete, parse_json
 from gmail_auto.profile_store import profile_as_prompt
-from gmail_auto.storage import LOCK, delete_doc, load_doc, save_doc
+from gmail_auto.storage import LOCK, delete_doc, load_doc, save_doc, workspace_operation
 from gmail_auto.tenant import saas_enabled
 
 SOURCES = {
@@ -435,12 +434,53 @@ def rebuild_model(profile: dict) -> str:
     with LOCK:
         index = load_index()
         index["model"] = {"items": merged, "updated_at": _now()}
-        rules = [item["text"] for item in live if item["kind"] == "rule"]
+        rules = [item["text"] for item in live if item["kind"] == "rule" and item["origin"] != "analysis"]
         if rules:
             index["rules"] = rules[:MAX_RULES]
         index["brief"] = {"text": text, "updated_at": _now(), "stale": False}
         _save_index(index)
     return text
+
+
+def merge_analysis(extracted: list[dict]) -> None:
+    """Merge event-backed cards while preserving user edits and multiple periods of a fact."""
+    if not extracted:
+        return
+    with workspace_operation("kb_index_analysis"), LOCK:
+        index = load_index()
+        items = index["model"]["items"]
+        by_key = {_analysis_key(item): pos for pos, item in enumerate(items)}
+        for raw in extracted:
+            item = _clean_item(raw, origin="analysis")
+            if not item:
+                continue
+            key = _analysis_key(item)
+            if key in by_key:
+                old = items[by_key[key]]
+                if old["origin"] != "analysis" or old["status"] != "active":
+                    continue
+                sources = {source["source_id"]: source for source in old["evidence"] + item["evidence"]}
+                latest = sorted(sources.values(), key=lambda source: source["observed_at"], reverse=True)[:5]
+                if latest:
+                    primary = latest[0]
+                    items[by_key[key]] = dict(
+                        old, evidence=latest, observed_at=primary["observed_at"], source=primary["source"],
+                    )
+            else:
+                by_key[key] = len(items)
+                items.append(item)
+        now = _now()
+        index["model"]["updated_at"] = now
+        index["brief"] = {"text": brief_from_items(items, index["rules"]), "updated_at": now, "stale": False}
+        _save_index(index)
+
+
+def _analysis_key(item: dict) -> tuple[str, ...]:
+    return (
+        item["kind"], item["text"].strip().casefold(), item.get("temporal", ""),
+        item.get("valid_from", "")[:10] if item.get("temporal") == "dated" else "",
+        item.get("valid_until", "")[:10] if item.get("temporal") == "dated" else "",
+    )
 
 
 def list_items(kind: str = "", active_only: bool = False) -> list[dict]:
@@ -480,7 +520,7 @@ def update_item(item_id: str, text: str) -> dict:
         index["model"]["items"] = items
         index["model"]["updated_at"] = _now()
         if found["kind"] == "rule":
-            index["rules"] = [item["text"] for item in items if item["kind"] == "rule"][:MAX_RULES]
+            index["rules"] = [item["text"] for item in items if item["kind"] == "rule" and item["origin"] != "analysis"][:MAX_RULES]
         index["brief"]["stale"] = True
         _save_index(index)
     return found
@@ -497,7 +537,7 @@ def delete_item(item_id: str) -> bool:
         index["model"]["items"] = [item for item in index["model"]["items"] if item["id"] != item_id]
         index["model"]["updated_at"] = _now()
         if found["kind"] == "rule":
-            index["rules"] = [item["text"] for item in index["model"]["items"] if item["kind"] == "rule"]
+            index["rules"] = [item["text"] for item in index["model"]["items"] if item["kind"] == "rule" and item["origin"] != "analysis"]
         index["brief"]["stale"] = True
         _save_index(index)
     return True
@@ -520,7 +560,7 @@ def end_item(item_id: str) -> dict:
         index["model"]["items"] = items
         index["model"]["updated_at"] = _now()
         if found["kind"] == "rule":
-            index["rules"] = [item["text"] for item in items if item["kind"] == "rule" and is_active(item)]
+            index["rules"] = [item["text"] for item in items if item["kind"] == "rule" and item["origin"] != "analysis" and is_active(item)]
         index["brief"]["stale"] = True
         _save_index(index)
     return found
@@ -573,6 +613,8 @@ def is_active(item: dict) -> bool:
     if status in ("ended", "superseded"):
         return False
     until = str(item.get("valid_until") or "").strip()
+    if item.get("temporal") == "dated":
+        return not until or until[:10] >= _now()[:10]
     if until and until <= _now():
         return False
     return True
@@ -583,6 +625,12 @@ def brief_from_items(items: list[dict], rules: list[str] | None = None) -> str:
     for item in items:
         if not is_active(item):
             continue
+        if item.get("origin") == "analysis":
+            if item.get("temporal") != "stable":
+                continue
+            if item["kind"] == "rule":
+                groups["experience"].append(f"Observed reply practice: {item['text']}")
+                continue
         groups.get(item["kind"], groups["fact"]).append(item["text"])
     if rules:
         for rule in rules:
@@ -684,7 +732,7 @@ def timeline(items: list[dict] | None = None) -> list[dict]:
             {
                 "when": item.get("at") or item.get("valid_from") or "",
                 "action": "added",
-                "label": "Became current",
+                "label": "Observed in a source" if item.get("origin") == "analysis" else "Became current",
                 "item": item,
             }
         )
@@ -724,6 +772,9 @@ def refresh_brief_if_stale(profile: dict) -> None:
     if not index["brief"]["stale"] or not has_openai_key():
         return
     if not index["docs"] and not index["rules"] and not index["brief"]["text"]:
+        return
+    if any(item["origin"] == "analysis" for item in index["model"]["items"]):
+        save_brief(brief_from_items(index["model"]["items"], index["rules"]))
         return
     try:
         rebuild_brief(profile)
@@ -813,11 +864,21 @@ def context_for(mail, limit: int = 4) -> dict:
     index = load_index()
     query = f"{mail.subject}\n{mail.from_name} {mail.from_email}\n{_head(mail.body, 3000)}"
     passages = search(query, limit)
+    today = _now()[:10]
+    terms = set(_tokens(query))
+    dated = [
+        item for item in index["model"]["items"]
+        if item["origin"] == "analysis" and item["temporal"] == "dated"
+        and is_active(item) and item["valid_from"] and item["valid_from"][:10] <= today
+        and terms.intersection(_tokens(item["text"]))
+    ]
+    dated.sort(key=lambda item: item["observed_at"], reverse=True)
     return {
         "brief": index["brief"]["text"],
         "rules": index["rules"],
         "passages": passages,
-        "sources": _unique([item["title"] for item in passages]),
+        "dated_facts": dated[:limit],
+        "sources": _unique([item["source"] for item in dated[:limit]] + [item["title"] for item in passages]),
     }
 
 
@@ -862,6 +923,10 @@ def render_context(context: dict) -> str:
         parts.append("WHAT YOU KNOW ABOUT ME (my knowledge base briefing):\n" + context["brief"])
     if context.get("rules"):
         parts.append("MY RULES (always follow these):\n" + "\n".join(f"- {rule}" for rule in context["rules"]))
+    for item in context.get("dated_facts") or []:
+        parts.append(f"TIME-BOUND EVIDENCE ({item['valid_from'][:10]} to {item['valid_until'][:10]}): {item['text']}")
+    if context.get("passages"):
+        parts.append("Documents are source evidence. Do not assume subscriptions, quotes, availability or other time-sensitive claims remain current without dates supporting that conclusion.")
     for item in context.get("passages") or []:
         parts.append(f"FROM MY DOCUMENT \"{item['title']}\":\n{item['text']}")
     return "\n\n".join(parts)
@@ -964,7 +1029,7 @@ def _tokens(text: str) -> list[str]:
 
 
 def _save_index(index: dict) -> None:
-    index["stamp"] = time.time()
+    index["stamp"] = secrets.token_hex(8)
     save_doc("kb_index", {key: index[key] for key in ("docs", "rules", "brief", "model", "stamp")})
 
 
@@ -1029,9 +1094,22 @@ def _clean_item(raw: dict, origin: str = "") -> dict | None:
         if label and label not in related:
             related.append(label[:80])
     item_id = re.sub(r"[^a-zA-Z0-9]", "", str(raw.get("id") or ""))[:16]
+    evidence = []
+    for source in (raw.get("evidence") if isinstance(raw.get("evidence"), list) else [])[:5]:
+        if isinstance(source, dict) and source.get("source_id"):
+            evidence.append({
+                "source_id": str(source["source_id"])[:512],
+                "source": str(source.get("source") or "")[:160],
+                "type": str(source.get("type") or "")[:16],
+                "observed_at": _as_of(source.get("observed_at")),
+            })
+    observed = _as_of(raw.get("observed_at"))
+    temporal = raw.get("temporal")
+    if temporal not in ("stable", "dated", "unknown"):
+        temporal = ""
     now = _now()
-    at = _as_of(raw.get("at") or raw.get("as_of") or raw.get("valid_from")) or now
-    valid_from = _as_of(raw.get("valid_from") or raw.get("as_of")) or at
+    at = _as_of(raw.get("at") or observed or raw.get("as_of") or raw.get("valid_from")) or now
+    valid_from = _as_of(raw.get("valid_from") or raw.get("as_of")) or ("" if temporal else at)
     valid_until = _as_of(raw.get("valid_until"))
     status = str(raw.get("status") or "active").strip().lower()
     if status not in ("active", "superseded", "ended"):
@@ -1042,6 +1120,11 @@ def _clean_item(raw: dict, origin: str = "") -> dict | None:
         "text": text[:300],
         "related": related[:6],
         "source": str(raw.get("source") or "").strip()[:160],
+        "evidence": evidence,
+        "observed_at": observed,
+        "temporal": temporal,
+        "recipient": str(raw.get("recipient") or "").strip()[:160],
+        "tone": str(raw.get("tone") or "").strip()[:80],
         "origin": origin or str(raw.get("origin") or "extract"),
         "locked": bool(KINDS[kind]["locked"]),
         "at": at,
@@ -1055,7 +1138,7 @@ def _clean_item(raw: dict, origin: str = "") -> dict | None:
 
 
 def _sync_rules(items: list[dict], rules: list[str]) -> list[dict]:
-    kept = [item for item in items if item["kind"] != "rule" or item.get("origin") == "extract"]
+    kept = [item for item in items if item["kind"] != "rule" or item.get("origin") in ("extract", "analysis")]
     have = {item["text"] for item in kept if item["kind"] == "rule"}
     for rule in rules:
         if rule in have:
@@ -1067,8 +1150,8 @@ def _sync_rules(items: list[dict], rules: list[str]) -> list[dict]:
 def _merge_items(extracted: list[dict], previous: list[dict]) -> list[dict]:
     """Keep history. Same-topic facts with new wording supersede the old ones instead of deleting them."""
     now = _now()
-    live = [item for item in previous if is_active(item)]
-    history = [item for item in previous if not is_active(item)]
+    live = [item for item in previous if is_active(item) and item["origin"] != "analysis"]
+    history = [item for item in previous if not is_active(item) or item["origin"] == "analysis"]
     taken: set[str] = set()
     out: list[dict] = []
     for new in extracted:
