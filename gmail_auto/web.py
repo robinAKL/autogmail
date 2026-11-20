@@ -2076,7 +2076,10 @@ def configure_app(app: Flask) -> None:
             if "auto_reply_block" in request.form:
                 changes["auto_reply_block"] = request.form.get("auto_reply_block", "")
             if "signatures_present" in request.form:
+                from gmail_auto.settings import normalize_logo_position
+
                 sigs = dict(load_settings().get("mail_signatures") or {})
+                positions = dict(load_settings().get("signature_logo_positions") or {})
                 for provider in ("gmail", "outlook"):
                     field = f"signature_{provider}"
                     if field in request.form:
@@ -2085,7 +2088,13 @@ def configure_app(app: Flask) -> None:
                             sigs[provider] = val
                         else:
                             sigs.pop(provider, None)
+                    pos_field = f"signature_logo_position_{provider}"
+                    if pos_field in request.form:
+                        acct = _connected_mailbox_email(provider)
+                        key = f"{provider}:{acct}" if acct else provider
+                        positions[key] = normalize_logo_position(request.form.get(pos_field))
                 changes["mail_signatures"] = sigs
+                changes["signature_logo_positions"] = positions
             if "notify_preset" in request.form:
                 changes["notify_auto_replies"] = request.form.get("notify_auto_replies") == "1"
                 changes["notify_important"] = request.form.get("notify_important") == "1"
@@ -2145,7 +2154,15 @@ def configure_app(app: Flask) -> None:
         old_meta = logos.get(key) or (logos.get(provider) if not account else None) or {}
         old_id = (old_meta.get("file_id") or "").strip()
         try:
-            if request.form.get("action") == "remove":
+            action = request.form.get("action")
+            if action == "position":
+                from gmail_auto.settings import normalize_logo_position
+
+                positions = dict(settings.get("signature_logo_positions") or {})
+                positions[key] = normalize_logo_position(request.form.get("logo_position"))
+                save_settings({"signature_logo_positions": positions})
+                flash("Logo position saved.")
+            elif action == "remove":
                 logos.pop(key, None)
                 if not account:
                     logos.pop(provider, None)
@@ -3712,7 +3729,7 @@ def _profile_context(form=None) -> dict:
 
     settings = load_settings()
     imported_gmail = session.pop("imported_gmail_signature", None)
-    from gmail_auto.settings import signature_logo_for_mailbox
+    from gmail_auto.settings import signature_logo_for_mailbox, signature_logo_position_for_mailbox
 
     sigs = settings.get("mail_signatures") or {}
     gmail_acct = _connected_mailbox_email("gmail")
@@ -3727,6 +3744,14 @@ def _profile_context(form=None) -> dict:
         "signature_outlook": sigs.get("outlook") or "",
         "signature_logo_gmail": signature_logo_for_mailbox(settings, provider="gmail", email=gmail_acct),
         "signature_logo_outlook": signature_logo_for_mailbox(settings, provider="outlook", email=outlook_acct),
+        "signature_logo_pos_gmail": signature_logo_position_for_mailbox(settings, provider="gmail", email=gmail_acct),
+        "signature_logo_pos_outlook": signature_logo_position_for_mailbox(settings, provider="outlook", email=outlook_acct),
+        "signature_logo_positions": [
+            ("bottom", "Below signature"),
+            ("top", "Above signature"),
+            ("left", "Left of signature"),
+            ("right", "Right of signature"),
+        ],
         "languages": LANGUAGES,
         "translation_modes": TRANSLATION_MODES,
         "supported_languages": SUPPORTED_LANGUAGES,
