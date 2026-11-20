@@ -3,6 +3,7 @@ import json
 from unittest.mock import patch
 
 from gmail_auto import approvals, assistant, contacts, invoices, knowledge, whatsapp, writer
+from gmail_auto.settings import save_settings
 from tests.test_compose import NewMailbox
 from tests.test_contacts import _record
 from tests.test_web import WebCase
@@ -75,6 +76,27 @@ class WriterPageTests(WebCase):
         self.assertEqual(writer.get(session_id)["status"], "sent")
         late = self.client.post(f"/write/{session_id}/say", data={"text": "one more thing"}, follow_redirects=True)
         self.assertIn("already sent", late.get_data(as_text=True))
+
+    def test_workbench_uses_the_selected_mailbox_signature_when_it_sends(self):
+        save_settings({"mail_signatures": {"gmail": "Gmail signature", "outlook": "Outlook signature"}})
+        boxes = {"gmail": NewMailbox(), "outlook": NewMailbox()}
+        boxes["outlook"].provider = "outlook"
+        for provider, body, action, expected in (
+            ("outlook", "Typed draft", "send", "Typed draft\n\nOutlook signature"),
+            ("gmail", "Typed draft\n\nGmail signature", "queue", "Typed draft\n\nGmail signature"),
+        ):
+            with self.subTest(provider=provider):
+                started = self.client.get("/write?to=lee@client.example")
+                session_id = started.headers["Location"].rsplit("/", 1)[1]
+                with patch("gmail_auto.mailboxes.client_for", side_effect=boxes.__getitem__) as choose:
+                    self.client.post(f"/write/{session_id}/{action}", data={
+                        "to": "lee@client.example", "subject": "Test", "body": body, "provider": provider,
+                    })
+                    if action == "queue":
+                        item_id = writer.get(session_id)["approval_id"]
+                        approvals.approve(item_id, "web")
+                    choose.assert_any_call(provider)
+                self.assertEqual(boxes[provider].new, [("lee@client.example", "Test", expected, [])])
 
     def test_email_language_is_kept_apart_from_the_chat_language(self):
         started = self.client.get("/write?to=ann@b.example")

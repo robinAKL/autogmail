@@ -11,6 +11,7 @@ from datetime import datetime
 from gmail_auto import stats
 from gmail_auto.errors import ConfigError
 from gmail_auto.models import Mail
+from gmail_auto.settings import append_signature, load_settings, signature_for_mailbox
 from gmail_auto.storage import load_doc, save_doc, workspace_operation
 from gmail_auto.tenant import saas_enabled
 from gmail_auto.store import update_processed
@@ -310,14 +311,21 @@ def approve(item_id: str, via: str, client=None) -> dict:
             original_account = (item.get("account") or "").strip().casefold()
             if not original_account or original_account != user_email.strip().casefold():
                 raise ConfigError("Reconnect the mailbox that received this email before sending its reply.")
+        draft = item["draft"]
+        if is_new:
+            settings = load_settings()
+            configured = settings.get("mail_signatures") or {}
+            account = client.get_user_email() if any("@" in key for key in configured) else ""
+            provider = getattr(client, "provider", "") or item.get("provider") or "gmail"
+            draft = append_signature(draft, signature_for_mailbox(settings, provider=provider, email=account))
         dispatch_started = True
         if is_new:
             if item.get("cc"):
-                client.send_new(item["to"], item.get("subject") or "", item["draft"], attachments=attached or None, cc=item["cc"])
+                client.send_new(item["to"], item.get("subject") or "", draft, attachments=attached or None, cc=item["cc"])
             elif attached:
-                client.send_new(item["to"], item.get("subject") or "", item["draft"], attachments=attached)
+                client.send_new(item["to"], item.get("subject") or "", draft, attachments=attached)
             else:
-                client.send_notice(item["to"], item.get("subject") or "", item["draft"])
+                client.send_notice(item["to"], item.get("subject") or "", draft)
         elif attached:
             client.send_reply(mail, item["draft"], user_email, attachments=attached)
         else:
