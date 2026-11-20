@@ -40,7 +40,7 @@ from gmail_auto.importance import (
     known_from_knowledge,
     preset_of,
 )
-from gmail_auto.storage import persistent
+from gmail_auto.storage import persistent, workspace_operation
 from gmail_auto.tenant import require_user_id, saas_enabled, user_scope
 from gmail_auto.token_store import storage_hint, storage_kind, storage_ready
 from gmail_auto.store import get_state, is_live, list_processed, load_last_run, load_processed, now_text, set_state
@@ -411,14 +411,21 @@ def configure_app(app: Flask) -> None:
         if blocked:
             return blocked
         mode = request.form.get("mode", "")
-        if mode not in _available_modes():
+        if mode not in _MODES:
             abort(400)
+        confirmed = request.form.get("confirm") == "1"
         try:
-            if mode == "draft":
-                switch_live(False)
-            else:
-                switch_live(True, request.form.get("confirm") == "1")
-                save_settings({"approval_mode": mode})
+            with workspace_operation("mail-check"):
+                if mode == "draft":
+                    switch_live(False)
+                elif saas_enabled():
+                    if mode != _current_mode() and (mode in {"smart", "never"} or not is_live()) and not confirmed:
+                        raise ConfigError("Confirm before enabling this sending mode.")
+                    save_settings({"approval_mode": mode})
+                    switch_live(True, confirmed)
+                else:
+                    switch_live(True, confirmed)
+                    save_settings({"approval_mode": mode})
         except ConfigError as exc:
             flash(str(exc), "error")
             return redirect(url_for("profile_page") + "#send")
@@ -2792,7 +2799,7 @@ def _bucket(row: dict, kinds: set[str]) -> str:
     it matters and that kind is switched on in Settings.
     """
     kind = row.get("kind")
-    if kind in ("waiting", "drafted"):
+    if kind in ("waiting", "drafted", "send_unconfirmed"):
         return "todo"
     if row.get("handled"):
         # Dealt with: out of To do and Notices, still under All.
@@ -2892,6 +2899,8 @@ def _describe_record(record: dict) -> tuple[str, str, str]:
         return ("Draft saved, needs a look" if record.get("needs_review") else "Draft saved"), "drafted", "drafts"
     if action == "waiting":
         return "Waiting for your OK", "waiting", "needs"
+    if action == "send_unconfirmed":
+        return "Delivery unconfirmed. Check Sent mail.", "send_unconfirmed", "needs"
     if action == "rejected":
         return "Not sent: you declined", "skipped", "skipped"
     if action == "expired":
@@ -3104,17 +3113,22 @@ def _provider_connected(provider: str) -> bool:
     return True
 
 
-def _available_modes() -> dict:
-    if saas_enabled():
-        return {mode: _MODES[mode] for mode in ("draft", "always")}
-    return _MODES
+def _sending_mode_options() -> dict:
+    if not saas_enabled():
+        return _MODES
+    return {
+        **_MODES,
+        "draft": (_MODES["draft"][0], "Checking mail saves drafts for you to review."),
+        "always": (_MODES["always"][0], "All replies wait for your approval in the web app."),
+        "never": (_MODES["never"][0], "Sends eligible replies after you check mail. Replies held by safeguards still wait for approval."),
+    }
 
 
 def _current_mode() -> str:
     try:
         if not is_live():
             return "draft"
-        return "always" if saas_enabled() else load_settings()["approval_mode"]
+        return load_settings()["approval_mode"]
     except ConfigError:
         return "draft"
 
@@ -3176,7 +3190,8 @@ def _profile_context(form=None) -> dict:
         "supported_languages": SUPPORTED_LANGUAGES,
         "preserve_langs_text": ", ".join(settings.get("preserve_langs", [])),
         "approval_labels": APPROVALS,
-        "modes": _available_modes(),
+        "modes": _sending_mode_options(),
+        "saas_mode": saas_enabled(),
         "mode": _current_mode(),
         "whatsapp_ready": whatsapp.ready(),
         "cleanup_limit": LIMIT,

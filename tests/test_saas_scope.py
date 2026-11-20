@@ -275,3 +275,61 @@ def test_refreshing_two_mailboxes_keeps_request_and_worker_scopes_separate(saas)
     assert response.status_code == 302
     assert workers == [USER_A, USER_A]
     assert current_user_id() is None
+
+
+def test_saas_sending_modes_require_confirmation_before_automatic_sending(saas):
+    from gmail_auto.settings import load_settings
+    from gmail_auto.store import is_live
+
+    browser = create_app().test_client()
+    with browser.session_transaction() as session:
+        session["user"] = "owner@example.com"
+        session["user_id"] = USER_A
+        session["login_session_id"] = login_sessions.create(USER_A)
+
+    page = browser.get("/profile").get_data(as_text=True)
+    for mode in ("draft", "always", "smart", "never"):
+        assert f'name="mode" value="{mode}"' in page
+
+    with patch("gmail_auto.runner.require_openai_key"):
+        browser.post("/mode", data={"mode": "always", "confirm": "1"})
+        browser.post("/mode", data={"mode": "smart"})
+        with user_scope(USER_A):
+            assert load_settings()["approval_mode"] == "always"
+        for mode in ("smart", "never"):
+            browser.post("/mode", data={"mode": mode, "confirm": "1"})
+            with user_scope(USER_A):
+                assert is_live()
+                assert load_settings()["approval_mode"] == mode
+        browser.post("/mode", data={"mode": "draft"})
+        with user_scope(USER_A):
+            assert not is_live()
+
+
+def test_auto_reply_timeout_records_unconfirmed_delivery_and_skips_retry(saas):
+    from unittest.mock import Mock
+
+    from gmail_auto.models import Draft
+    from gmail_auto.profile_store import load_profile
+    from gmail_auto.runner import _run_mailbox, RunReport
+    from gmail_auto.settings import load_settings
+    from gmail_auto.store import get_processed
+    from tests.test_core import sample
+
+    mail = sample(id="auto-delivery")
+    gmail = Mock(provider="gmail")
+    gmail.get_user_email.return_value = "owner@example.com"
+    gmail.list_unread.return_value = [mail]
+    gmail.send_reply.side_effect = TimeoutError("no provider response")
+    generate = Mock(return_value=Draft(action="reply", reply="Thanks for writing."))
+    report = RunReport(live=True, finished_at="")
+    with user_scope(USER_A), patch("gmail_auto.runner.storage_ready", return_value=False):
+        settings = load_settings()
+        settings.update(approval_mode="never", translation_mode="off")
+        profile = load_profile()
+        _run_mailbox(gmail, generate, profile, settings, True, report)
+        assert get_processed(mail.key)["action"] == "send_unconfirmed"
+        assert report.failed == 1
+        _run_mailbox(gmail, generate, profile, settings, True, report)
+
+    gmail.send_reply.assert_called_once()
