@@ -824,13 +824,17 @@ def _storyline_card(item: dict, display_title) -> dict:
     steps.sort(key=lambda step: step["date"])
     if not steps and latest:
         steps.append({"who": "You", "date": "", "outbound": True, "summary": latest[:160]})
-    last = steps[-1] if steps else {}
-    if last.get("outbound"):
+    newest = steps[-1] if steps else {}
+    if newest.get("outbound"):
         status = "waiting_on_them"
-    elif last:
+    elif newest:
         status = "waiting_on_me"
     else:
         status = "in_progress"
+    steps.reverse()
+    for index, step in enumerate(steps):
+        step["current"] = index == 0
+        step["day"] = _story_day(step["date"])
     return {
         "id": item.get("id") or "",
         "title": display_title(title or item.get("source") or ""),
@@ -839,7 +843,8 @@ def _storyline_card(item: dict, display_title) -> dict:
         "label": _STORY_STATUS[status],
         "size": count,
         "sent": sent,
-        "date": last.get("date") or "",
+        "date": newest.get("date") or "",
+        "day": _story_day(newest.get("date") or ""),
         "steps": steps,
     }
 
@@ -855,6 +860,19 @@ def _storyline_parts(item: dict) -> tuple[str, str, int, int, str]:
         int(match.group("sent")),
         (match.group("latest") or "").strip(),
     )
+
+
+_STORY_MONTHS = ("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _story_day(value: str) -> str:
+    match = re.match(r"(\d{4})-(\d{2})-(\d{2})", str(value or ""))
+    if not match:
+        return ""
+    month = int(match.group(2))
+    if not 1 <= month <= 12:
+        return ""
+    return f"{int(match.group(3))} {_STORY_MONTHS[month]}"
 
 
 def _story_person(value: str) -> str:

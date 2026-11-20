@@ -152,14 +152,45 @@ class KnowledgeUnifiedUITests(unittest.TestCase):
             ],
         }]
         with mock.patch.object(knowledge, "load_index", return_value=fake_index):
-            html = self.client.get("/knowledge").get_data(as_text=True)
-        self.assertIn("Fixed Term Lease Expiry - 5/9/2026", html)
+            closed = self.client.get("/knowledge").get_data(as_text=True)
+            html = self.client.get("/knowledge?story=story-1").get_data(as_text=True)
+        self.assertIn("Fixed Term Lease Expiry - 5/9/2026", closed)
+        self.assertNotIn("story-line", closed)
+        self.assertNotIn("more storylines", closed)
         self.assertIn("Waiting on them", html)
         self.assertIn("Yvette Lin", html)
-        self.assertIn("story-line", html)
-        self.assertIn("2026-09-01 09:00", html)
+        self.assertIn("Timeline", html)
+        self.assertIn("<b>Status</b>", html)
+        self.assertLess(html.index("2 Sep"), html.index("1 Sep"))
         self.assertNotIn("With Yvette Lin", html)
         self.assertNotIn("Latest:", html)
+
+    def test_storylines_page_instead_of_growing_the_screen(self):
+        fake_index = knowledge.load_index()
+        fake_index["model"]["items"] = [
+            {
+                "id": f"s{number}",
+                "kind": "storyline",
+                "text": f"With Lee about Topic {number}. 2 letters, 2 written by you.",
+                "status": "active",
+                "steps": [{
+                    "at": f"2026-11-{number + 1:02d} 09:00",
+                    "who": "You",
+                    "outbound": True,
+                    "summary": f"Note {number}",
+                }],
+            }
+            for number in range(9)
+        ]
+        with mock.patch.object(knowledge, "load_index", return_value=fake_index):
+            first = self.client.get("/knowledge").get_data(as_text=True)
+            second = self.client.get("/knowledge?story_page=2").get_data(as_text=True)
+        self.assertIn('id="item-s8"', first)
+        self.assertNotIn('id="item-s0"', first)
+        self.assertIn("Older", first)
+        self.assertIn("1 / 2", first)
+        self.assertIn('id="item-s0"', second)
+        self.assertNotIn('id="item-s8"', second)
 
 
 if __name__ == "__main__":

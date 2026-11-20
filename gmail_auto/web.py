@@ -1278,7 +1278,7 @@ def configure_app(app: Flask) -> None:
             kinds=knowledge.KINDS,
             groups=groups,
             tiles=knowledge.memory_tiles(all_items),
-            storylines=knowledge.storyline_cards(all_items),
+            **_storyline_page(knowledge.storyline_cards(all_items), request.args.get("story_page"), request.args.get("story", "")),
             days=knowledge.timeline(all_items),
             graph=knowledge.graph_view(all_items),
             brief=index["brief"],
@@ -2323,6 +2323,29 @@ def render_markdown(text: str) -> Markup:
     flush()
     return Markup("".join(blocks))
 
+
+
+def _storyline_page(cards: list, raw_page, story_id: str) -> dict:
+    size = 8
+    try:
+        page = int(raw_page or 1)
+    except (TypeError, ValueError):
+        page = 1
+    pages = max(1, (len(cards) + size - 1) // size)
+    page = min(max(page, 1), pages)
+    start = (page - 1) * size
+    visible = cards[start:start + size]
+    chosen = next((card for card in visible if card["id"] == story_id), None)
+    return {
+        "storylines": visible,
+        "open_story": chosen,
+        "story_pager": {
+            "page": page,
+            "pages": pages,
+            "prev": page - 1 if page > 1 else 0,
+            "next": page + 1 if page < pages else 0,
+        },
+    }
 
 
 def _apply_role(entry: dict, role: str, text: str) -> str:
