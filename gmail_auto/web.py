@@ -79,6 +79,10 @@ def create_app() -> Flask:
 
 def configure_app(app: Flask) -> None:
     hosted = bool(os.environ.get("VERCEL"))
+    if saas_enabled():
+        _configured_saas_origin()
+        if hosted and not storage_ready():
+            raise ConfigError("Connect persistent Redis storage before enabling hosted SaaS mode.")
     app.config["MAX_CONTENT_LENGTH"] = 4_400_000 if hosted else 30_000_000
     app.config["TEMPLATES_AUTO_RELOAD"] = True
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
@@ -105,6 +109,9 @@ def configure_app(app: Flask) -> None:
     def workspace_scope():
         if not saas_enabled():
             return None
+        configured_origin = _configured_saas_origin()
+        if configured_origin and request.host.lower() != urlsplit(configured_origin).netloc.lower():
+            abort(403)
         if request.path in {
             "/cron", "/whatsapp/webhook", "/connections/whatsapp"
         }:
@@ -3040,7 +3047,7 @@ def _oauth_redirect() -> str:
 
 
 def _microsoft_redirect() -> str:
-    if not os.environ.get("VERCEL"):
+    if not os.environ.get("VERCEL") and not (saas_enabled() and _configured_saas_origin()):
         return _local_origin() + "/oauth/microsoft/callback"
     return _public_origin() + "/oauth/microsoft/callback"
 
@@ -3055,7 +3062,28 @@ def _external_url() -> str:
     return _public_origin() + path
 
 
+def _configured_saas_origin() -> str:
+    origin = os.environ.get("AUTOMAIL_PUBLIC_ORIGIN", "").strip().rstrip("/")
+    if not origin and not os.environ.get("VERCEL"):
+        return ""
+    try:
+        parsed = urlsplit(origin)
+        valid = bool(parsed.hostname) and parsed.scheme == "https" and not (
+            parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment
+        )
+        parsed.port
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ConfigError("Set AUTOMAIL_PUBLIC_ORIGIN to the public HTTPS origin, with no path.")
+    return origin
+
+
 def _public_origin() -> str:
+    if saas_enabled():
+        origin = _configured_saas_origin()
+        if origin:
+            return origin
     proto = (request.headers.get("X-Forwarded-Proto") or request.scheme or "https").split(",")[0].strip()
     host = (request.headers.get("X-Forwarded-Host") or request.host or "").split(",")[0].strip()
     return f"{proto}://{host}"

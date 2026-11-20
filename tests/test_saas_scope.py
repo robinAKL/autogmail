@@ -19,6 +19,7 @@ def saas(monkeypatch, tmp_path):
     monkeypatch.setenv("FLASK_SECRET_KEY", "local-test-secret")
     monkeypatch.setenv("AUTOMAIL_HOME", str(tmp_path))
     monkeypatch.delenv("VERCEL", raising=False)
+    monkeypatch.delenv("AUTOMAIL_PUBLIC_ORIGIN", raising=False)
     with patch("gmail_auto.storage.storage_ready", return_value=False):
         yield
 
@@ -113,3 +114,17 @@ def test_approval_lock_uses_atomic_redis_claim(saas):
     key = f"autogmail:u:{USER_A}:operation:approvals"
     assert claim.call_args_list[0].args[0] == claim.call_args_list[1].args[0] == key
     release.assert_called_once_with(key, claim.call_args_list[0].args[1])
+
+
+def test_hosted_saas_requires_a_canonical_origin_and_persistent_storage(saas, monkeypatch):
+    monkeypatch.setenv("VERCEL", "1")
+    with pytest.raises(ConfigError, match="AUTOMAIL_PUBLIC_ORIGIN"):
+        create_app()
+    monkeypatch.setenv("AUTOMAIL_PUBLIC_ORIGIN", "https://mail.example")
+    with patch("gmail_auto.web.storage_ready", return_value=False):
+        with pytest.raises(ConfigError, match="Redis"):
+            create_app()
+    with patch("gmail_auto.web.storage_ready", return_value=True):
+        client = create_app().test_client()
+        assert client.get("/login", base_url="https://other.example").status_code == 403
+        assert client.get("/login", base_url="https://mail.example").status_code == 200
