@@ -1278,6 +1278,7 @@ def configure_app(app: Flask) -> None:
             kinds=knowledge.KINDS,
             groups=groups,
             tiles=knowledge.memory_tiles(all_items),
+            storylines=knowledge.storyline_cards(all_items),
             days=knowledge.timeline(all_items),
             graph=knowledge.graph_view(all_items),
             brief=index["brief"],

@@ -202,7 +202,7 @@ def _mail_step(job: dict, client_for) -> None:
             "type": direction, "observed_at": observed,
             "text": f"{'To' if direction == 'sent' else 'From'}: {parties}\n{text[:2_000]}",
         })
-        _note_thread(job, provider, mail, direction, text)
+        _note_thread(job, provider, mail, direction, text, observed)
     _analyze(records)
     job.setdefault("received", 0)
     job.setdefault("sent", 0)
@@ -331,7 +331,7 @@ def _evidenced_date(value, quotes: list[str]) -> str:
     return ""
 
 
-def _note_thread(job: dict, provider: str, mail, direction: str, text: str) -> None:
+def _note_thread(job: dict, provider: str, mail, direction: str, text: str, observed: str = "") -> None:
     thread = (getattr(mail, "thread_id", "") or "").strip()
     if not thread:
         return
@@ -339,16 +339,26 @@ def _note_thread(job: dict, provider: str, mail, direction: str, text: str) -> N
     key = f"{provider}:{thread}"
     entry = threads.get(key) or {
         "count": 0, "sent": 0, "subject": (mail.subject or "(no subject)")[:160],
-        "parties": [], "sample": "",
+        "parties": [], "sample": "", "steps": [],
     }
     entry["count"] += 1
+    party = (mail.headers.get("to") if direction == "sent" else mail.from_email) or ""
+    party = " ".join(str(party).split())[:80]
     if direction == "sent":
         entry["sent"] += 1
         entry["sample"] = " ".join(text.split())[:160]
-    party = (mail.headers.get("to") if direction == "sent" else mail.from_email) or ""
-    party = " ".join(str(party).split())[:80]
     if party and party not in entry["parties"] and len(entry["parties"]) < 3:
         entry["parties"].append(party)
+    summary = _step_summary(text)
+    if summary:
+        entry["steps"].append({
+            "at": observed,
+            "who": "You" if direction == "sent" else _person_name(party),
+            "outbound": direction == "sent",
+            "summary": summary,
+        })
+        if len(entry["steps"]) > 24:
+            del entry["steps"][1]
     threads[key] = entry
 
 
@@ -362,22 +372,38 @@ def _flush_storylines(job: dict) -> None:
             f"With {parties} about {entry['subject']}. "
             f"{entry['count']} letters, {entry['sent']} written by you."
         )
-        if entry["sample"]:
-            text = f"{text} Latest: {entry['sample']}"
+        steps = sorted(entry.get("steps") or [], key=lambda step: str(step.get("at") or ""))
+        if len(steps) > 6:
+            steps = steps[:1] + steps[-5:]
+        if not steps and entry.get("sample"):
+            steps = [{"at": "", "who": "You", "outbound": True, "summary": _step_summary(entry["sample"])}]
+        observed = steps[-1]["at"] if steps else ""
         extracted.append({
             "kind": "storyline",
             "text": text[:300],
             "source": entry["subject"],
             "temporal": "stable",
+            "observed_at": observed,
+            "steps": steps,
             "evidence": [{
                 "source_id": key,
                 "source": entry["subject"],
                 "type": "thread",
-                "observed_at": "",
+                "observed_at": observed,
             }],
         })
     job["threads"] = {}
     knowledge.merge_analysis(extracted)
+
+
+def _person_name(value: str) -> str:
+    return knowledge._story_person(value)
+
+
+def _step_summary(text: str) -> str:
+    line = " ".join(str(text or "").split())
+    line = re.sub(r"(?i)^subject:\s*", "", line)
+    return line[:110]
 
 
 def _collapse_facts(extracted: list[dict]) -> list[dict]:

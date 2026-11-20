@@ -135,6 +135,32 @@ class KnowledgeUnifiedUITests(unittest.TestCase):
         self.assertNotIn("kind-rule", html)
         self.assertIn('name="rules"', html)
 
+    def test_storylines_open_as_a_timeline_instead_of_a_paragraph(self):
+        fake_index = knowledge.load_index()
+        fake_index["model"]["items"] = [{
+            "id": "story-1",
+            "kind": "storyline",
+            "text": (
+                "With Yvette Lin <y.lin3@barfoot.co.nz> about Re: Fixed Term Lease Expiry - 5/9/2026. "
+                "2 letters, 2 written by you. Latest: Dear Yvette, Thank you for the reminder about the tenancy."
+            ),
+            "source": "Re: Fixed Term Lease Expiry - 5/9/2026",
+            "status": "active",
+            "steps": [
+                {"at": "2026-09-01 09:00", "who": "Yvette Lin", "outbound": False, "summary": "The fixed term ends on 5 September."},
+                {"at": "2026-09-02 11:00", "who": "You", "outbound": True, "summary": "Thank you for the reminder about the tenancy."},
+            ],
+        }]
+        with mock.patch.object(knowledge, "load_index", return_value=fake_index):
+            html = self.client.get("/knowledge").get_data(as_text=True)
+        self.assertIn("Fixed Term Lease Expiry - 5/9/2026", html)
+        self.assertIn("Waiting on them", html)
+        self.assertIn("Yvette Lin", html)
+        self.assertIn("story-line", html)
+        self.assertIn("2026-09-01 09:00", html)
+        self.assertNotIn("With Yvette Lin", html)
+        self.assertNotIn("Latest:", html)
+
 
 if __name__ == "__main__":
     unittest.main()

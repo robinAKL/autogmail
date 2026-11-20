@@ -241,6 +241,9 @@ class KnowledgeAnalysisTests(TempHome):
         self.assertEqual(len(items), 1)
         self.assertIn("Project", items[0]["text"])
         self.assertIn("2 written by you", items[0]["text"])
+        self.assertNotIn("Latest:", items[0]["text"])
+        self.assertEqual(items[0]["steps"][0]["summary"], "Following up")
+        self.assertTrue(items[0]["steps"][0]["outbound"])
 
     def test_provider_without_schema_support_uses_prompt_constrained_json(self):
         error = ReplyError("The AI provider returned an error (400): response_format json_schema is not supported.")

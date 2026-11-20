@@ -468,6 +468,17 @@ def merge_analysis(extracted: list[dict]) -> None:
                 old = items[by_key[key]]
                 if old["origin"] != "analysis" or old["status"] != "active":
                     continue
+                if item["kind"] == "storyline":
+                    items[by_key[key]] = dict(
+                        old,
+                        text=item["text"],
+                        source=item["source"],
+                        evidence=item["evidence"],
+                        steps=item.get("steps") or [],
+                        observed_at=item.get("observed_at") or old.get("observed_at") or "",
+                        updated_at=_now(),
+                    )
+                    continue
                 sources = {source["source_id"]: source for source in old["evidence"] + item["evidence"]}
                 latest = sorted(sources.values(), key=lambda source: source["observed_at"], reverse=True)[:5]
                 if latest:
@@ -488,7 +499,26 @@ def merge_analysis(extracted: list[dict]) -> None:
         _save_index(index)
 
 
+def _story_steps(raw: dict) -> list[dict]:
+    steps = []
+    for source in (raw.get("steps") if isinstance(raw.get("steps"), list) else [])[:8]:
+        if not isinstance(source, dict):
+            continue
+        summary = re.sub(r"\s+", " ", str(source.get("summary") or "").strip())
+        if not summary:
+            continue
+        steps.append({
+            "at": _as_of(source.get("at")),
+            "who": str(source.get("who") or "")[:80],
+            "outbound": bool(source.get("outbound")),
+            "summary": summary[:160],
+        })
+    return steps
+
+
 def _analysis_key(item: dict) -> tuple[str, ...]:
+    if item.get("kind") == "storyline" and item.get("evidence"):
+        return ("storyline", str(item["evidence"][0].get("source_id") or ""))
     return (
         item["kind"], item["text"].strip().casefold(), item.get("temporal", ""),
         item.get("valid_from", "")[:10] if item.get("temporal") == "dated" else "",
@@ -680,6 +710,8 @@ def brief_from_items(items: list[dict], rules: list[str] | None = None) -> str:
 
 def graph_view(items: list[dict] | None = None) -> dict:
     """Topology for the D3 map: you, kind hubs, and current items. Layout is done in the browser."""
+    from gmail_auto.story import display_title
+
     items = items if items is not None else load_index()["model"]["items"]
     items = [item for item in items if is_shown(item) and is_active(item)]
     present = [kind for kind in _KIND_ORDER if any(item["kind"] == kind for item in items)]
@@ -703,19 +735,22 @@ def graph_view(items: list[dict] | None = None) -> dict:
                 "kind": kind,
                 "label": KINDS[kind]["label"],
                 "title": KINDS[kind]["hint"],
-                "href": f"/knowledge?kind={kind}#cards",
+                "href": "#storylines" if kind == "storyline" else f"/knowledge?kind={kind}#cards",
             }
         )
         edges.append({"from": "you", "to": hub, "related": False})
         for item in [row for row in items if row["kind"] == kind][:8]:
+            label = item["text"]
+            if kind == "storyline":
+                label = _storyline_card(item, display_title)["title"]
             nodes.append(
                 {
                     "id": item["id"],
                     "role": "leaf",
                     "kind": kind,
-                    "label": _short_label(item["text"]),
-                    "title": item["text"],
-                    "href": f"/knowledge?kind={kind}#item-{item['id']}",
+                    "label": _short_label(label),
+                    "title": label,
+                    "href": ("#item-" + item["id"]) if kind == "storyline" else f"/knowledge?kind={kind}#item-{item['id']}",
                 }
             )
             edges.append({"from": hub, "to": item["id"], "related": False})
@@ -745,6 +780,95 @@ def memory_tiles(items: list[dict] | None = None, preview: int = 4) -> list[dict
             }
         )
     return tiles
+
+
+_STORY_TEXT = re.compile(
+    r"^With (?P<who>.+?) about (?P<title>.+?)\. (?P<count>\d+) letters, (?P<sent>\d+) written by you\.(?: Latest: (?P<latest>.+))?$"
+)
+_STORY_STATUS = {
+    "waiting_on_me": "Waiting on you",
+    "waiting_on_them": "Waiting on them",
+    "in_progress": "In progress",
+}
+
+
+def storyline_cards(items: list[dict] | None = None) -> list[dict]:
+    """Compact storylines. The list shows title, person and status. The timeline stays closed."""
+    from gmail_auto.story import display_title
+
+    items = items if items is not None else load_index()["model"]["items"]
+    cards = []
+    for item in items:
+        if item.get("kind") != "storyline" or not is_shown(item) or not is_active(item):
+            continue
+        cards.append(_storyline_card(item, display_title))
+    cards.sort(key=lambda card: (card["date"] or "", card["title"].casefold()), reverse=True)
+    return cards
+
+
+def _storyline_card(item: dict, display_title) -> dict:
+    who, title, count, sent, latest = _storyline_parts(item)
+    steps = []
+    for raw in item.get("steps") or []:
+        if not isinstance(raw, dict):
+            continue
+        summary = re.sub(r"\s+", " ", str(raw.get("summary") or "")).strip()
+        if not summary:
+            continue
+        steps.append({
+            "who": str(raw.get("who") or ("You" if raw.get("outbound") else who))[:80],
+            "date": _as_of(raw.get("at")),
+            "outbound": bool(raw.get("outbound")),
+            "summary": summary[:160],
+        })
+    steps.sort(key=lambda step: step["date"])
+    if not steps and latest:
+        steps.append({"who": "You", "date": "", "outbound": True, "summary": latest[:160]})
+    last = steps[-1] if steps else {}
+    if last.get("outbound"):
+        status = "waiting_on_them"
+    elif last:
+        status = "waiting_on_me"
+    else:
+        status = "in_progress"
+    return {
+        "id": item.get("id") or "",
+        "title": display_title(title or item.get("source") or ""),
+        "who": _story_person(who),
+        "status": status,
+        "label": _STORY_STATUS[status],
+        "size": count,
+        "sent": sent,
+        "date": last.get("date") or "",
+        "steps": steps,
+    }
+
+
+def _storyline_parts(item: dict) -> tuple[str, str, int, int, str]:
+    match = _STORY_TEXT.match(re.sub(r"\s+", " ", str(item.get("text") or "").strip()))
+    if not match:
+        return "", item.get("source") or item.get("text") or "", 0, 0, ""
+    return (
+        match.group("who"),
+        match.group("title"),
+        int(match.group("count")),
+        int(match.group("sent")),
+        (match.group("latest") or "").strip(),
+    )
+
+
+def _story_person(value: str) -> str:
+    text = " ".join(str(value or "").replace(";", ",").split())
+    if not text:
+        return "The correspondent"
+    first = text.split(",")[0].strip()
+    name = first.split("<", 1)[0].strip().strip('"')
+    if name and "@" not in name:
+        return name
+    address = first
+    if "<" in first and ">" in first:
+        address = first.split("<", 1)[1].split(">", 1)[0]
+    return address.split("@", 1)[0] or "The correspondent"
 
 
 def timeline(items: list[dict] | None = None) -> list[dict]:
@@ -1141,7 +1265,7 @@ def _clean_item(raw: dict, origin: str = "") -> dict | None:
     status = str(raw.get("status") or "active").strip().lower()
     if status not in ("active", "superseded", "ended"):
         status = "ended" if valid_until else "active"
-    return {
+    built = {
         "id": item_id or secrets.token_hex(5),
         "kind": kind,
         "text": text[:300],
@@ -1162,6 +1286,9 @@ def _clean_item(raw: dict, origin: str = "") -> dict | None:
         "replaces": str(raw.get("replaces") or "")[:16],
         "key": _item_key({"kind": kind, "text": text}),
     }
+    if kind == "storyline":
+        built["steps"] = _story_steps(raw)
+    return built
 
 
 def _extend_rules(rules: list[str], texts: list[str]) -> list[str]:
