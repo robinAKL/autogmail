@@ -2552,7 +2552,11 @@ def _find_mail(key: str):
     if provider not in PROVIDERS or not re.fullmatch(r"[A-Za-z0-9_=+\-/.!]{1,400}", message_id):
         return listed
     try:
-        mail = client_for(provider).get_message(message_id)
+        client = client_for(provider)
+        account = client.get_user_email() if saas_enabled() else ""
+        mail = client.get_message(message_id)
+        if mail is not None and account:
+            mail.account = account
     except Exception:
         return listed
     if cached is not None and mail is not None:

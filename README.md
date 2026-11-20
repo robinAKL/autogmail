@@ -131,6 +131,7 @@ Configure these services once on the server:
 | `AUTOMAIL_PUBLIC_ORIGIN` | Canonical HTTPS origin, without a path |
 | `FLASK_SECRET_KEY` | Strong random session signing secret, shared across instances |
 | Redis | Persistent Redis or Upstash credentials, dedicated to SaaS |
+| `TOKEN_ENCRYPTION_KEY` | Separate strong random secret for encrypted provider grants |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM` | Platform delivery of sign-in codes |
 | `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET` | Google Web OAuth client |
 | `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_TENANT_ID` | Microsoft Web registration with organizational and personal accounts, using `common` where appropriate |

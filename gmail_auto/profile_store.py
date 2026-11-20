@@ -41,6 +41,15 @@ def load_profile() -> dict:
             return clean_profile(saved)
     path = profile_path()
     if not path.exists():
+        if saas_enabled():
+            return {
+                "name": "Mailbox owner",
+                "role": "The person sending this reply",
+                "introduction": "No personal or business details have been supplied.",
+                "tone": "Clear, polite, and concise. Do not add a name or signature unless supplied.",
+                "cannot_promise": ["Do not invent facts, commitments, contact details, or a signature."],
+                "sample_phrases": ["Thank you for your message."],
+            }
         raise ConfigError("profile.json was not found.")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))

@@ -19,6 +19,7 @@ from gmail_auto.filters import is_sensitive
 from gmail_auto.llm import complete, parse_json
 from gmail_auto.profile_store import profile_as_prompt
 from gmail_auto.storage import LOCK, delete_doc, load_doc, save_doc
+from gmail_auto.tenant import saas_enabled
 
 SOURCES = {
     "upload": "Uploaded file",
@@ -891,7 +892,8 @@ def overview() -> dict:
 
 def _chunks() -> list[dict]:
     index = load_index()
-    if _cache["stamp"] == index["stamp"] and _cache["stamp"]:
+    cache = None if saas_enabled() else _cache
+    if cache is not None and cache["stamp"] == index["stamp"] and cache["stamp"]:
         return _cache["chunks"]
     chunks = []
     for item in index["docs"]:
@@ -916,8 +918,9 @@ def _chunks() -> list[dict]:
                     "length": len(tokens),
                 }
             )
-    _cache["stamp"] = index["stamp"]
-    _cache["chunks"] = chunks
+    if cache is not None:
+        cache["stamp"] = index["stamp"]
+        cache["chunks"] = chunks
     return chunks
 
 

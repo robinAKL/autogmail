@@ -147,3 +147,36 @@ def test_reply_cannot_be_sent_from_a_replacement_mailbox(saas):
             approvals.approve(item["id"], "web", client)
         assert approvals.get(item["id"])["status"] == "pending"
     client.send_reply.assert_not_called()
+
+
+def test_knowledge_cache_never_reuses_chunks_from_another_workspace(saas):
+    from gmail_auto import knowledge
+
+    index = {"stamp": "same", "docs": [{"id": "notes", "title": "Notes"}]}
+    with patch.object(knowledge, "load_index", return_value=index):
+        with user_scope(USER_A):
+            save_doc(knowledge._body_name("notes"), {"text": "Workspace alpha owns this private note."})
+            assert "alpha" in knowledge._chunks()[0]["text"]
+        with user_scope(USER_B):
+            save_doc(knowledge._body_name("notes"), {"text": "Workspace bravo owns this private note."})
+            assert "bravo" in knowledge._chunks()[0]["text"]
+
+
+def test_new_workspace_has_neutral_profile_without_inheriting_legacy_profile(saas, tmp_path):
+    from gmail_auto.profile_store import load_profile
+
+    (tmp_path / "profile.json").write_text('{"name":"Legacy user"}', encoding="utf-8")
+    with user_scope(USER_B):
+        assert load_profile()["name"] == "Mailbox owner"
+
+
+def test_saas_opened_mail_is_stamped_with_the_connected_mailbox(saas):
+    from gmail_auto.web import _find_mail
+    from tests.test_core import sample
+
+    app = create_app()
+    mail = sample(id="message-id")
+    with app.test_request_context(), user_scope(USER_A), patch("gmail_auto.web.client_for") as mailbox:
+        mailbox.return_value.get_user_email.return_value = "connected@example.com"
+        mailbox.return_value.get_message.return_value = mail
+        assert _find_mail(mail.id).account == "connected@example.com"
