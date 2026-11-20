@@ -1514,6 +1514,13 @@ def configure_app(app: Flask) -> None:
         if saas and not uid:
             _auth_failed("Sign in before connecting Gmail.")
             return redirect(url_for("login_page"))
+        if saas:
+            from gmail_auto.token_crypto import encryption_ready
+            from gmail_auto.token_store import storage_ready
+
+            if not encryption_ready() or (os.environ.get("VERCEL") and not storage_ready()):
+                flash("Gmail connection is temporarily unavailable. Please contact support.", "error")
+                return redirect(url_for("connections_page"))
         config = web_client_config()
         if config is None:
             if saas:
@@ -1566,8 +1573,13 @@ def configure_app(app: Flask) -> None:
             _auth_failed("Gmail was not connected. Choose Connect Gmail again.")
             return redirect(url_for("connections_page"))
         from google_auth_oauthlib.flow import Flow
-        from gmail_auto.gmail_client import local_token_path
+        from gmail_auto.gmail_client import _build_service, local_token_path
+        from gmail_auto.token_crypto import decrypt_token, encrypt_token, encryption_ready
         from gmail_auto.token_store import load_token_raw, save_token_raw, storage_ready
+
+        if saas and (not encryption_ready() or (os.environ.get("VERCEL") and not storage_ready())):
+            flash("Gmail connection is temporarily unavailable. Please contact support.", "error")
+            return redirect(url_for("connections_page"))
 
         flow = Flow.from_client_config(config, SCOPES)
         flow.redirect_uri = _oauth_redirect()
@@ -1578,14 +1590,21 @@ def configure_app(app: Flask) -> None:
             _auth_failed("Google did not accept the sign-in. Choose Connect Gmail again.")
             return redirect(url_for("connections_page"))
         creds = flow.credentials
+        gmail_email = ""
+        try:
+            profile = _build_service(creds).users().getProfile(userId="me").execute()
+            gmail_email = (profile.get("emailAddress") or "").strip()
+        except Exception:
+            gmail_email = ""
         raw = creds.to_json()
         if not getattr(creds, "refresh_token", None):
+            existing_email = (gmail_status().get("email") or "").strip()
             existing_raw = load_token_raw() if storage_ready() else ""
             if not existing_raw and not os.environ.get("VERCEL"):
                 try:
                     token_file = local_token_path()
                     if token_file.exists():
-                        existing_raw = token_file.read_text(encoding="utf-8")
+                        existing_raw = decrypt_token(token_file.read_text(encoding="utf-8"))
                 except (ConfigError, OSError):
                     existing_raw = ""
             existing_refresh = ""
@@ -1594,12 +1613,13 @@ def configure_app(app: Flask) -> None:
                     existing_refresh = (json.loads(existing_raw) or {}).get("refresh_token") or ""
                 except (ValueError, TypeError):
                     existing_refresh = ""
-            if existing_refresh:
+            same_identity = bool(existing_email and gmail_email and existing_email.lower() == gmail_email.lower())
+            if existing_refresh and (same_identity or not saas):
                 merged = json.loads(raw)
                 merged["refresh_token"] = existing_refresh
                 raw = json.dumps(merged)
             else:
-                flash("Google did not return a long-lived grant. Choose Connect Gmail again.", "error")
+                flash("Google did not return a long-lived grant for this mailbox. Choose Connect Gmail again.", "error")
                 return redirect(url_for("connections_page"))
         session.pop("auth_error", None)
         if storage_ready():
@@ -1607,9 +1627,12 @@ def configure_app(app: Flask) -> None:
             session.pop("gmail_token", None)
         elif saas:
             session.pop("gmail_token", None)
+            if os.environ.get("VERCEL"):
+                flash("Gmail connection is temporarily unavailable. Please contact support.", "error")
+                return redirect(url_for("connections_page"))
             try:
-                atomic_write(local_token_path(), raw)
-            except OSError:
+                atomic_write(local_token_path(), encrypt_token(raw))
+            except (ConfigError, OSError):
                 flash("Could not save the Gmail connection. Please try again.", "error")
                 return redirect(url_for("connections_page"))
         else:
@@ -1619,13 +1642,14 @@ def configure_app(app: Flask) -> None:
                     atomic_write(local_token_path(), raw)
                 except OSError:
                     pass
-        gmail_email = session.get("user") or ""
-        try:
-            from gmail_auto.gmail_client import GmailClient
+        if not gmail_email:
+            gmail_email = session.get("user") or ""
+            try:
+                from gmail_auto.gmail_client import GmailClient
 
-            gmail_email = GmailClient(allow_browser=False).get_user_email() or gmail_email
-        except ConfigError:
-            pass
+                gmail_email = GmailClient(allow_browser=False).get_user_email() or gmail_email
+            except ConfigError:
+                pass
         mark_gmail_authorized(gmail_email)
         _forget_inbox()
         flash("Gmail is connected.")
@@ -1642,6 +1666,13 @@ def configure_app(app: Flask) -> None:
         if saas and not uid:
             flash("Sign in before connecting Microsoft.", "error")
             return redirect(url_for("login_page"))
+        if saas:
+            from gmail_auto.token_crypto import encryption_ready
+            from gmail_auto.token_store import storage_ready
+
+            if not encryption_ready() or (os.environ.get("VERCEL") and not storage_ready()):
+                flash(f"{microsoft.LABELS[kind]} connection is temporarily unavailable. Please contact support.", "error")
+                return redirect(url_for("connections_page"))
         if not microsoft.configured():
             if saas:
                 flash(f"{microsoft.LABELS[kind]} connection is temporarily unavailable. Please contact support.", "error")

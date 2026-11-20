@@ -94,15 +94,42 @@ def _remember_user(email: str, purpose: str) -> None:
     _save(data)
 
 
+def _saas_scope() -> tuple[bool, str]:
+    try:
+        from gmail_auto.tenant import current_user_id, saas_enabled
+    except ImportError:
+        return False, ""
+    return bool(saas_enabled()), str(current_user_id() or "").strip()
+
+
 def mark_gmail_authorized(email: str, at: float | None = None) -> None:
+    saas, uid = _saas_scope()
+    payload = {"email": normalize_email(email) if email else "", "authorized_at": time.time() if at is None else at}
+    if saas:
+        if not uid:
+            raise ConfigError("Sign in before saving a Gmail connection.")
+        from gmail_auto.storage import save_doc
+
+        save_doc("gmail_connection", payload)
+        return
     data = _load()
-    data["gmail"] = {"email": normalize_email(email) if email else "", "authorized_at": time.time() if at is None else at}
+    data["gmail"] = payload
     _save(data)
 
 
 def gmail_status() -> dict:
-    data = _load()
-    gmail = data.get("gmail") if isinstance(data.get("gmail"), dict) else {}
+    saas, uid = _saas_scope()
+    if saas:
+        if not uid:
+            return {"email": "", "authorized_at": 0.0, "authorized_text": "", "stale": False}
+        from gmail_auto.storage import load_doc
+
+        gmail = load_doc("gmail_connection", {})
+        if not isinstance(gmail, dict):
+            gmail = {}
+    else:
+        data = _load()
+        gmail = data.get("gmail") if isinstance(data.get("gmail"), dict) else {}
     authorized_at = float(gmail.get("authorized_at") or 0)
     return {
         "email": str(gmail.get("email") or ""),

@@ -25,7 +25,7 @@ def fake_tenant(saas: bool, user_id: str):
             sys.modules["gmail_auto.tenant"] = prev
 
 
-def test_token_store_isolates_by_user_and_fails_closed():
+def test_token_store_isolates_by_user_and_fails_closed(monkeypatch):
     from gmail_auto import token_store
 
     kv = {}
@@ -43,6 +43,13 @@ def test_token_store_isolates_by_user_and_fails_closed():
             ),
         ),
     ):
+        monkeypatch.delenv("TOKEN_ENCRYPTION_KEY", raising=False)
+        with fake_tenant(True, "user_a"):
+            with pytest.raises(ConfigError):
+                token_store.save_token_raw('{"refresh_token":"ra"}')
+
+        monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", "test-master-secret")
+
         with fake_tenant(True, ""):
             with pytest.raises(ConfigError):
                 token_store.load_token_raw()
@@ -53,6 +60,8 @@ def test_token_store_isolates_by_user_and_fails_closed():
 
         with fake_tenant(True, "user_a"):
             assert token_store.save_token_raw('{"refresh_token":"ra"}') is True
+            assert kv["autogmail:u:user_a:token"].startswith("enc:v1:")
+            assert "ra" not in kv["autogmail:u:user_a:token"]
             assert token_store.load_token_raw() == '{"refresh_token":"ra"}'
 
         with fake_tenant(True, "user_b"):
@@ -67,6 +76,7 @@ def test_token_store_isolates_by_user_and_fails_closed():
         with fake_tenant(True, "user_b"):
             assert token_store.load_token_raw() == '{"refresh_token":"rb"}'
 
+        monkeypatch.delenv("TOKEN_ENCRYPTION_KEY", raising=False)
         with fake_tenant(False, ""):
             assert token_store.save_token_raw('{"refresh_token":"legacy"}') is True
             assert kv["autogmail:token"] == '{"refresh_token":"legacy"}'
@@ -110,6 +120,7 @@ def test_oauth_callbacks_reject_user_mismatch_and_keep_tokens_server_side(tmp_pa
     from gmail_auto import token_store
 
     monkeypatch.setenv("AUTOMAIL_HOME", str(tmp_path))
+    monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", "test-master-secret")
     monkeypatch.setenv("GMAIL_CLIENT_ID", "gid")
     monkeypatch.setenv("GMAIL_CLIENT_SECRET", "gsec")
     monkeypatch.setenv("MS_CLIENT_ID", "mid")
@@ -157,8 +168,11 @@ def test_oauth_callbacks_reject_user_mismatch_and_keep_tokens_server_side(tmp_pa
         assert resp.status_code == 302
         assert "/connections" in resp.headers["Location"]
 
-    # 3. Same user Gmail callback does NOT put gmail_token in cookie and preserves refresh_token
-    kv = {"autogmail:u:user_a:token": json.dumps({"refresh_token": "kept-refresh"})}
+    # 3. Same user Gmail callback: rejects refresh_token reuse when provider identity differs,
+    #    and reuses only when identity matches, without storing gmail_token in cookie.
+    from gmail_auto.token_crypto import encrypt_token
+
+    kv = {"autogmail:u:user_a:token": encrypt_token(json.dumps({"refresh_token": "kept-refresh"}))}
     fake_creds = MagicMock()
     fake_creds.refresh_token = None
     fake_creds.to_json.return_value = json.dumps({"token": "new-access", "client_id": "gid"})
@@ -167,9 +181,13 @@ def test_oauth_callbacks_reject_user_mismatch_and_keep_tokens_server_side(tmp_pa
     fake_flow.authorization_url.return_value = ("https://accounts.google.com/o/oauth2/auth?state=s1", "s1")
     fake_flow.code_verifier = "ver"
 
+    fake_service = MagicMock()
     with (
         fake_tenant(True, "user_a"),
         patch("google_auth_oauthlib.flow.Flow.from_client_config", return_value=fake_flow),
+        patch("gmail_auto.gmail_client._build_service", return_value=fake_service),
+        patch("gmail_auto.web.gmail_status", return_value={"email": "bound@gmail.com"}),
+        patch("gmail_auto.web.mark_gmail_authorized"),
         patch.object(token_store, "storage_ready", return_value=True),
         patch.object(
             token_store,
@@ -182,20 +200,64 @@ def test_oauth_callbacks_reject_user_mismatch_and_keep_tokens_server_side(tmp_pa
                 else kv.pop(args[1], None)
             ),
         ),
-        patch("gmail_auto.gmail_client.GmailClient") as mock_gc,
     ):
-        mock_gc.return_value.get_user_email.return_value = "bound@gmail.com"
         with client.session_transaction() as sess:
             sess["user"] = "a@example.com"
             sess["user_id"] = "user_a"
+
+        # Different Gmail identity without refresh_token -> must reject
+        fake_service.users.return_value.getProfile.return_value.execute.return_value = {"emailAddress": "other@gmail.com"}
         client.get("/oauth")
         resp = client.get("/oauth/callback?state=s1&code=ok")
         assert resp.status_code == 302
+        assert "/connections" in resp.headers["Location"]
+
+        # Same Gmail identity without refresh_token -> reuses kept-refresh, encrypted at rest, no cookie token
+        fake_service.users.return_value.getProfile.return_value.execute.return_value = {"emailAddress": "bound@gmail.com"}
+        client.get("/oauth")
+        resp = client.get("/oauth/callback?state=s1&code=ok")
+        assert resp.status_code == 302
+        assert "/connections" not in resp.headers["Location"]
         with client.session_transaction() as sess:
             assert "gmail_token" not in sess
-        saved = json.loads(kv["autogmail:u:user_a:token"])
+        assert kv["autogmail:u:user_a:token"].startswith("enc:v1:")
+        saved = json.loads(token_store.load_token_raw())
         assert saved["refresh_token"] == "kept-refresh"
         assert saved["token"] == "new-access"
+
+
+def test_gmail_status_is_user_scoped_and_vercel_without_kv_fails_closed(tmp_path, monkeypatch):
+    from gmail_auto import accounts, web
+
+    monkeypatch.setenv("AUTOMAIL_HOME", str(tmp_path))
+    monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", "test-master-secret")
+
+    docs = {}
+    with (
+        patch("gmail_auto.storage.load_doc", side_effect=lambda name, default=None: docs.get((accounts._saas_scope()[1], name), default)),
+        patch("gmail_auto.storage.save_doc", side_effect=lambda name, val: docs.__setitem__((accounts._saas_scope()[1], name), val)),
+    ):
+        with fake_tenant(True, "user_a"):
+            accounts.mark_gmail_authorized("bound@gmail.com", at=1000.0)
+            assert accounts.gmail_status()["email"] == "bound@gmail.com"
+        with fake_tenant(True, "user_b"):
+            assert accounts.gmail_status()["email"] == ""
+        assert not (tmp_path / "data" / "accounts.json").exists()
+
+    monkeypatch.setenv("VERCEL", "1")
+    monkeypatch.setenv("GMAIL_CLIENT_ID", "gid")
+    monkeypatch.setenv("GMAIL_CLIENT_SECRET", "gsec")
+    app = web.create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+    with fake_tenant(True, "user_a"), patch("gmail_auto.token_store.storage_ready", return_value=False):
+        with client.session_transaction() as sess:
+            sess["user"] = "a@example.com"
+            sess["user_id"] = "user_a"
+        resp = client.get("/oauth")
+        assert resp.status_code == 302
+        assert "/connections" in resp.headers["Location"]
+        assert not (tmp_path / "data" / "users" / "user_a" / "token.json").exists()
 
 
 def test_connections_page_hides_dev_setup_hints_in_saas(tmp_path, monkeypatch):

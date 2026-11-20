@@ -64,6 +64,8 @@ def storage_hint() -> str:
 
 
 def load_token_raw() -> str | None:
+    from gmail_auto.token_crypto import decrypt_token
+
     key = _token_key()
     if not storage_ready():
         return None
@@ -73,7 +75,7 @@ def load_token_raw() -> str | None:
         raise ConfigError("Could not read the saved Gmail grant from storage.") from exc
     if not result:
         return None
-    return str(result)
+    return decrypt_token(str(result))
 
 
 def kv_get(key: str):
@@ -106,11 +108,14 @@ def kv_delete(key: str) -> None:
 
 
 def save_token_raw(raw: str) -> bool:
+    from gmail_auto.token_crypto import encrypt_token
+
     key = _token_key()
     if not storage_ready():
         return False
+    payload = encrypt_token(raw)
     try:
-        _command(["SET", key, raw])
+        _command(["SET", key, payload])
     except Exception as exc:
         raise ConfigError("The Gmail grant was not saved to storage.") from exc
     return True

@@ -33,6 +33,15 @@ def _require_user_scope() -> None:
     saas, uid = _tenant_scope()
     if saas and not uid:
         raise ConfigError("Sign in before accessing a Microsoft connection.")
+    if saas:
+        from gmail_auto.token_crypto import encryption_ready
+
+        if not encryption_ready():
+            raise ConfigError("TOKEN_ENCRYPTION_KEY is required in SaaS mode.")
+        if os.environ.get("VERCEL") and not persistent():
+            from gmail_auto.token_store import storage_hint
+
+            raise ConfigError("This hosted site has nowhere to keep the Microsoft sign-in. " + storage_hint())
 
 
 def configured() -> bool:
@@ -256,16 +265,28 @@ def explain_error(error: str, description: str) -> str:
 
 
 def _record(tokens: dict, previous: dict) -> dict:
+    from gmail_auto.token_crypto import encrypt_token
+
     record = dict(previous)
-    record["access_token"] = tokens.get("access_token", "")
-    record["refresh_token"] = tokens.get("refresh_token") or previous.get("refresh_token", "")
+    record["access_token"] = encrypt_token(tokens.get("access_token", ""))
+    refresh = tokens.get("refresh_token") or previous.get("refresh_token", "")
+    record["refresh_token"] = encrypt_token(refresh)
     record["expires_at"] = time.time() + float(tokens.get("expires_in") or 3000)
     return record
 
 
 def _load(kind: str) -> dict:
+    from gmail_auto.token_crypto import decrypt_token
+
     data = load_doc(_doc(_kind(kind)), {})
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    record = dict(data)
+    if record.get("access_token"):
+        record["access_token"] = decrypt_token(str(record["access_token"]))
+    if record.get("refresh_token"):
+        record["refresh_token"] = decrypt_token(str(record["refresh_token"]))
+    return record
 
 
 def _doc(kind: str) -> str:

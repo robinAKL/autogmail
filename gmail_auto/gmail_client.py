@@ -327,11 +327,14 @@ def web_client_config() -> dict | None:
 
 
 def load_credentials(allow_browser: bool):
-    from gmail_auto.token_store import load_token_raw
+    from gmail_auto.token_crypto import decrypt_token
+    from gmail_auto.token_store import load_token_raw, storage_ready
 
     saas, uid = _tenant_scope()
     if saas and not uid:
         raise NotConnected("Sign in before connecting Gmail.")
+    if saas and os.environ.get("VERCEL") and not storage_ready():
+        raise ConfigError("Persistent storage is required in hosted SaaS mode.")
 
     stored = load_token_raw()
     if stored:
@@ -348,14 +351,13 @@ def load_credentials(allow_browser: bool):
 
     token_path = local_token_path()
     creds = None
-    if token_path.exists():
+    if token_path.exists() and not (saas and os.environ.get("VERCEL")):
         try:
-            from google.oauth2.credentials import Credentials
-        except ImportError as exc:
-            raise ConfigError("Dependencies are not installed. Run: pip install -r requirements.txt") from exc
-        try:
-            creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
-        except (ValueError, OSError) as exc:
+            raw = decrypt_token(token_path.read_text(encoding="utf-8"))
+            creds = _credentials_from_raw(raw)
+        except ConfigError:
+            raise
+        except OSError as exc:
             if not allow_browser:
                 raise ConfigError("token.json could not be opened. Delete it and start the program again.") from exc
             creds = None
@@ -456,8 +458,10 @@ def _refresh_saved(creds, token_path, persist_remote: bool, persist_session: boo
         raise ConfigError("The Gmail grant could not be refreshed. Check the network and try again.") from exc
     raw = creds.to_json()
     if token_path is not None:
+        from gmail_auto.token_crypto import encrypt_token
+
         try:
-            atomic_write(token_path, raw)
+            atomic_write(token_path, encrypt_token(raw))
         except OSError:
             pass
     if persist_remote:
