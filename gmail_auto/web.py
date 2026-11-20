@@ -1497,14 +1497,28 @@ def configure_app(app: Flask) -> None:
             return blocked
         return _render("connections.html", **_connections_context())
 
+    def _tenant_scope() -> tuple[bool, str]:
+        try:
+            from gmail_auto.tenant import current_user_id, saas_enabled
+        except ImportError:
+            return False, ""
+        uid = str(current_user_id() or session.get("user_id") or "").strip()
+        return bool(saas_enabled()), uid
+
     @app.get("/oauth")
     def oauth_start():
         blocked = _login_required()
         if blocked:
             return blocked
+        saas, uid = _tenant_scope()
+        if saas and not uid:
+            _auth_failed("Sign in before connecting Gmail.")
+            return redirect(url_for("login_page"))
         config = web_client_config()
         if config is None:
-            if os.environ.get("VERCEL"):
+            if saas:
+                flash("Gmail connection is temporarily unavailable. Please contact support.", "error")
+            elif os.environ.get("VERCEL"):
                 flash("Set GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET in Vercel first.", "error")
             else:
                 flash(
@@ -1526,47 +1540,85 @@ def configure_app(app: Flask) -> None:
             options["login_hint"] = hint
         auth_url, state = flow.authorization_url(**options)
         session["oauth_state"] = state
+        session["oauth_user_id"] = uid
         session["code_verifier"] = flow.code_verifier or ""
         session.pop("auth_error", None)
         return redirect(auth_url)
 
     @app.get("/oauth/callback")
     def oauth_callback():
+        saas, uid = _tenant_scope()
+        if saas:
+            blocked = _login_required()
+            if blocked:
+                return blocked
         config = web_client_config()
-        expected = session.get("oauth_state")
+        expected = session.pop("oauth_state", None)
+        expected_uid = session.pop("oauth_user_id", "")
+        verifier = session.pop("code_verifier", None) or None
         if config is None or not expected or request.args.get("state") != expected:
             _auth_failed("The sign-in could not be matched to this browser. Choose Connect Gmail again.")
+            return redirect(url_for("connections_page"))
+        if (saas or expected_uid) and expected_uid != uid:
+            _auth_failed("The sign-in could not be matched to this account. Choose Connect Gmail again.")
             return redirect(url_for("connections_page"))
         if request.args.get("error"):
             _auth_failed("Gmail was not connected. Choose Connect Gmail again.")
             return redirect(url_for("connections_page"))
         from google_auth_oauthlib.flow import Flow
-        from gmail_auto.token_store import save_token_raw, storage_ready
+        from gmail_auto.gmail_client import local_token_path
+        from gmail_auto.token_store import load_token_raw, save_token_raw, storage_ready
 
         flow = Flow.from_client_config(config, SCOPES)
         flow.redirect_uri = _oauth_redirect()
-        flow.code_verifier = session.get("code_verifier") or None
+        flow.code_verifier = verifier
         try:
             flow.fetch_token(authorization_response=_external_url())
         except Exception:
             _auth_failed("Google did not accept the sign-in. Choose Connect Gmail again.")
             return redirect(url_for("connections_page"))
         creds = flow.credentials
-        if not getattr(creds, "refresh_token", None):
-            flash("Google did not return a long-lived grant. Choose Connect Gmail again.", "error")
-            return redirect(url_for("connections_page"))
         raw = creds.to_json()
-        session["gmail_token"] = raw
-        session.pop("oauth_state", None)
-        session.pop("code_verifier", None)
+        if not getattr(creds, "refresh_token", None):
+            existing_raw = load_token_raw() if storage_ready() else ""
+            if not existing_raw and not os.environ.get("VERCEL"):
+                try:
+                    token_file = local_token_path()
+                    if token_file.exists():
+                        existing_raw = token_file.read_text(encoding="utf-8")
+                except (ConfigError, OSError):
+                    existing_raw = ""
+            existing_refresh = ""
+            if existing_raw:
+                try:
+                    existing_refresh = (json.loads(existing_raw) or {}).get("refresh_token") or ""
+                except (ValueError, TypeError):
+                    existing_refresh = ""
+            if existing_refresh:
+                merged = json.loads(raw)
+                merged["refresh_token"] = existing_refresh
+                raw = json.dumps(merged)
+            else:
+                flash("Google did not return a long-lived grant. Choose Connect Gmail again.", "error")
+                return redirect(url_for("connections_page"))
         session.pop("auth_error", None)
         if storage_ready():
             save_token_raw(raw)
-        elif not os.environ.get("VERCEL"):
+            session.pop("gmail_token", None)
+        elif saas:
+            session.pop("gmail_token", None)
             try:
-                atomic_write(root() / "token.json", raw)
+                atomic_write(local_token_path(), raw)
             except OSError:
-                pass
+                flash("Could not save the Gmail connection. Please try again.", "error")
+                return redirect(url_for("connections_page"))
+        else:
+            session["gmail_token"] = raw
+            if not os.environ.get("VERCEL"):
+                try:
+                    atomic_write(local_token_path(), raw)
+                except OSError:
+                    pass
         gmail_email = session.get("user") or ""
         try:
             from gmail_auto.gmail_client import GmailClient
@@ -1586,24 +1638,40 @@ def configure_app(app: Flask) -> None:
             return blocked
         if kind not in microsoft.SCOPES:
             abort(404)
+        saas, uid = _tenant_scope()
+        if saas and not uid:
+            flash("Sign in before connecting Microsoft.", "error")
+            return redirect(url_for("login_page"))
         if not microsoft.configured():
-            flash("Set MS_CLIENT_ID and MS_CLIENT_SECRET first. The README explains how to create them.", "error")
+            if saas:
+                flash(f"{microsoft.LABELS[kind]} connection is temporarily unavailable. Please contact support.", "error")
+            else:
+                flash("Set MS_CLIENT_ID and MS_CLIENT_SECRET first. The README explains how to create them.", "error")
             return redirect(url_for("connections_page"))
         if not os.environ.get("VERCEL") and _request_host() != "localhost":
             # Microsoft only returns to the exact address that was registered, and the sign-in
             # cookie belongs to one host name, so the whole local sign-in runs on localhost.
             return redirect(_local_origin() + request.full_path.rstrip("?"))
         state = secrets.token_urlsafe(24)
-        session["ms_state"] = {"state": state, "kind": kind}
+        session["ms_state"] = {"state": state, "kind": kind, "user_id": uid}
         return redirect(microsoft.authorize_url(kind, _microsoft_redirect(), state))
 
     @app.get("/oauth/microsoft/callback")
     def microsoft_callback():
+        saas, uid = _tenant_scope()
+        if saas:
+            blocked = _login_required()
+            if blocked:
+                return blocked
         expected = session.pop("ms_state", None) or {}
         kind = expected.get("kind")
         label = microsoft.LABELS.get(kind, "Microsoft")
         if not kind or request.args.get("state") != expected.get("state"):
             flash("The sign-in could not be matched to this browser. Try connecting again.", "error")
+            return redirect(url_for("connections_page"))
+        expected_uid = expected.get("user_id", "")
+        if (saas or expected_uid) and expected_uid != uid:
+            flash("The sign-in could not be matched to this account. Try connecting again.", "error")
             return redirect(url_for("connections_page"))
         if request.args.get("error") or not request.args.get("code"):
             error = request.args.get("error", "")
@@ -1632,14 +1700,15 @@ def configure_app(app: Flask) -> None:
             microsoft.disconnect(name)
             flash(f"{microsoft.LABELS[name]} was disconnected.")
         elif name == "gmail":
+            from gmail_auto.gmail_client import local_token_path
             from gmail_auto.token_store import clear_token
 
             session.pop("gmail_token", None)
             try:
                 clear_token()
-                (root() / "token.json").unlink(missing_ok=True)
+                local_token_path().unlink(missing_ok=True)
                 mark_gmail_authorized("", at=0)
-            except (ConfigError, OSError):
+            except (ConfigError, NotConnected, OSError):
                 pass
             flash("Gmail was disconnected.")
         else:
@@ -2860,7 +2929,15 @@ def _connections_context() -> dict:
     kind = whatsapp.provider()
     origin = _public_origin()
     local = not os.environ.get("VERCEL")
+    saas, _ = _tenant_scope() if "_tenant_scope" in locals() else (False, "")
+    try:
+        from gmail_auto.tenant import saas_enabled
+
+        saas = bool(saas_enabled())
+    except ImportError:
+        saas = False
     return {
+        "saas": saas,
         "gmail": {
             "account": gmail_account or ("" if gmail_error else auth.get("email", "")),
             "connected": bool(gmail_account),

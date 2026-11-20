@@ -21,6 +21,20 @@ SCOPES = {
 LABELS = {"outlook": "Outlook", "sharepoint": "SharePoint"}
 
 
+def _tenant_scope() -> tuple[bool, str]:
+    try:
+        from gmail_auto.tenant import current_user_id, saas_enabled
+    except ImportError:
+        return False, ""
+    return bool(saas_enabled()), str(current_user_id() or "").strip()
+
+
+def _require_user_scope() -> None:
+    saas, uid = _tenant_scope()
+    if saas and not uid:
+        raise ConfigError("Sign in before accessing a Microsoft connection.")
+
+
 def configured() -> bool:
     return bool(_client_id() and _client_secret())
 
@@ -42,6 +56,7 @@ def authorize_url(kind: str, redirect_uri: str, state: str) -> str:
 def finish_sign_in(kind: str, code: str, redirect_uri: str) -> str:
     """Trade the code from Microsoft for tokens, keep them, and return the signed-in address."""
     _kind(kind)
+    _require_user_scope()
     if not persistent():
         from gmail_auto.token_store import storage_hint
 
@@ -69,6 +84,9 @@ def finish_sign_in(kind: str, code: str, redirect_uri: str) -> str:
 
 
 def status(kind: str) -> dict:
+    saas, uid = _tenant_scope()
+    if saas and not uid:
+        return {"connected": False, "account": "", "connected_at": ""}
     record = _load(kind)
     return {
         "connected": bool(record.get("refresh_token")),
@@ -78,10 +96,12 @@ def status(kind: str) -> dict:
 
 
 def disconnect(kind: str) -> None:
+    _require_user_scope()
     delete_doc(_doc(_kind(kind)))
 
 
 def access_token(kind: str) -> str:
+    _require_user_scope()
     record = _load(kind)
     if not record.get("refresh_token"):
         raise NotConnected(f"{LABELS[kind]} is not connected yet. Open Connections and connect it.")

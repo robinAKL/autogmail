@@ -294,6 +294,23 @@ class GmailClient:
         return mail
 
 
+def _tenant_scope() -> tuple[bool, str]:
+    try:
+        from gmail_auto.tenant import current_user_id, saas_enabled
+    except ImportError:
+        return False, ""
+    return bool(saas_enabled()), str(current_user_id() or "").strip()
+
+
+def local_token_path():
+    saas, uid = _tenant_scope()
+    if saas and not uid:
+        raise NotConnected("Sign in before connecting Gmail.")
+    if uid:
+        return root() / "data" / "users" / uid / "token.json"
+    return root() / "token.json"
+
+
 def web_client_config() -> dict | None:
     client_id = os.getenv("GMAIL_CLIENT_ID", "").strip()
     client_secret = os.getenv("GMAIL_CLIENT_SECRET", "").strip()
@@ -312,19 +329,24 @@ def web_client_config() -> dict | None:
 def load_credentials(allow_browser: bool):
     from gmail_auto.token_store import load_token_raw
 
+    saas, uid = _tenant_scope()
+    if saas and not uid:
+        raise NotConnected("Sign in before connecting Gmail.")
+
     stored = load_token_raw()
     if stored:
         return _refresh_saved(_credentials_from_raw(stored), None, persist_remote=True)
 
-    in_session = _session_token()
-    if in_session:
-        return _refresh_saved(_credentials_from_raw(in_session), None, persist_remote=False, persist_session=True)
+    if not saas:
+        in_session = _session_token()
+        if in_session:
+            return _refresh_saved(_credentials_from_raw(in_session), None, persist_remote=False, persist_session=True)
 
-    env_creds = _credentials_from_env()
-    if env_creds is not None:
-        return _refresh_saved(env_creds, None, persist_remote=False)
+        env_creds = _credentials_from_env()
+        if env_creds is not None:
+            return _refresh_saved(env_creds, None, persist_remote=False)
 
-    token_path = root() / "token.json"
+    token_path = local_token_path()
     creds = None
     if token_path.exists():
         try:
@@ -341,10 +363,10 @@ def load_credentials(allow_browser: bool):
         if creds and creds.valid and creds.has_scopes(SCOPES):
             return creds
 
-    if not allow_browser or os.environ.get("VERCEL"):
+    if saas or not allow_browser or os.environ.get("VERCEL"):
         if creds and not creds.has_scopes(SCOPES):
             raise ConfigError("The saved grant is missing permission to read or send mail. Connect Gmail again.")
-        if os.environ.get("VERCEL"):
+        if saas or os.environ.get("VERCEL"):
             raise NotConnected("Gmail is not connected yet. Open Connections and choose Connect Gmail.")
         raise NotConnected("Gmail is not connected on this computer yet. Start the program again and approve it in the browser that opens.")
 
