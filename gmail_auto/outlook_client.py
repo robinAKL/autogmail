@@ -55,6 +55,24 @@ class OutlookClient:
         mails = self._list_newest("inbox", limit, "receivedDateTime")
         return self._hydrate(mails) if full else mails
 
+    def list_received_history(self, limit: int = 25, full: bool = False) -> list[Mail]:
+        """Received mail still in the mailbox, including Archive.
+
+        Junk, Deleted, Sent, and Drafts are not read. The inbox screen keeps list_recent.
+        """
+        want = max(1, min(int(limit), 25))
+        found: dict[str, Mail] = {}
+        for folder in ("inbox", "archive"):
+            try:
+                page = self._list_newest(folder, want, "receivedDateTime")
+            except ConfigError:
+                continue
+            for mail in page:
+                if mail.id and mail.id not in found:
+                    found[mail.id] = mail
+        mails = sorted(found.values(), key=lambda mail: mail.received_ts or 0, reverse=True)[:want]
+        return self._hydrate(mails) if full else mails
+
     def list_recent_page(self, limit: int = 20, token: str = "", full: bool = False) -> tuple[list[Mail], str]:
         """One inbox page, plus Graph's nextLink. Does not follow that link."""
         want = max(1, min(int(limit), 50))
@@ -125,12 +143,20 @@ class OutlookClient:
         if not draft_id:
             raise ConfigError("Outlook did not create the reply.")
         quoted = (draft.get("body") or {}).get("content") or ""
-        mine = _escaped_html(body)
         suffix = (html_suffix or "").strip()
-        if logo_html:
-            suffix = f"{suffix}<br>{logo_html}" if suffix else logo_html
-        if suffix:
-            mine += suffix + "<br>"
+        if logo_html or suffix:
+            from gmail_auto.signatures import load_logo_layout, render_body_with_logo_html
+
+            signature, logo_position = load_logo_layout("outlook", _outlook_account(self))
+            mine = render_body_with_logo_html(
+                body,
+                signature=signature,
+                img_html=logo_html,
+                position=logo_position,
+                html_suffix=suffix,
+            ) + "<br>"
+        else:
+            mine = _escaped_html(body)
         microsoft.graph(
             "outlook",
             "PATCH",
@@ -159,12 +185,17 @@ class OutlookClient:
         logo_html, logo_images = _saved_outlook_logo(self)
         images = _inline_attachments([*(inline_images or []), *logo_images])
         suffix = (html_suffix or "").strip()
-        if logo_html:
-            suffix = f"{suffix}<br>{logo_html}" if suffix else logo_html
-        if suffix or images:
-            content = _escaped_html(body)
-            if suffix:
-                content += suffix
+        if logo_html or suffix or images:
+            from gmail_auto.signatures import load_logo_layout, render_body_with_logo_html
+
+            signature, logo_position = load_logo_layout("outlook", _outlook_account(self))
+            content = render_body_with_logo_html(
+                body,
+                signature=signature,
+                img_html=logo_html,
+                position=logo_position,
+                html_suffix=suffix,
+            )
             body_part = {"contentType": "HTML", "content": content}
         else:
             body_part = {"contentType": "Text", "content": body}
@@ -363,14 +394,19 @@ _INLINE_BYTES = 3_000_000
 _CHUNK = 320 * 1024 * 12  # pieces must be multiples of 320 KiB
 
 
-def _saved_outlook_logo(client) -> tuple[str, list]:
-    """Saved logo for this Outlook mailbox, with a content id we generate."""
+def _outlook_account(client) -> str:
     account = getattr(client, "_email", "") or ""
     if not account:
         try:
             account = (microsoft.status("outlook").get("account") or "").strip()
         except Exception:
             account = ""
+    return account
+
+
+def _saved_outlook_logo(client) -> tuple[str, list]:
+    """Saved logo for this Outlook mailbox, with a content id we generate."""
+    account = _outlook_account(client)
     if not account:
         return "", []
     from gmail_auto.signatures import load_logo
@@ -385,7 +421,7 @@ def _saved_outlook_logo(client) -> tuple[str, list]:
         subtype = mime.split("/", 1)[1].split("+", 1)[0]
     subtype = "".join(ch for ch in subtype.lower() if ch.isalnum())[:12] or "img"
     cid = f"logo.{subtype}.{secrets.token_hex(6)}@autogmail"
-    image = f'<img src="cid:{html.escape(cid, quote=True)}" alt="Company logo" width="120">'
+    image = f'<img src="cid:{html.escape(cid, quote=True)}" alt="Company logo" width="120" style="display:block;max-width:160px;height:auto;">'
     return image, [(cid, filename or "logo", mime or "image/png", data)]
 
 

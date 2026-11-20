@@ -144,10 +144,11 @@ class InboxCacheTests(unittest.TestCase):
         with client.session_transaction() as sess:
             sess["user"] = "owner@example.com"
         with patch("gmail_auto.web.connected_clients", return_value=([fake], [])):
-            client.get("/inbox/refresh", headers={"Accept": "application/json"})
-            first = client.get("/").get_data(as_text=True)
+            first = client.get("/?live=1").get_data(as_text=True)
             self.assertIn('data-inbox-more="1"', first)
             self.assertIn("/inbox/more", first)
+            self.assertIn("if (!data) { sessionStorage.removeItem(key); return; }", first)
+            self.assertNotIn("else finish();", first)
             self.assertNotIn("Letter 020", first)
             body = {"hasMore": True}
             while body.get("hasMore"):
