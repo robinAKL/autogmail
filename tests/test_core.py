@@ -217,6 +217,8 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(reply_language("en", "zh"), "en")
         self.assertEqual(reply_language("match", "zh"), "zh")
         self.assertEqual(reply_language("match", "en"), "en")
+        self.assertEqual(reply_language("match", "fr"), "fr")
+        self.assertEqual(reply_language("match", "unknown"), "en")
         self.assertEqual(reply_language("bilingual", "en"), "bilingual")
 
     def test_blocks_invented_number_link_email_and_wrong_language(self):

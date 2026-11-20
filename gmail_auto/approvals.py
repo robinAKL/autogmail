@@ -42,6 +42,11 @@ def create(mail: Mail, draft, language: str, role: str = "ask", kind: str = "") 
             "summary": draft.summary,
             "reason": draft.reason,
             "draft": draft.reply,
+            "draft_l1": getattr(draft, "reply_l1", "") or "",
+            "reply_lang": getattr(draft, "reply_lang", "") or language,
+            "translated_subject": getattr(mail, "translated_subject", "") or "",
+            "translated_body": getattr(mail, "translated_body", "") or "",
+            "detected_lang": getattr(mail, "detected_lang", "") or "",
             "language": language,
             "sources": list(draft.sources or []),
             "status": "pending",
@@ -199,17 +204,44 @@ def remember_whatsapp(item_id: str, message_ids: list[str]) -> None:
         _save(data)
 
 
-def set_draft(item_id: str, text: str) -> dict:
+def draft_translation_languages(item: dict, settings: dict) -> tuple[str, str] | None:
+    from gmail_auto.translator import SUPPORTED_LANGUAGES
+
+    if item.get("mode") == "new" or settings.get("translation_mode") == "off" or not settings.get("translate_outgoing"):
+        return None
+    source = settings.get("first_language", "zh")
+    target = item.get("reply_lang") or item.get("detected_lang") or item.get("language")
+    if source != target and source in SUPPORTED_LANGUAGES and target in SUPPORTED_LANGUAGES:
+        return source, target
+    return None
+
+
+def set_draft(item_id: str, text: str, *, translate: bool = False) -> dict:
     text = (text or "").strip()
     if not text:
         raise ConfigError("The reply is empty.")
     if len(text) > 5000:
         raise ConfigError("The reply is too long.")
+    original = ""
+    if translate:
+        from gmail_auto.settings import load_settings
+        from gmail_auto.translator import translate_outbound_reply
+
+        item = _pending_item(_load(), item_id)
+        languages = draft_translation_languages(item, load_settings())
+        if languages is None:
+            raise ConfigError("Translation is unavailable for this reply.")
+        source, target = languages
+        original = text
+        text = translate_outbound_reply(text, target, source)
+        if len(text) > 5000:
+            raise ConfigError("The translated reply is too long.")
     with workspace_operation("approvals"):
         data = _load()
         item = _pending_item(data, item_id)
         if text != item.get("draft"):
             item["draft"] = text
+            item["draft_l1"] = original
             item["edited"] = True
             item["role"] = "ask"
             _save(data)
@@ -419,6 +451,9 @@ def _mail(item: dict) -> Mail:
         provider=item.get("provider") or "gmail",
         account=item.get("account", ""),
         received_ts=float(item.get("received_ts") or 0),
+        detected_lang=item.get("detected_lang", ""),
+        translated_subject=item.get("translated_subject", ""),
+        translated_body=item.get("translated_body", ""),
     )
 
 

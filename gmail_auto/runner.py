@@ -275,6 +275,17 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
             continue
         if not isinstance(decision, Allow):
             continue
+        if settings.get("translation_mode", "off") != "off":
+            try:
+                from gmail_auto.translator import translate_inbound_mail
+
+                mail = translate_inbound_mail(
+                    mail,
+                    user_lang=settings.get("first_language", "zh"),
+                    preserve_langs=settings.get("preserve_langs", []),
+                )
+            except Exception:
+                pass
         try:
             from gmail_auto.calendars import maybe_create_from_mail
 

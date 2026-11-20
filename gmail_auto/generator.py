@@ -39,6 +39,15 @@ _LANGUAGE_LINES = {
     "zh": "Write the reply in Chinese only.",
     "bilingual": "Write the reply in two parts: first Chinese, then a blank line, then the same message in English.",
 }
+
+
+def _lang_instruction(language: str) -> str:
+    if language in _LANGUAGE_LINES:
+        return _LANGUAGE_LINES[language]
+    from gmail_auto.translator import SUPPORTED_LANGUAGES
+
+    target = SUPPORTED_LANGUAGES.get(language, language)
+    return f"Write the reply in {target} only."
 _AI = re.compile(
     r"(作为\s*(?:一个\s*)?(?:AI|人工智能)|我是\s*(?:一个\s*)?(?:AI|语言模型|人工智能)|"
     r"as an ai|i am an ai|i'm an ai|language model)",
@@ -54,7 +63,9 @@ def reply_language(setting: str, detected: str) -> str:
     if setting == "bilingual":
         return "bilingual"
     if setting == "match":
-        return "zh" if detected == "zh" else "en"
+        from gmail_auto.translator import SUPPORTED_LANGUAGES
+
+        return detected if detected in SUPPORTED_LANGUAGES else "en"
     return "en"
 
 
@@ -63,7 +74,13 @@ def draft_reply(mail: Mail, profile: dict, detected: str) -> Draft:
     from gmail_auto.knowledge import context_for, render_context
     from gmail_auto.settings import load_settings
 
-    language = reply_language(load_settings()["reply_language"], detected)
+    settings = load_settings()
+    translation_mode = settings.get("translation_mode", "off")
+    if settings["reply_language"] == "match" and translation_mode != "off":
+        from gmail_auto.translator import detect_language
+
+        detected = mail.detected_lang or detect_language(f"{mail.subject}\n{mail.body}")
+    language = reply_language(settings["reply_language"], detected)
     context = context_for(mail)
     knowledge = render_context(context)
     from gmail_auto.story import format_history, history_for_mail
@@ -83,6 +100,23 @@ def draft_reply(mail: Mail, profile: dict, detected: str) -> Draft:
             summary=_line(data.get("summary")),
         )
     draft.sources = context["sources"]
+    draft.reply_lang = language
+    first_lang = settings.get("first_language", "zh")
+    if translation_mode != "off" and draft.reply:
+        if language.lower() != first_lang.lower():
+            try:
+                from gmail_auto.translator import translate_text, verify_entities_preserved
+
+                draft.reply_l1 = translate_text(draft.reply, language, first_lang)
+                if draft.reply_l1:
+                    ok, missing = verify_entities_preserved(draft.reply, draft.reply_l1)
+                    if not ok:
+                        draft.hold = True
+                        draft.reason = (draft.reason or "") + f" [Review needed: {', '.join(missing[:2])}]"
+            except Exception:
+                draft.reply_l1 = ""
+        else:
+            draft.reply_l1 = draft.reply
     if draft.action != "skip" and _echoes_notice_help(mail, draft.reply):
         draft.action = "skip"
         draft.reason = draft.reason or "The letter already told the owner how to look this up."
@@ -101,7 +135,9 @@ def revise_reply(item: dict, instruction: str, profile: dict) -> str:
     from gmail_auto.settings import load_settings
 
     index = load_index()
-    language = reply_language(load_settings()["reply_language"], item.get("language") or "en")
+    language = item.get("reply_lang") or reply_language(
+        load_settings()["reply_language"], item.get("detected_lang") or item.get("language") or "en"
+    )
     prompt = (
         "PROFILE:\n" + profile_as_prompt(profile) + "\n\n"
         + ("KNOWLEDGE BASE BRIEFING:\n" + index["brief"]["text"] + "\n\n" if index["brief"]["text"] else "")
@@ -109,7 +145,7 @@ def revise_reply(item: dict, instruction: str, profile: dict) -> str:
         f"Subject: {item.get('subject') or '(no subject)'}\n{_clip(item.get('body', ''), 4000)}\n\n"
         f"CURRENT DRAFT:\n{item.get('draft', '')}\n\n"
         f"OWNER'S INSTRUCTION:\n{instruction.strip()}\n\n"
-        f"{_LANGUAGE_LINES[language]}"
+        + _lang_instruction(language)
     )
     reply = clean_reply(complete(_REVISE_SYSTEM, prompt, role="worker"))
     check_basics(reply)
@@ -164,19 +200,27 @@ def clean_reply(text: str) -> str:
 
 def _user_prompt(mail: Mail, profile: dict, knowledge: str, language: str, history: str = "") -> str:
     person = _person_card(mail.reply_email or mail.from_email)
+    translated_context = ""
+    if getattr(mail, "translated_body", "") and mail.translated_body.strip() != (mail.body or "").strip():
+        translated_context = (
+            "TRANSLATED LETTER (Owner's First Language for understanding):\n"
+            f"Subject: {getattr(mail, 'translated_subject', '')}\n"
+            f"Body:\n{_clip(mail.translated_body)}\n\n"
+        )
     return (
         "MY PROFILE:\n"
         f"{profile_as_prompt(profile)}\n\n"
         + (knowledge + "\n\n" if knowledge else "")
         + ((history + "\n\n") if history else "")
         + (f"WHO IS WRITING (from my contacts; follow the greeting and tone):\n{person}\n\n" if person else "")
+        + translated_context
         + "THE LETTER TO ANSWER:\n"
         f"From: {mail.from_name or mail.from_email}\n"
         f"Address: {mail.from_email}\n"
         f"Subject: {mail.subject or '(no subject)'}\n"
         "Body:\n"
         f"{_clip(mail.body)}\n\n"
-        f"{_LANGUAGE_LINES[language]}\n"
+        f"{_lang_instruction(language)}\n"
         "Return the JSON object only."
     )
 

@@ -35,6 +35,12 @@
         {% if item.mode != 'new' %}
         {% if item.summary %}<p class="ai-note"><b>What they want</b> {{ item.summary }}</p>{% endif %}
         {% if item.reason %}<p class="ai-note ask"><b>Why it is asking</b> {{ item.reason }}</p>{% endif %}
+        {% if item.translated_body and item.translated_body != item.body %}
+        <details class="original" open style="margin-bottom:8px;">
+          <summary><b>Incoming letter (in your first language)</b></summary>
+          <div class="reply-text" style="white-space:pre-wrap;">{{ item.translated_body }}</div>
+        </details>
+        {% endif %}
         <details class="original">
           <summary>Show the original letter</summary>
           <div class="reply-text" translate="no">{{ item.body }}</div>
@@ -57,7 +63,21 @@
         {% else %}
         <label for="draft{{ item.id }}">Reply{% if item.edited %} <span class="muted">(edited)</span>{% endif %}</label>
         {% endif %}
+        {% if item.draft_l1 and item.draft_l1 != item.draft %}
+        <div class="seamless-bilingual" style="margin-bottom:12px;padding:10px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;">
+          <div style="font-size:12px;font-weight:600;color:#166534;margin-bottom:4px;">First language draft preview (How you understand it):</div>
+          <div style="font-size:14px;color:#1e293b;white-space:pre-wrap;">{{ item.draft_l1 }}</div>
+        </div>
+        <div style="font-size:12px;font-weight:600;color:#64748b;margin-bottom:4px;">Actual reply to send ({{ item.reply_lang|upper if item.reply_lang else 'Recipient language' }}):</div>
+        {% endif %}
         <textarea id="draft{{ item.id }}" name="draft" rows="10" maxlength="5000" required>{{ item.draft }}</textarea>
+        {% set languages = (translation_languages|default({})).get(item.id) %}
+        {% if languages %}
+        <label class="inline-check">
+          <input type="checkbox" name="translate_draft" value="1">
+          Translate my edit from {{ languages[0]|upper }} to {{ languages[1]|upper }}
+        </label>
+        {% endif %}
         {% if item.sources %}
         <p class="sources">Written using {% for title in item.sources %}<span class="chip tiny">{{ title }}</span>{% endfor %}</p>
         {% endif %}

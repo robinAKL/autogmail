@@ -119,6 +119,9 @@
     <header class="reader-head">
       <div class="reader-title">
         <h2 translate="no">{{ opened.subject }}</h2>
+        {% if opened.translated_subject and opened.raw_subject and opened.translated_subject != opened.raw_subject %}
+        <span class="chip tiny" style="background:#e0e7ff;color:#3730a3;" title="Original: {{ opened.raw_subject }}">🌐 {{ opened.detected_lang|upper if opened.detected_lang else 'TRANSLATED' }}</span>
+        {% endif %}
         <span class="tag {{ opened.kind }}">{{ opened.status }}</span>
       </div>
       <p class="meta">

@@ -28,6 +28,11 @@ AI_MODELS = {
     "google/gemini-2.5-flash-lite": "Google Gemini 2.5 Flash-Lite ($0.10 / $0.40 per 1M tokens)",
     "anthropic/claude-haiku-5.5": "Anthropic Claude Haiku 5.5 ($0.10 / $0.50 per 1M tokens)",
 }
+TRANSLATION_MODES = {
+    "seamless": "Seamless (view translated)",
+    "bilingual": "Bilingual",
+    "off": "Off",
+}
 DEFAULTS = {
     "reply_language": "en",
     "approval_mode": "smart",
@@ -48,6 +53,10 @@ DEFAULTS = {
     "cleanup_pack": 0,
     "auto_calendar": True,
     "ui_language": "en",
+    "first_language": "zh",
+    "translation_mode": "seamless",
+    "translate_outgoing": True,
+    "preserve_langs": [],
 }
 
 
@@ -130,6 +139,18 @@ def _clean(data: dict, strict: bool = False) -> dict:
     if preset in ("urgent", "busy"):
         kinds = list(INTERRUPT)
 
+    translation_mode = str(data.get("translation_mode") or "").strip().lower()
+    if translation_mode not in TRANSLATION_MODES:
+        translation_mode = DEFAULTS["translation_mode"]
+    first_language = str(data.get("first_language") or "").strip().lower() or DEFAULTS["first_language"]
+    raw_preserve = data.get("preserve_langs")
+    if isinstance(raw_preserve, str):
+        preserve_langs = [p.strip().lower() for p in raw_preserve.split(",") if p.strip()]
+    elif isinstance(raw_preserve, (list, tuple, set)):
+        preserve_langs = [str(p).strip().lower() for p in raw_preserve if str(p).strip()]
+    else:
+        preserve_langs = list(DEFAULTS["preserve_langs"])
+
     return {
         "reply_language": language,
         "approval_mode": "always" if saas_enabled() else approval,
@@ -150,6 +171,10 @@ def _clean(data: dict, strict: bool = False) -> dict:
         "cleanup_pack": pack,
         "auto_calendar": bool(data.get("auto_calendar")),
         "ui_language": "zh" if data.get("ui_language") == "zh" else "en",
+        "first_language": first_language,
+        "translation_mode": translation_mode,
+        "translate_outgoing": bool(data.get("translate_outgoing", DEFAULTS["translate_outgoing"])),
+        "preserve_langs": preserve_langs,
     }
 
 
