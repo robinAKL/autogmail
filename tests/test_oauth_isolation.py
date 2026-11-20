@@ -61,7 +61,7 @@ def test_token_store_isolates_by_user_and_fails_closed(monkeypatch):
         with fake_tenant(True, "user_a"):
             assert token_store.save_token_raw('{"refresh_token":"ra"}') is True
             assert kv["autogmail:u:user_a:token"].startswith("enc:v1:")
-            assert "ra" not in kv["autogmail:u:user_a:token"]
+            assert "refresh_token" not in kv["autogmail:u:user_a:token"]
             assert token_store.load_token_raw() == '{"refresh_token":"ra"}'
 
         with fake_tenant(True, "user_b"):
@@ -283,3 +283,127 @@ def test_connections_page_hides_dev_setup_hints_in_saas(tmp_path, monkeypatch):
         assert "credentials.json" not in html
         assert "MS_CLIENT_ID" not in html
         assert "temporarily unavailable" in html
+
+
+def test_microsoft_s256_pkce_flow(tmp_path, monkeypatch):
+    import base64
+    import hashlib
+    import urllib.parse
+    from gmail_auto import web
+
+    monkeypatch.setenv("AUTOMAIL_HOME", str(tmp_path))
+    monkeypatch.setenv("AUTOMAIL_SAAS", "1")
+    monkeypatch.setenv("FLASK_SECRET_KEY", "test-flask-secret")
+    monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", "test-master-secret")
+    monkeypatch.setenv("MS_CLIENT_ID", "mid")
+    monkeypatch.setenv("MS_CLIENT_SECRET", "msec")
+
+    app = web.create_app()
+    app.config["TESTING"] = True
+    client = app.test_client()
+
+    with client.session_transaction() as sess:
+        sess["user"] = "a@example.com"
+        sess["user_id"] = "a" * 32
+
+    resp = client.get("/oauth/microsoft/outlook")
+    assert resp.status_code == 302
+    parsed = urllib.parse.urlparse(resp.headers["Location"])
+    params = urllib.parse.parse_qs(parsed.query)
+    assert params["code_challenge_method"] == ["S256"]
+    with client.session_transaction() as sess:
+        verifier = sess["ms_state"]["code_verifier"]
+        state = sess["ms_state"]["state"]
+    expected_challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
+    )
+    assert params["code_challenge"] == [expected_challenge]
+
+    with patch("gmail_auto.microsoft.finish_sign_in", return_value="o@outlook.com") as mock_finish:
+        cb = client.get(f"/oauth/microsoft/callback?state={state}&code=auth-code")
+        assert cb.status_code == 302
+        mock_finish.assert_called_once()
+        assert mock_finish.call_args.kwargs["code_verifier"] == verifier
+
+
+def test_gmail_refresh_does_not_overwrite_concurrent_disconnect(tmp_path, monkeypatch):
+    from gmail_auto import gmail_client, token_store
+    from gmail_auto.tenant import user_scope
+
+    monkeypatch.setenv("AUTOMAIL_HOME", str(tmp_path))
+    monkeypatch.setenv("AUTOMAIL_SAAS", "1")
+    monkeypatch.setenv("FLASK_SECRET_KEY", "test-flask-secret")
+    monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", "test-master-secret")
+
+    uid = "a" * 32
+    kv = {}
+    initial_raw = gmail_client.stamp_token_gen(
+        json.dumps({"token": "old", "refresh_token": "r1", "client_id": "cid", "client_secret": "sec"}),
+        gen="gen1",
+    )
+
+    with (
+        user_scope(uid),
+        patch.object(token_store, "storage_ready", return_value=True),
+        patch.object(
+            token_store,
+            "_command",
+            side_effect=lambda args: (
+                kv.get(args[1])
+                if args[0] == "GET"
+                else kv.__setitem__(args[1], args[2])
+                if args[0] == "SET"
+                else kv.pop(args[1], None)
+            ),
+        ),
+    ):
+        token_store.save_token_raw(initial_raw)
+        fake_creds = MagicMock()
+        fake_creds.expired = True
+        fake_creds.refresh_token = "r1"
+        fake_creds.to_json.return_value = json.dumps({"token": "refreshed", "refresh_token": "r1"})
+
+        def disconnect_during_refresh(_req):
+            token_store.clear_token()
+
+        fake_creds.refresh.side_effect = disconnect_during_refresh
+        with pytest.raises(NotConnected):
+            gmail_client._refresh_saved(fake_creds, None, persist_remote=True, expected_gen="gen1")
+        assert token_store.load_token_raw() is None
+
+
+def test_microsoft_refresh_does_not_overwrite_concurrent_disconnect(tmp_path, monkeypatch):
+    from gmail_auto import microsoft
+    from gmail_auto.tenant import user_scope
+    from gmail_auto.token_crypto import encrypt_token
+
+    monkeypatch.setenv("AUTOMAIL_HOME", str(tmp_path))
+    monkeypatch.setenv("AUTOMAIL_SAAS", "1")
+    monkeypatch.setenv("FLASK_SECRET_KEY", "test-flask-secret")
+    monkeypatch.setenv("TOKEN_ENCRYPTION_KEY", "test-master-secret")
+    monkeypatch.setenv("MS_CLIENT_ID", "mid")
+    monkeypatch.setenv("MS_CLIENT_SECRET", "msec")
+
+    uid = "b" * 32
+    docs = {
+        "ms_outlook": {
+            "access_token": encrypt_token("old"),
+            "refresh_token": encrypt_token("ms-r1"),
+            "expires_at": 0,
+            "conn_gen": "ms-gen-1",
+        }
+    }
+
+    def fake_token_req(_form):
+        docs.pop("ms_outlook", None)
+        return {"access_token": "new-ms", "refresh_token": "ms-r2", "expires_in": 3600}
+
+    with (
+        user_scope(uid),
+        patch("gmail_auto.microsoft.load_doc", side_effect=lambda name, default=None: docs.get(name, default)),
+        patch("gmail_auto.microsoft.save_doc", side_effect=lambda name, val: docs.__setitem__(name, val)),
+        patch("gmail_auto.microsoft._token_request", side_effect=fake_token_req),
+    ):
+        with pytest.raises(NotConnected):
+            microsoft.access_token("outlook")
+        assert "ms_outlook" not in docs

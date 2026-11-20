@@ -4,14 +4,17 @@ Outlook and SharePoint are connected separately, so a personal Outlook.com
 account (which has no SharePoint) can still be used for mail.
 """
 
+import base64
+import hashlib
 import os
 import re
+import secrets
 import time
 import urllib.parse
 from datetime import datetime
 
 from gmail_auto.errors import ConfigError, NotConnected
-from gmail_auto.storage import delete_doc, load_doc, persistent, save_doc
+from gmail_auto.storage import delete_doc, load_doc, persistent, save_doc, workspace_operation
 
 GRAPH = "https://graph.microsoft.com/v1.0"
 SCOPES = {
@@ -48,7 +51,13 @@ def configured() -> bool:
     return bool(_client_id() and _client_secret())
 
 
-def authorize_url(kind: str, redirect_uri: str, state: str) -> str:
+def pkce_pair() -> tuple[str, str]:
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
+    return verifier, challenge
+
+
+def authorize_url(kind: str, redirect_uri: str, state: str, code_challenge: str = "") -> str:
     _kind(kind)
     query = {
         "client_id": _client_id(),
@@ -59,10 +68,13 @@ def authorize_url(kind: str, redirect_uri: str, state: str) -> str:
         "state": state,
         "prompt": "select_account",
     }
+    if code_challenge:
+        query["code_challenge"] = code_challenge
+        query["code_challenge_method"] = "S256"
     return f"{_authority()}/authorize?{urllib.parse.urlencode(query)}"
 
 
-def finish_sign_in(kind: str, code: str, redirect_uri: str) -> str:
+def finish_sign_in(kind: str, code: str, redirect_uri: str, code_verifier: str = "") -> str:
     """Trade the code from Microsoft for tokens, keep them, and return the signed-in address."""
     _kind(kind)
     _require_user_scope()
@@ -70,26 +82,33 @@ def finish_sign_in(kind: str, code: str, redirect_uri: str) -> str:
         from gmail_auto.token_store import storage_hint
 
         raise ConfigError("This hosted site has nowhere to keep the Microsoft sign-in. " + storage_hint())
-    tokens = _token_request(
-        {
-            "grant_type": "authorization_code",
-            "code": code,
-            "redirect_uri": redirect_uri,
-            "scope": " ".join(SCOPES[kind]),
-        }
-    )
+    token_form = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "scope": " ".join(SCOPES[kind]),
+    }
+    if code_verifier:
+        token_form["code_verifier"] = code_verifier
+    tokens = _token_request(token_form)
     if not tokens.get("refresh_token"):
         raise ConfigError("Microsoft did not return a long-lived grant. Try connecting again.")
     record = _record(tokens, {})
-    save_doc(_doc(kind), record)
+    record["conn_gen"] = secrets.token_hex(8)
+    with workspace_operation(f"oauth_ms_{kind}"):
+        save_doc(_doc(kind), record)
     try:
         me = graph(kind, "GET", "/me", params={"$select": "mail,userPrincipalName,displayName"})
-        record["account"] = (me.get("mail") or me.get("userPrincipalName") or "").strip()
+        account = (me.get("mail") or me.get("userPrincipalName") or "").strip()
     except ConfigError:
-        record["account"] = ""
-    record["connected_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-    save_doc(_doc(kind), record)
-    return record["account"]
+        account = ""
+    with workspace_operation(f"oauth_ms_{kind}"):
+        latest = _load(kind)
+        if latest.get("conn_gen") == record["conn_gen"]:
+            latest["account"] = account
+            latest["connected_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+            save_doc(_doc(kind), _record({"access_token": latest.get("access_token", ""), "refresh_token": latest.get("refresh_token", "")}, latest))
+    return account
 
 
 def status(kind: str) -> dict:
@@ -106,11 +125,14 @@ def status(kind: str) -> dict:
 
 def disconnect(kind: str) -> None:
     _require_user_scope()
-    delete_doc(_doc(_kind(kind)))
+    kind = _kind(kind)
+    with workspace_operation(f"oauth_ms_{kind}"):
+        delete_doc(_doc(kind))
 
 
 def access_token(kind: str) -> str:
     _require_user_scope()
+    kind = _kind(kind)
     record = _load(kind)
     if not record.get("refresh_token"):
         raise NotConnected(f"{LABELS[kind]} is not connected yet. Open Connections and connect it.")
@@ -118,15 +140,25 @@ def access_token(kind: str) -> str:
         return record["access_token"]
     if not configured():
         raise ConfigError("MS_CLIENT_ID and MS_CLIENT_SECRET are not set.")
-    try:
-        tokens = _token_request(
-            {"grant_type": "refresh_token", "refresh_token": record["refresh_token"], "scope": " ".join(SCOPES[kind])}
-        )
-    except ConfigError as exc:
-        raise ConfigError(f"The {LABELS[kind]} sign-in has expired. Open Connections and connect it again.") from exc
-    record = _record(tokens, record)
-    save_doc(_doc(kind), record)
-    return record["access_token"]
+    with workspace_operation(f"oauth_ms_{kind}"):
+        record = _load(kind)
+        if not record.get("refresh_token"):
+            raise NotConnected(f"{LABELS[kind]} is not connected yet. Open Connections and connect it.")
+        if record.get("access_token") and float(record.get("expires_at") or 0) - 120 > time.time():
+            return record["access_token"]
+        expected_gen = record.get("conn_gen", "")
+        try:
+            tokens = _token_request(
+                {"grant_type": "refresh_token", "refresh_token": record["refresh_token"], "scope": " ".join(SCOPES[kind])}
+            )
+        except ConfigError as exc:
+            raise ConfigError(f"The {LABELS[kind]} sign-in has expired. Open Connections and connect it again.") from exc
+        latest = _load(kind)
+        if not latest.get("refresh_token") or latest.get("conn_gen", "") != expected_gen:
+            raise NotConnected(f"{LABELS[kind]} was disconnected or reconnected while refreshing.")
+        updated = _record(tokens, latest)
+        save_doc(_doc(kind), updated)
+        return tokens["access_token"]
 
 
 def graph(kind: str, method: str, path: str, params: dict | None = None, body: dict | None = None, headers: dict | None = None, raw: bool = False, timeout: int = 40, attempts: int | None = None):

@@ -1573,7 +1573,8 @@ def configure_app(app: Flask) -> None:
             _auth_failed("Gmail was not connected. Choose Connect Gmail again.")
             return redirect(url_for("connections_page"))
         from google_auth_oauthlib.flow import Flow
-        from gmail_auto.gmail_client import _build_service, local_token_path
+        from gmail_auto.gmail_client import _build_service, local_token_path, stamp_token_gen
+        from gmail_auto.storage import workspace_operation
         from gmail_auto.token_crypto import decrypt_token, encrypt_token, encryption_ready
         from gmail_auto.token_store import load_token_raw, save_token_raw, storage_ready
 
@@ -1622,35 +1623,37 @@ def configure_app(app: Flask) -> None:
                 flash("Google did not return a long-lived grant for this mailbox. Choose Connect Gmail again.", "error")
                 return redirect(url_for("connections_page"))
         session.pop("auth_error", None)
-        if storage_ready():
-            save_token_raw(raw)
-            session.pop("gmail_token", None)
-        elif saas:
-            session.pop("gmail_token", None)
-            if os.environ.get("VERCEL"):
-                flash("Gmail connection is temporarily unavailable. Please contact support.", "error")
-                return redirect(url_for("connections_page"))
-            try:
-                atomic_write(local_token_path(), encrypt_token(raw))
-            except (ConfigError, OSError):
-                flash("Could not save the Gmail connection. Please try again.", "error")
-                return redirect(url_for("connections_page"))
-        else:
-            session["gmail_token"] = raw
-            if not os.environ.get("VERCEL"):
+        raw = stamp_token_gen(raw)
+        with workspace_operation("oauth_gmail"):
+            if storage_ready():
+                save_token_raw(raw)
+                session.pop("gmail_token", None)
+            elif saas:
+                session.pop("gmail_token", None)
+                if os.environ.get("VERCEL"):
+                    flash("Gmail connection is temporarily unavailable. Please contact support.", "error")
+                    return redirect(url_for("connections_page"))
                 try:
-                    atomic_write(local_token_path(), raw)
-                except OSError:
-                    pass
-        if not gmail_email:
-            gmail_email = session.get("user") or ""
-            try:
-                from gmail_auto.gmail_client import GmailClient
+                    atomic_write(local_token_path(), encrypt_token(raw))
+                except (ConfigError, OSError):
+                    flash("Could not save the Gmail connection. Please try again.", "error")
+                    return redirect(url_for("connections_page"))
+            else:
+                session["gmail_token"] = raw
+                if not os.environ.get("VERCEL"):
+                    try:
+                        atomic_write(local_token_path(), raw)
+                    except OSError:
+                        pass
+            if not gmail_email:
+                gmail_email = session.get("user") or ""
+                try:
+                    from gmail_auto.gmail_client import GmailClient
 
-                gmail_email = GmailClient(allow_browser=False).get_user_email() or gmail_email
-            except ConfigError:
-                pass
-        mark_gmail_authorized(gmail_email)
+                    gmail_email = GmailClient(allow_browser=False).get_user_email() or gmail_email
+                except ConfigError:
+                    pass
+            mark_gmail_authorized(gmail_email)
         _forget_inbox()
         flash("Gmail is connected.")
         return redirect(url_for("home"))
@@ -1684,8 +1687,9 @@ def configure_app(app: Flask) -> None:
             # cookie belongs to one host name, so the whole local sign-in runs on localhost.
             return redirect(_local_origin() + request.full_path.rstrip("?"))
         state = secrets.token_urlsafe(24)
-        session["ms_state"] = {"state": state, "kind": kind, "user_id": uid}
-        return redirect(microsoft.authorize_url(kind, _microsoft_redirect(), state))
+        verifier, challenge = microsoft.pkce_pair()
+        session["ms_state"] = {"state": state, "kind": kind, "user_id": uid, "code_verifier": verifier}
+        return redirect(microsoft.authorize_url(kind, _microsoft_redirect(), state, code_challenge=challenge))
 
     @app.get("/oauth/microsoft/callback")
     def microsoft_callback():
@@ -1714,7 +1718,9 @@ def configure_app(app: Flask) -> None:
             flash(message, "error")
             return redirect(url_for("connections_page"))
         try:
-            account = microsoft.finish_sign_in(kind, request.args["code"], _microsoft_redirect())
+            account = microsoft.finish_sign_in(
+                kind, request.args["code"], _microsoft_redirect(), code_verifier=expected.get("code_verifier", "")
+            )
         except ConfigError as exc:
             flash(str(exc), "error")
             return redirect(url_for("connections_page"))
@@ -1732,13 +1738,15 @@ def configure_app(app: Flask) -> None:
             flash(f"{microsoft.LABELS[name]} was disconnected.")
         elif name == "gmail":
             from gmail_auto.gmail_client import local_token_path
+            from gmail_auto.storage import workspace_operation
             from gmail_auto.token_store import clear_token
 
             session.pop("gmail_token", None)
             try:
-                clear_token()
-                local_token_path().unlink(missing_ok=True)
-                mark_gmail_authorized("", at=0)
+                with workspace_operation("oauth_gmail"):
+                    clear_token()
+                    local_token_path().unlink(missing_ok=True)
+                    mark_gmail_authorized("", at=0)
             except (ConfigError, NotConnected, OSError):
                 pass
             flash("Gmail was disconnected.")
