@@ -111,6 +111,69 @@ class SendWithAttachmentTests(WebCase):
         self.assertEqual([call[1] for call in calls], ["/me/messages/o1/createReply", "/me/messages/d1", "/me/messages/d1/attachments", "/me/messages/d1/send"])
         self.assertEqual(calls[2][2]["name"], "a.pdf")
         self.assertEqual(base64.b64decode(calls[2][2]["contentBytes"]), b"abc")
+        self.assertNotIn("isInline", calls[2][2])
+
+    def test_outlook_reply_embeds_a_signature_image_and_escapes_the_text(self):
+        from gmail_auto.outlook_client import OutlookClient
+
+        calls = []
+
+        def fake_graph(kind, method, path, params=None, body=None, headers=None, **_):
+            calls.append((method, path, body))
+            return {"id": "d1", "body": {"content": "<p>quoted</p>"}} if path.endswith("createReply") else {}
+
+        with patch("gmail_auto.microsoft.graph", side_effect=fake_graph):
+            OutlookClient.__new__(OutlookClient).send_reply(
+                sample(id="o1", provider="outlook"),
+                "Hi <there>",
+                "me@example.com",
+                [("a.pdf", "application/pdf", b"abc")],
+                html_suffix='<img src="cid:logo">',
+                inline_images=[("cid:logo", "logo.png", "image/png", b"\x89PNG")],
+            )
+        html_body = calls[1][2]["body"]["content"]
+        self.assertIn("Hi &lt;there&gt;", html_body)
+        self.assertIn('<img src="cid:logo">', html_body)
+        self.assertNotIn("isInline", calls[2][2])
+        self.assertEqual(calls[3][2]["isInline"], True)
+        self.assertEqual(calls[3][2]["contentId"], "logo")
+        self.assertEqual(calls[3][2]["contentType"], "image/png")
+        self.assertEqual(base64.b64decode(calls[3][2]["contentBytes"]), b"\x89PNG")
+
+    def test_outlook_new_mail_embeds_a_signature_image(self):
+        from gmail_auto.outlook_client import OutlookClient
+
+        calls = []
+        with patch("gmail_auto.microsoft.graph", side_effect=lambda *a, **k: calls.append((a, k)) or {}):
+            OutlookClient.__new__(OutlookClient).send_new(
+                "lee@a.example",
+                "Hello",
+                "Hi <there>",
+                html_suffix='<img src="cid:logo">',
+                inline_images=[("logo", "logo.png", "image/png", b"\x89PNG")],
+            )
+        message = calls[0][1]["body"]["message"]
+        self.assertEqual(message["body"]["contentType"], "HTML")
+        self.assertIn("Hi &lt;there&gt;", message["body"]["content"])
+        self.assertIn('<img src="cid:logo">', message["body"]["content"])
+        logo = message["attachments"][0]
+        self.assertEqual(logo["isInline"], True)
+        self.assertEqual(logo["contentId"], "logo")
+        self.assertEqual(base64.b64decode(logo["contentBytes"]), b"\x89PNG")
+
+    def test_outlook_refuses_a_signature_image_over_three_megabytes(self):
+        from gmail_auto.outlook_client import OutlookClient
+
+        graph = patch("gmail_auto.microsoft.graph")
+        with graph as fake, self.assertRaises(ConfigError) as raised:
+            OutlookClient.__new__(OutlookClient).send_new(
+                "lee@a.example",
+                "Hello",
+                "Hi",
+                inline_images=[("logo", "logo.png", "image/png", b"x" * 3_000_001)],
+            )
+        fake.assert_not_called()
+        self.assertIn("too large to embed", str(raised.exception))
 
 
 class AttachOnPageTests(WebCase):
