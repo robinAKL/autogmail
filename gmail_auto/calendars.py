@@ -2,6 +2,7 @@
 
 import re
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from gmail_auto.errors import ConfigError, NotConnected
@@ -384,27 +385,72 @@ def _remember(mail_key: str, event_id: str, auto: bool = True, provider: str = "
     save_doc("calendar_mail", saved)
 
 
+def _graph_pages(path: str, params: dict | None = None, max_pages: int = 10) -> list[dict]:
+    from gmail_auto import microsoft
+
+    items: list[dict] = []
+    next_path: str | None = path
+    next_params = params
+    for _ in range(max_pages):
+        if not next_path:
+            break
+        data = microsoft.graph("outlook", "GET", next_path, params=next_params, timeout=12, attempts=1)
+        items.extend(data.get("value") or [])
+        next_link = str(data.get("@odata.nextLink") or "").strip()
+        if not next_link:
+            break
+        next_path = next_link
+        next_params = None
+    return items
+
+
 def _outlook_events(start: datetime, end: datetime) -> tuple[list[dict], str]:
     from gmail_auto import microsoft
     from gmail_auto.outlook_client import OutlookClient
 
     account = OutlookClient().get_user_email()
-    data = microsoft.graph(
-        "outlook",
-        "GET",
-        "/me/calendarView",
-        params={
-            "startDateTime": start.isoformat(),
-            "endDateTime": end.isoformat(),
-            "$select": "id,subject,start,end,location,organizer,isReminderOn,webLink,attendees",
-            "$orderby": "start/dateTime",
-            "$top": 50,
-        },
-        timeout=12,
-        attempts=1,
-    )
-    events = [_view(item, "outlook") for item in data.get("value") or []]
-    return [item for item in events if item], account
+    view_params = {
+        "startDateTime": start.isoformat(),
+        "endDateTime": end.isoformat(),
+        "$select": "id,subject,start,end,location,organizer,isReminderOn,webLink,attendees",
+        "$orderby": "start/dateTime",
+        "$top": 50,
+    }
+    calendar_paths: list[str] = []
+    try:
+        calendars = _graph_pages("/me/calendars", params={"$select": "id,name,isDefaultCalendar", "$top": 50})
+        for cal in calendars:
+            cal_id = str(cal.get("id") or "").strip()
+            if cal_id:
+                calendar_paths.append(f"/me/calendars/{quote(cal_id, safe='')}/calendarView")
+    except microsoft.GraphError as exc:
+        if exc.status not in (403, 404):
+            raise
+    if not calendar_paths:
+        calendar_paths = ["/me/calendarView"]
+
+    raw_items: list[dict] = []
+    for index, path in enumerate(calendar_paths):
+        try:
+            raw_items.extend(_graph_pages(path, params=view_params))
+        except microsoft.GraphError as exc:
+            if exc.status in (403, 404) and len(calendar_paths) > 1 and (raw_items or index < len(calendar_paths) - 1):
+                continue
+            raise
+
+    seen: set[tuple] = set()
+    events: list[dict] = []
+    for item in raw_items:
+        viewed = _view(item, "outlook")
+        if not viewed:
+            continue
+        dedupe_key = (viewed.get("id") or "", viewed.get("start"), viewed.get("title"))
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        events.append(viewed)
+    events.sort(key=lambda entry: entry.get("start") or datetime.min.replace(tzinfo=ZONE))
+    return events, account
 
 
 def _gmail_events(start: datetime, end: datetime) -> tuple[list[dict], str]:
