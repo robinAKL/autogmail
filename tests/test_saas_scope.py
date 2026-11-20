@@ -367,6 +367,72 @@ def test_inbox_reports_counts_and_filters_connected_mailboxes(saas):
         assert "Outlook · outlook@example.com · 1 loaded" in page
 
 
+def test_a_failed_refresh_keeps_the_previous_list_and_a_real_empty_list_does_not(saas):
+    import time
+    from unittest.mock import Mock
+
+    from gmail_auto.errors import NotConnected
+
+    browser = create_app().test_client()
+    with browser.session_transaction() as session:
+        session["user"] = "owner@example.com"
+        session["user_id"] = USER_A
+        session["login_session_id"] = login_sessions.create(USER_A)
+    with user_scope(USER_A):
+        save_doc(
+            "inbox_cache",
+            {
+                "who": "owner@example.com",
+                "at": time.time(),
+                "rows": [
+                    {
+                        "key": "gmail:old",
+                        "provider": "gmail",
+                        "provider_label": "Gmail",
+                        "who": "Lee",
+                        "email": "lee@example.com",
+                        "subject": "Still in the list",
+                        "date": "2026-11-20 09:00",
+                        "short_date": "09:00",
+                        "snippet": "hello",
+                        "kind": "sent",
+                        "handled": True,
+                        "group": "replied",
+                        "status": "Replied",
+                    }
+                ],
+                "accounts": [{"provider": "gmail", "label": "Gmail", "email": "gmail@example.com"}],
+                "provider_counts": {"gmail": 1},
+                "errors": [],
+                "offline": False,
+            },
+        )
+
+    failed = Mock(provider="gmail")
+    failed.get_user_email.side_effect = NotConnected("Gmail is not connected yet.")
+    chips = [{"provider": "gmail", "label": "Gmail", "email": "gmail@example.com"}]
+    with patch("gmail_auto.web.connected_clients", return_value=([failed], [])), patch(
+        "gmail_auto.web._account_chips", return_value=chips
+    ):
+        page = browser.get("/inbox/refresh", headers={"Accept": "application/json"}).json
+    assert page["count"] == 1
+    assert any("Gmail" in item for item in page["errors"])
+    with user_scope(USER_A):
+        saved = load_doc("inbox_cache")
+    assert saved["rows"][0]["subject"] == "Still in the list"
+
+    empty = Mock(provider="gmail")
+    empty.get_user_email.return_value = "gmail@example.com"
+    empty.list_recent.return_value = []
+    with patch("gmail_auto.web.connected_clients", return_value=([empty], [])), patch(
+        "gmail_auto.web._account_chips", return_value=chips
+    ):
+        cleared = browser.get("/inbox/refresh", headers={"Accept": "application/json"}).json
+    assert cleared["count"] == 0
+    assert cleared["errors"] == []
+    assert cleared["provider_counts"] == {"gmail": 0}
+
+
 def _signed_in(browser, user_id):
     with browser.session_transaction() as session:
         session["user"] = f"{user_id[:6]}@example.com"

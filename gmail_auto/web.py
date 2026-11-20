@@ -2552,11 +2552,42 @@ def _inbox(live: bool = True, force: bool = False) -> dict:
     if not pairs and not data["accounts"]:
         data["rows"] = _rows_from_store()
         data["offline"] = bool(data["rows"])
+    _keep_unfetched_mailboxes(who, data)
     data["at"] = time.time()
     data["needs_fetch"] = False
     cache.update({"at": data["at"], "who": who, "data": data})
     _write_inbox_snapshot(who, data)
     return data
+
+
+def _keep_unfetched_mailboxes(who: str, data: dict) -> None:
+    """A failed read must not replace the list the owner just saw with an empty one.
+
+    A mailbox that answers with zero letters is a real empty result and is left empty.
+    A mailbox that is still connected but did not answer keeps its previous rows.
+    """
+    fetched = set(data.get("provider_counts") or {})
+    missing = [chip for chip in _account_chips() if chip.get("provider") not in fetched]
+    if not missing:
+        return
+    previous = _read_inbox_snapshot(who)
+    kept = {chip.get("provider") for chip in missing}
+    for chip in missing:
+        label = chip.get("label") or "Mailbox"
+        provider = (chip.get("provider") or "").lower()
+        if not any(label in item or provider in item.lower() for item in data["errors"]):
+            data["errors"].append(f"{label} could not be read. The connection is still saved.")
+    if not previous:
+        return
+    seen = {row.get("key") for row in data["rows"]}
+    restored = False
+    for row in previous.get("rows") or []:
+        if row.get("provider") in kept and row.get("key") not in seen:
+            data["rows"].append(row)
+            seen.add(row.get("key"))
+            restored = True
+    if restored:
+        data["offline"] = True
 
 
 def _refresh_status(data: dict) -> None:
@@ -2652,8 +2683,8 @@ def _list_one_mailbox(client, reader: str = "recent") -> tuple:
         else:
             mails = client.list_recent(_INBOX_PAGE, full=False)
         return ({"provider": client.provider, "email": email}, mails, "")
-    except NotConnected:
-        return ({}, [], "")
+    except NotConnected as exc:
+        return (_known_account(client, email), [], named_error(label, exc))
     except ConfigError as exc:
         return (_known_account(client, email), [], named_error(label, exc))
     except Exception as extra:
