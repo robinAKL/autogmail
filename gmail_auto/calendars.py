@@ -57,7 +57,7 @@ def list_upcoming(days: int = _DAYS) -> dict:
     """Events from connected Outlook and Gmail calendars, next two weeks."""
     start = datetime.now(ZONE).replace(second=0, microsecond=0)
     end = start + timedelta(days=max(1, min(int(days), 60)))
-    events, accounts, errors = _collect(start, end)
+    events, accounts, problems = _collect(start, end)
     days_out = []
     current = ""
     bucket = None
@@ -68,7 +68,7 @@ def list_upcoming(days: int = _DAYS) -> dict:
             days_out.append(bucket)
             current = day
         bucket["events"].append(event)
-    return {"days": days_out, "events": events, "accounts": accounts, "errors": errors, "from": start, "until": end}
+    return {"days": days_out, "events": events, "accounts": accounts, "errors": _error_lines(problems), "from": start, "until": end}
 
 
 def ping_due_whatsapp() -> int:
@@ -113,8 +113,12 @@ def ping_due_whatsapp() -> int:
     return sent
 
 
-def month_board(year: int | None = None, month: int | None = None, day: str = "") -> dict:
-    """A Monday–Sunday month grid with events placed on their dates."""
+def month_board(year: int | None = None, month: int | None = None, day: str = "", provider: str = "") -> dict:
+    """A Monday–Sunday month grid with events placed on their dates.
+
+    provider is "" for both calendars, or "gmail" / "outlook" to show only that one.
+    Counts stay for the whole visible range, so the other calendar's total is still on screen.
+    """
     now = datetime.now(ZONE)
     try:
         year = int(year or now.year)
@@ -128,9 +132,16 @@ def month_board(year: int | None = None, month: int | None = None, day: str = ""
     last = next_first - timedelta(seconds=1)
     grid_start = first - timedelta(days=first.weekday())
     grid_end = (last + timedelta(days=6 - last.weekday())).replace(hour=23, minute=59, second=59, microsecond=0)
-    events, accounts, errors = _collect(grid_start, grid_end + timedelta(seconds=1))
-    by_date: dict[str, list] = {}
+    chosen = provider if provider in {"gmail", "outlook"} else ""
+    events, accounts, problems = _collect(grid_start, grid_end + timedelta(seconds=1))
+    counts = {"gmail": 0, "outlook": 0}
     for event in events:
+        key = event.get("provider")
+        if key in counts:
+            counts[key] += 1
+    visible = [event for event in events if not chosen or event.get("provider") == chosen]
+    by_date: dict[str, list] = {}
+    for event in visible:
         by_date.setdefault(event["date"], []).append(event)
     weeks = []
     cursor = grid_start.date()
@@ -163,7 +174,9 @@ def month_board(year: int | None = None, month: int | None = None, day: str = ""
         "weekdays": list(_WEEKDAYS),
         "weeks": weeks,
         "accounts": accounts,
-        "errors": errors,
+        "errors": _error_lines(problems),
+        "sources": _sources(counts, problems, chosen),
+        "provider": chosen,
         "today": now.date().isoformat(),
         "selected": selected,
         "selected_label": _day_heading(selected),
@@ -171,7 +184,7 @@ def month_board(year: int | None = None, month: int | None = None, day: str = ""
         "prev": {"year": prev_year, "month": prev_month},
         "next": {"year": next_year, "month": next_month},
         "this": {"year": now.year, "month": now.month, "day": now.date().isoformat()},
-        "count": len(events),
+        "count": len(visible),
     }
 
 
@@ -257,23 +270,53 @@ def create_event(provider: str, draft: dict) -> dict:
     return _gmail_create(draft)
 
 
-def _collect(start: datetime, end: datetime) -> tuple[list[dict], list[dict], list[str]]:
+def _collect(start: datetime, end: datetime) -> tuple[list[dict], list[dict], list[dict]]:
     events = []
     errors = []
     accounts = []
     for provider, fetch in (("outlook", _outlook_events), ("gmail", _gmail_events)):
+        label = PROVIDERS.get(provider, provider.title())
         try:
             found, account = fetch(start, end)
         except NotConnected:
             continue
         except ConfigError as exc:
-            errors.append(str(exc))
+            errors.append({"provider": provider, "label": label, "message": str(exc)})
             continue
         events.extend(found)
         if account:
-            accounts.append({"provider": provider, "label": PROVIDERS.get(provider, provider.title()), "email": account})
+            accounts.append({"provider": provider, "label": label, "email": account})
     events.sort(key=lambda item: item["start"] or datetime.max.replace(tzinfo=ZONE))
     return events, accounts, errors
+
+
+def _error_lines(problems: list[dict]) -> list[str]:
+    return [f"{item['label']}: {item['message']}" for item in problems]
+
+
+def _sources(counts: dict, problems: list[dict], chosen: str) -> list[dict]:
+    failed = {item["provider"]: item for item in problems}
+    rows = [
+        {
+            "provider": "",
+            "label": "All calendars",
+            "count": counts["gmail"] + counts["outlook"],
+            "error": "",
+            "on": chosen == "",
+        }
+    ]
+    for key in ("gmail", "outlook"):
+        problem = failed.get(key)
+        rows.append(
+            {
+                "provider": key,
+                "label": PROVIDERS[key],
+                "count": None if problem else counts[key],
+                "error": problem["message"] if problem else "",
+                "on": chosen == key,
+            }
+        )
+    return rows
 
 
 def _selected_day(day: str, year: int, month: int, now: datetime) -> str:

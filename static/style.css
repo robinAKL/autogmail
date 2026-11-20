@@ -281,6 +281,7 @@ a.chip[aria-current="page"] { border-color: var(--ink-2); font-weight: 700; }
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);
   box-shadow: var(--shadow); overflow: hidden; min-width: 0;
 }
+.cal-sources { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 14px 0; }
 .cal-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .cal-toolbar h2 { font-size: 18px; }
 .cal-weekdays, .cal-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }

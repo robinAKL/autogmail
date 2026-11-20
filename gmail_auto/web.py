@@ -1150,12 +1150,14 @@ def configure_app(app: Flask) -> None:
             return blocked
         from gmail_auto import calendars
 
-        data = {"weeks": [], "accounts": [], "errors": [], "weekdays": [], "title": "Calendar"}
+        chosen = (request.args.get("provider") or "").strip().lower()
+        data = {"weeks": [], "accounts": [], "errors": [], "weekdays": [], "title": "Calendar", "sources": [], "provider": ""}
         try:
             data = calendars.month_board(
                 request.args.get("year", type=int),
                 request.args.get("month", type=int),
                 request.args.get("day") or "",
+                chosen,
             )
         except ConfigError as exc:
             data["errors"] = [str(exc)]
