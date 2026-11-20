@@ -125,12 +125,20 @@ class OutlookClient:
         if not draft_id:
             raise ConfigError("Outlook did not create the reply.")
         quoted = (draft.get("body") or {}).get("content") or ""
-        mine = _escaped_html(body)
         suffix = (html_suffix or "").strip()
-        if logo_html:
-            suffix = f"{suffix}<br>{logo_html}" if suffix else logo_html
-        if suffix:
-            mine += suffix + "<br>"
+        if logo_html or suffix:
+            from gmail_auto.signatures import load_logo_layout, render_body_with_logo_html
+
+            signature, logo_position = load_logo_layout("outlook", _outlook_account(self))
+            mine = render_body_with_logo_html(
+                body,
+                signature=signature,
+                img_html=logo_html,
+                position=logo_position,
+                html_suffix=suffix,
+            ) + "<br>"
+        else:
+            mine = _escaped_html(body)
         microsoft.graph(
             "outlook",
             "PATCH",
@@ -159,12 +167,17 @@ class OutlookClient:
         logo_html, logo_images = _saved_outlook_logo(self)
         images = _inline_attachments([*(inline_images or []), *logo_images])
         suffix = (html_suffix or "").strip()
-        if logo_html:
-            suffix = f"{suffix}<br>{logo_html}" if suffix else logo_html
-        if suffix or images:
-            content = _escaped_html(body)
-            if suffix:
-                content += suffix
+        if logo_html or suffix or images:
+            from gmail_auto.signatures import load_logo_layout, render_body_with_logo_html
+
+            signature, logo_position = load_logo_layout("outlook", _outlook_account(self))
+            content = render_body_with_logo_html(
+                body,
+                signature=signature,
+                img_html=logo_html,
+                position=logo_position,
+                html_suffix=suffix,
+            )
             body_part = {"contentType": "HTML", "content": content}
         else:
             body_part = {"contentType": "Text", "content": body}
@@ -363,14 +376,19 @@ _INLINE_BYTES = 3_000_000
 _CHUNK = 320 * 1024 * 12  # pieces must be multiples of 320 KiB
 
 
-def _saved_outlook_logo(client) -> tuple[str, list]:
-    """Saved logo for this Outlook mailbox, with a content id we generate."""
+def _outlook_account(client) -> str:
     account = getattr(client, "_email", "") or ""
     if not account:
         try:
             account = (microsoft.status("outlook").get("account") or "").strip()
         except Exception:
             account = ""
+    return account
+
+
+def _saved_outlook_logo(client) -> tuple[str, list]:
+    """Saved logo for this Outlook mailbox, with a content id we generate."""
+    account = _outlook_account(client)
     if not account:
         return "", []
     from gmail_auto.signatures import load_logo
@@ -385,7 +403,7 @@ def _saved_outlook_logo(client) -> tuple[str, list]:
         subtype = mime.split("/", 1)[1].split("+", 1)[0]
     subtype = "".join(ch for ch in subtype.lower() if ch.isalnum())[:12] or "img"
     cid = f"logo.{subtype}.{secrets.token_hex(6)}@autogmail"
-    image = f'<img src="cid:{html.escape(cid, quote=True)}" alt="Company logo" width="120">'
+    image = f'<img src="cid:{html.escape(cid, quote=True)}" alt="Company logo" width="120" style="display:block;max-width:160px;height:auto;">'
     return image, [(cid, filename or "logo", mime or "image/png", data)]
 
 

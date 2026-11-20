@@ -61,7 +61,10 @@ DEFAULTS = {
     "auto_reply_block": [],
     "mail_signatures": {},
     "signature_logos": {},
+    "signature_logo_positions": {},
 }
+
+LOGO_POSITIONS = ("bottom", "top", "left", "right")
 
 
 def load_settings() -> dict:
@@ -189,6 +192,7 @@ def _clean(data: dict, strict: bool = False) -> dict:
         "auto_reply_block": _rule_lines(data.get("auto_reply_block"), strict),
         "mail_signatures": _clean_signatures(data.get("mail_signatures"), strict),
         "signature_logos": _clean_signature_logos(data.get("signature_logos")),
+        "signature_logo_positions": _clean_signature_logo_positions(data.get("signature_logo_positions")),
     }
 
 
@@ -364,8 +368,43 @@ def _clean_signature_logos(value) -> dict[str, dict]:
             size = max(0, int(raw_meta.get("size") or 0))
         except (TypeError, ValueError):
             size = 0
-        out[key] = {"file_id": file_id, "name": name, "mime": mime, "size": size, "account": account}
+        entry = {"file_id": file_id, "name": name, "mime": mime, "size": size, "account": account}
+        if raw_meta.get("position"):
+            entry["position"] = normalize_logo_position(raw_meta.get("position"))
+        out[key] = entry
     return out
+
+
+def normalize_logo_position(value) -> str:
+    pos = str(value or "").strip().lower()
+    return pos if pos in LOGO_POSITIONS else "bottom"
+
+
+def _clean_signature_logo_positions(value) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, str] = {}
+    for raw_key, raw_pos in value.items():
+        key = str(raw_key or "").strip().lower()
+        if not key:
+            continue
+        out[key] = normalize_logo_position(raw_pos)
+    return out
+
+
+def signature_logo_position_for_mailbox(settings: dict, provider: str = "", email: str = "") -> str:
+    positions = settings.get("signature_logo_positions") or {}
+    prov = (provider or "").strip().lower()
+    acct = (email or "").strip().lower()
+    if isinstance(positions, dict):
+        candidates = [f"{prov}:{acct}" if prov and acct else "", acct, prov]
+        for candidate in candidates:
+            if candidate and candidate in positions:
+                return normalize_logo_position(positions[candidate])
+    meta = signature_logo_for_mailbox(settings, provider=provider, email=email)
+    if isinstance(meta, dict) and meta.get("position"):
+        return normalize_logo_position(meta.get("position"))
+    return "bottom"
 
 
 def signature_logo_for_mailbox(settings: dict, provider: str = "", email: str = "") -> dict | None:
