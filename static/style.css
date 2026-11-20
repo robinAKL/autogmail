@@ -186,6 +186,7 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--accent); ou
 .tag.handled { color: var(--ok); background: var(--ok-bg); }
 .tag.pending { color: var(--info); background: var(--info-bg); }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); font-size: 13px; color: var(--ink-2); }
+a.chip[aria-current="page"] { border-color: var(--ink-2); font-weight: 700; }
 .chip.tiny { padding: 1px 8px; font-size: 12px; }
 .chip.gmail::before, .chip.outlook::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #d9483b; }
 .chip.outlook::before { background: #1570c9; }
