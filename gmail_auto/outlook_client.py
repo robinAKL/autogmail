@@ -55,6 +55,29 @@ class OutlookClient:
         mails = self._list_newest("inbox", limit, "receivedDateTime")
         return self._hydrate(mails) if full else mails
 
+    def list_recent_page(self, limit: int = 20, token: str = "", full: bool = False) -> tuple[list[Mail], str]:
+        """One inbox page, plus Graph's nextLink. Does not follow that link."""
+        want = max(1, min(int(limit), 50))
+        path = token or "/me/mailFolders/inbox/messages"
+        params = None if token else {"$top": want, "$select": _SELECT_LIST, "$orderby": "receivedDateTime desc"}
+        try:
+            data = microsoft.graph("outlook", "GET", path, params=params, timeout=8, attempts=1)
+        except ConfigError:
+            if token:
+                raise
+            data = microsoft.graph(
+                "outlook",
+                "GET",
+                path,
+                params={"$top": want, "$select": _SELECT_LIST},
+                timeout=8,
+                attempts=1,
+            )
+        mails = [self._stamp(parse_message(item)) for item in data.get("value") or []]
+        if full:
+            mails = self._hydrate(mails)
+        return mails[:want], data.get("@odata.nextLink") or ""
+
     def search(self, text: str, limit: int = 25, raw: bool = False) -> list[Mail]:
         """Outlook's own search over every folder. Graph takes plain words; Gmail operators are dropped."""
         words = re.sub(r"\b(?:subject|from|to|newer_than|older_than|after|before|in|label|has):\S*", " ", text or "")

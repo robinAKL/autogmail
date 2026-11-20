@@ -53,6 +53,7 @@ _OPEN_PATHS = {"/whatsapp/webhook"}
 _INBOX_TTL = 60
 _INBOX_STORE_TTL = 15 * 60
 _INBOX_PAGE = 20
+_INBOX_CAP = 100
 _inbox_cache: dict = {"at": 0.0, "who": None, "data": None}
 _FILTERS = {
     "all": "All",
@@ -2401,7 +2402,15 @@ def _home_context() -> dict:
         errors.append(str(exc))
 
     hosted = bool(os.environ.get("VERCEL"))
-    inbox = _inbox(live=not hosted or request.args.get("live") == "1")
+    raw_page = request.args.get("page", "")
+    page_num = int(raw_page) if raw_page.isdigit() else 1
+    if page_num > 1:
+        inbox = _inbox(live=False)
+        if not inbox.get("rows") and not inbox.get("cursors"):
+            inbox = _inbox(live=True, force=True)
+        _fill_inbox_page(inbox, page_num)
+    else:
+        inbox = _inbox(live=not hosted or request.args.get("live") == "1")
     errors.extend(inbox["errors"])
     accounts = _account_chips() or inbox["accounts"]
     mailbox = request.args.get("mailbox", "")
@@ -2426,6 +2435,8 @@ def _home_context() -> dict:
     visible = rows if show == "all" else [row for row in rows if row["bucket"] == show]
     wanted = request.args.get("open", "")
     page, pages = _inbox_page(visible, wanted)
+    if _inbox_has_more(inbox) and page >= pages:
+        pages = page + 1
     listed = visible[(page - 1) * _INBOX_PAGE : page * _INBOX_PAGE]
     opened = next((row for row in listed if row["key"] == wanted), None)
     if opened is None and listed and not hosted and not wanted:
@@ -2517,6 +2528,7 @@ def _inbox(live: bool = True, force: bool = False) -> dict:
         }
     data = {
         "rows": [], "mails": {}, "accounts": [], "provider_counts": {}, "errors": [],
+        "cursors": {}, "loaded": {},
         "offline": False, "needs_fetch": False, "at": time.time(),
     }
     try:
@@ -2536,6 +2548,8 @@ def _inbox(live: bool = True, force: bool = False) -> dict:
             continue
         if account.get("provider"):
             data["provider_counts"][account["provider"]] = len(mails)
+            data["cursors"][account["provider"]] = account.get("cursor") or ""
+            data["loaded"][account["provider"]] = len(mails)
         for mail in mails:
             if not mail.account:
                 mail.account = account["email"]
@@ -2588,6 +2602,14 @@ def _keep_unfetched_mailboxes(who: str, data: dict) -> None:
             restored = True
     if restored:
         data["offline"] = True
+    previous_cursors = (previous or {}).get("cursors") or {}
+    previous_loaded = (previous or {}).get("loaded") or {}
+    data.setdefault("cursors", {})
+    data.setdefault("loaded", {})
+    for provider in kept:
+        if provider not in data["cursors"] and previous_cursors.get(provider):
+            data["cursors"][provider] = previous_cursors[provider]
+            data["loaded"][provider] = int(previous_loaded.get(provider) or 0)
 
 
 def _refresh_status(data: dict) -> None:
@@ -2678,11 +2700,12 @@ def _list_one_mailbox(client, reader: str = "recent") -> tuple:
     email = ""
     try:
         email = client.get_user_email()
+        cursor = ""
         if reader == "sent":
             mails = client.list_sent(_INBOX_PAGE, full=False)
         else:
-            mails = client.list_recent(_INBOX_PAGE, full=False)
-        return ({"provider": client.provider, "email": email}, mails, "")
+            mails, cursor = _recent_page(client, _INBOX_PAGE)
+        return ({"provider": client.provider, "email": email, "cursor": cursor}, mails, "")
     except NotConnected as exc:
         return (_known_account(client, email), [], named_error(label, exc))
     except ConfigError as exc:
@@ -2738,6 +2761,8 @@ def _read_inbox_snapshot(who: str) -> dict | None:
         "mails": {},
         "accounts": list(saved.get("accounts") or []),
         "provider_counts": dict(saved.get("provider_counts") or {}),
+        "cursors": dict(saved.get("cursors") or {}),
+        "loaded": {key: int(value or 0) for key, value in (saved.get("loaded") or {}).items()},
         "errors": list(saved.get("errors") or []),
         "offline": bool(saved.get("offline")) or stale,
         "needs_fetch": False,
@@ -2757,6 +2782,8 @@ def _write_inbox_snapshot(who: str, data: dict) -> None:
                 "rows": data.get("rows") or [],
                 "accounts": data.get("accounts") or [],
                 "provider_counts": data.get("provider_counts") or {},
+                "cursors": data.get("cursors") or {},
+                "loaded": data.get("loaded") or {},
                 "errors": data.get("errors") or [],
                 "offline": bool(data.get("offline")),
             },
@@ -2812,6 +2839,95 @@ def _inbox_query() -> dict:
     if page.isdigit() and int(page) > 1:
         query["page"] = int(page)
     return query
+
+
+def _recent_page(client, limit: int, token: str = "") -> tuple[list, str]:
+    """One metadata page. Clients without a cursor API return the first page only."""
+    from unittest.mock import Mock
+
+    page_fn = getattr(client, "list_recent_page", None)
+    if callable(page_fn) and not isinstance(page_fn, Mock):
+        mails, nxt = page_fn(limit=limit, token=token, full=False)
+        return list(mails or []), nxt or ""
+    if token:
+        return [], ""
+    return list(client.list_recent(limit, full=False) or []), ""
+
+
+def _inbox_has_more(data: dict) -> bool:
+    cursors = data.get("cursors") or {}
+    loaded = data.get("loaded") or {}
+    return any(token and int(loaded.get(provider) or 0) < _INBOX_CAP for provider, token in cursors.items())
+
+
+def _fill_inbox_page(data: dict, page: int) -> None:
+    """Fetch later provider pages until this screen is filled or each mailbox reaches 100."""
+    who = session.get("user", "")
+    while len(data.get("rows") or []) < page * _INBOX_PAGE and _inbox_has_more(data):
+        if not _fetch_inbox_slice(who, data):
+            break
+
+
+def _fetch_inbox_slice(who: str, data: dict) -> int:
+    """Append the next saved cursor page for each mailbox still under the cap."""
+    try:
+        clients, problems = connected_clients()
+    except Exception as exc:
+        data.setdefault("errors", []).append(_safe_error(exc))
+        return 0
+    data.setdefault("errors", []).extend(problems)
+    data.setdefault("cursors", {})
+    data.setdefault("loaded", {})
+    data.setdefault("mails", {})
+    data.setdefault("rows", [])
+    try:
+        processed = load_processed()
+    except ConfigError:
+        processed = {}
+    added = 0
+    seen = {row.get("key") for row in data["rows"]}
+    for client in clients:
+        provider = getattr(client, "provider", "")
+        token = data["cursors"].get(provider) or ""
+        loaded = int(data["loaded"].get(provider) or 0)
+        if not token or loaded >= _INBOX_CAP:
+            continue
+        want = min(_INBOX_PAGE, _INBOX_CAP - loaded)
+        try:
+            mails, nxt = _recent_page(client, want, token)
+        except (ConfigError, NotConnected) as exc:
+            label = PROVIDERS.get(provider, "Mailbox")
+            data["errors"].append(named_error(label, exc))
+            data["cursors"][provider] = ""
+            continue
+        except Exception as exc:
+            label = PROVIDERS.get(provider, "Mailbox")
+            data["errors"].append(named_error(label, _safe_error(exc)))
+            data["cursors"][provider] = ""
+            continue
+        email = ""
+        try:
+            email = client.get_user_email()
+        except Exception:
+            email = ""
+        for mail in mails:
+            if not mail.account:
+                mail.account = email
+            if mail.key in seen:
+                continue
+            data["mails"][mail.key] = mail
+            data["rows"].append(_row_from_mail(mail, processed.get(mail.key), email))
+            seen.add(mail.key)
+            added += 1
+        data["loaded"][provider] = loaded + len(mails)
+        data["cursors"][provider] = "" if data["loaded"][provider] >= _INBOX_CAP or not nxt else nxt
+    if added:
+        data["rows"].sort(key=lambda row: row.get("received_ts") or 0, reverse=True)
+    data["at"] = time.time()
+    cache = _request_inbox_cache()
+    cache.update({"at": data["at"], "who": who, "data": data})
+    _write_inbox_snapshot(who, data)
+    return added
 
 
 def _inbox_page(rows: list[dict], wanted: str) -> tuple[int, int]:
