@@ -367,10 +367,18 @@ def _saved_outlook_logo(client) -> tuple[str, list]:
     """Saved logo for this Outlook mailbox, with a content id we generate."""
     account = getattr(client, "_email", "") or ""
     if not account:
+        connected = False
         try:
-            account = (microsoft.status("outlook").get("account") or "").strip()
+            record = microsoft.status("outlook")
+            connected = bool(record.get("connected"))
+            account = (record.get("account") or "").strip()
         except Exception:
-            account = ""
+            connected = False
+        if not account and connected:
+            try:
+                account = (client.get_user_email() or "").strip()
+            except Exception:
+                account = ""
     if not account:
         return "", []
     from gmail_auto.signatures import load_logo
