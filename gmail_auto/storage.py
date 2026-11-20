@@ -24,13 +24,14 @@ LOCK = threading.RLock()
 
 
 @contextmanager
-def workspace_operation(name: str):
+def workspace_operation(name: str, *, platform: bool = False):
     """Serialize a workspace operation across instances when using hosted storage."""
     if not saas_enabled() or not storage_ready():
         with LOCK:
             yield
         return
-    key = f"{_PREFIX}u:{require_user_id()}:operation:{name}"
+    scope = "platform" if platform else f"u:{require_user_id()}"
+    key = f"{_PREFIX}{scope}:operation:{name}"
     owner = secrets.token_hex(16)
     if not kv_set_if_absent(key, owner, 120):
         raise ConfigError("This workspace operation is already in progress. Try again shortly.")

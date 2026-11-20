@@ -13,7 +13,13 @@ from markupsafe import Markup
 
 from gmail_auto import approvals, files, knowledge, microsoft, sharepoint, stats, whatsapp
 from gmail_auto.console import say
-from gmail_auto.accounts import finish_verification, gmail_status, mark_gmail_authorized, start_verification
+from gmail_auto.accounts import (
+    cancel_verification,
+    finish_verification,
+    gmail_status,
+    mark_gmail_authorized,
+    start_verification,
+)
 from gmail_auto.envfile import has_openai_key, using_gateway
 from gmail_auto.errors import ConfigError, NotConnected, ReplyError, named_error
 from gmail_auto.llm import active_model, complete
@@ -193,43 +199,37 @@ def configure_app(app: Flask) -> None:
 
     @app.post("/login/code")
     def login_code():
-        mode = _mode(request.form.get("mode"))
         email = request.form.get("email", "").strip()
         if not _email_ok(email):
-            return _login_view(mode=mode, email=email, error="Enter your email address."), 400
+            return _login_view(email=email, error="Enter your email address."), 400
         try:
-            code, otp = start_verification(email, mode, session.get("otp"))
+            code = start_verification(email, _client_ip())
             try:
                 deliver_code(email, code)
             except ConfigError:
-                session.pop("otp", None)
+                cancel_verification(email)
                 raise
         except ConfigError as exc:
-            return _login_view(mode=mode, email=email, error=str(exc)), 400
-        session["otp"] = otp
+            return _login_view(email=email, error=str(exc)), 400
         session["pending_email"] = email.strip().lower()
-        session["pending_mode"] = mode
-        return redirect(url_for("login_page", mode=mode, sent=1))
+        session.pop("otp", None)
+        return redirect(url_for("login_page", sent=1))
 
     @app.post("/login")
     def login_submit():
-        mode = _mode(request.form.get("mode") or session.get("pending_mode"))
         email = (request.form.get("email") or session.get("pending_email") or "").strip()
         code = request.form.get("code", "").strip()
         if not _email_ok(email):
-            return _login_view(mode=mode, email=email, error="Enter your email address."), 400
+            return _login_view(email=email, error="Enter your email address."), 400
         if not code:
-            return _login_view(mode=mode, email=email, sent=True, error="Enter the code from the email."), 400
-        otp = dict(session.get("otp") or {})
+            return _login_view(email=email, sent=True, error="Enter the code from the email."), 400
         try:
-            user = finish_verification(email, mode, code, otp)
+            account = finish_verification(email, code, _client_ip())
         except ConfigError as exc:
-            session["otp"] = otp
-            return _login_view(mode=mode, email=email, sent=True, error=str(exc)), 400
-        session["user"] = user
-        session.pop("otp", None)
-        session.pop("pending_email", None)
-        session.pop("pending_mode", None)
+            return _login_view(email=email, sent=True, error=str(exc)), 400
+        session.clear()
+        session["user"] = account["email"]
+        session["user_id"] = account["user_id"]
         flash("You are signed in.")
         return redirect(url_for("home"))
 
@@ -246,7 +246,7 @@ def configure_app(app: Flask) -> None:
 
     @app.get("/logout")
     def logout():
-        session.pop("user", None)
+        session.clear()
         return redirect(url_for("login_page"))
 
     # ---- inbox ---------------------------------------------------------------
@@ -3068,21 +3068,22 @@ def _login_required():
     return None
 
 
-def _mode(value) -> str:
-    return value if value in {"login", "register"} else "login"
+def _client_ip() -> str:
+    if os.environ.get("VERCEL"):
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()[:64]
+    return (request.remote_addr or "")[:64]
 
 
-def _login_view(mode=None, email=None, sent=None, error=""):
-    chosen = _mode(mode or request.args.get("mode"))
+def _login_view(email=None, sent=None, error=""):
     pending = session.get("pending_email", "")
     showing_code = sent if sent is not None else request.args.get("sent") == "1"
-    if showing_code and pending and chosen != session.get("pending_mode"):
-        showing_code = False
+    shown = email if email is not None else (pending if showing_code else "")
     return _render(
         "login.html",
-        mode=chosen,
-        email=email if email is not None else (pending if showing_code else ""),
-        sent=bool(showing_code and (email or pending)),
+        email=shown,
+        sent=bool(showing_code and shown),
         error=error,
     )
 
