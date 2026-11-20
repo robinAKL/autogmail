@@ -4,7 +4,7 @@
 <header class="page-head">
   <div>
     <h1>Knowledge</h1>
-    <p class="sub">Connected mail and uploaded documents become a map of current knowledge. The timeline keeps what used to be true. Replies use only what is still current.</p>
+    <p class="sub">Connected mail and documents become facts you can use, and storylines from threads you have replied in. Reply rules are written into Rules that always win, where you can edit them. The timeline records when any of that was true.</p>
   </div>
   <form id="kb-analyze-form" method="post" action="/knowledge/analyze" data-has-key="{{ '1' if has_key else '0' }}" data-has-sources="{{ '1' if has_sources else '0' }}">
     <button id="kb-analyze-btn" type="submit" {% if not has_key or not has_sources %}disabled{% endif %}>Analyse knowledge</button>
@@ -30,7 +30,8 @@
   </div>
   <div class="head-stats kb-analyze-stats">
     <span><strong id="kb-stat-docs">0</strong> documents</span>
-    <span><strong id="kb-stat-emails">0</strong> emails</span>
+    <span><strong id="kb-stat-received">0</strong> received</span>
+    <span><strong id="kb-stat-sent">0</strong> sent</span>
     <span><strong id="kb-stat-skipped">0</strong> skipped</span>
   </div>
 </section>
@@ -43,12 +44,12 @@
   </li>
   <li class="{% if overview.item_count %}done{% endif %}">
     <b>2. Analyse knowledge</b>
-    <span>The assistant reads your connected mailboxes and documents together, filters noise, and extracts sourced facts, rules and reply preferences.</span>
-    <a href="#analysis-results">See results</a>
+    <span>The assistant reads your mail and documents, keeps the facts worth using, and writes reply rules where you can edit them.</span>
+    <a href="#storylines">See storylines</a>
   </li>
   <li class="{% if overview.brief_ready and not overview.brief_stale %}done{% endif %}">
     <b>3. Check Memory and Timeline</b>
-    <span>Memory is current. Timeline is history. Time-scoped facts track when they were observed and whether they are current, expired or uncertain.</span>
+    <span>Memory is what is current. Timeline is the time on every fact, rule and storyline: when it started, and when it stopped.</span>
     <a href="#cards">Review Memory</a>
   </li>
 </ol>
@@ -63,7 +64,7 @@
   <div class="card-head">
     <div>
       <h2 class="card-title">How it is connected</h2>
-      <p class="muted">Current knowledge only — ended and replaced facts stay on the Timeline. Replies use what is still current.</p>
+      <p class="muted">Current knowledge only â€” ended and replaced facts stay on the Timeline. Replies use what is still current.</p>
     </div>
     <div class="head-stats">
       <span><strong>{{ overview.documents }}</strong> sources</span>
@@ -77,7 +78,7 @@
   <p class="meta kb-graph-hint">Drag a node to tuck it aside. Scroll to zoom. Hover to read the full line.</p>
   <ul class="legend kb-legend">
     {% for name, meta in kinds.items() %}
-    <li><i class="sw kind-{{ name }}"></i>{{ meta.label }}{% if overview.by_kind[name] %} · {{ overview.by_kind[name] }}{% endif %}</li>
+    <li><i class="sw kind-{{ name }}"></i>{{ meta.label }}{% if overview.by_kind[name] %} Â· {{ overview.by_kind[name] }}{% endif %}</li>
     {% endfor %}
   </ul>
   {% else %}
@@ -104,7 +105,7 @@
       <li class="kb-event {{ event.action }}">
         <i class="sw kind-{{ event.item.kind }}"></i>
         <div>
-          <p><b>{{ kinds[event.item.kind].label }}</b> · {{ event.label }} · {{ event.when }}</p>
+          <p><b>{{ kinds[event.item.kind].label }}</b> Â· {{ event.label }} Â· {{ event.when }}</p>
           <p>{{ event.item.text }}</p>
           {% if event.previous %}<p class="meta">Was: {{ event.previous.text }}</p>{% endif %}
         </div>
@@ -121,97 +122,28 @@
   {% endif %}
 </section>
 {% else %}
-<section class="section" id="analysis-results">
+{% if not kind %}
+<section class="section" id="storylines">
   <div class="section-head">
-    <h2>Analysis results</h2>
-    <p class="muted">Sourced business knowledge, reply preferences &amp; rules from your own replies, and time-scoped facts.</p>
+    <h2>Storylines</h2>
+    <p class="muted">A thread becomes a storyline after you have replied in it more than once. Facts from the same letter stay together under Facts.</p>
   </div>
-  <div class="kb-analysis-grid">
-    <article class="card">
-      <div class="card-head">
-        <div>
-          <h3 class="card-title">Business knowledge</h3>
-          <p class="muted">Current facts, topics and decisions with their sources.</p>
-        </div>
-        <span class="tag read">{{ analysis_sections.business_knowledge|length }}</span>
-      </div>
-      {% if analysis_sections.business_knowledge %}
-      <ul class="kb-result-list">
-        {% for entry in analysis_sections.business_knowledge %}
-        <li class="kb-result-item">
-          <div class="kb-result-head">
-            <span class="chip tiny">{{ entry.kind_label }}</span>
-            {% if entry.observed_at %}<span class="meta">Observed {{ entry.observed_at }}</span>{% endif %}
-          </div>
-          <p>{{ entry.text }}</p>
-          {% if entry.sources %}<p class="meta">Source: {{ entry.sources|join(', ') }}</p>{% endif %}
-        </li>
-        {% endfor %}
-      </ul>
-      {% else %}
-      <p class="empty">No sourced business knowledge yet. Run <b>Analyse knowledge</b> to extract it.</p>
-      {% endif %}
-    </article>
-
-    <article class="card">
-      <div class="card-head">
-        <div>
-          <h3 class="card-title">Reply preferences, tone &amp; rules</h3>
-          <p class="muted">Recipient preferences, tone and rules learned from your replies.</p>
-        </div>
-        <span class="tag read">{{ analysis_sections.reply_guidance|length }}</span>
-      </div>
-      {% if analysis_sections.reply_guidance %}
-      <ul class="kb-result-list">
-        {% for entry in analysis_sections.reply_guidance %}
-        <li class="kb-result-item">
-          <div class="kb-result-head">
-            <span class="chip tiny">{{ entry.kind_label }}</span>
-            {% if entry.target %}<span class="chip tiny">{{ entry.target }}</span>{% endif %}
-            {% if entry.tone %}<span class="chip tiny">{{ entry.tone }}</span>{% endif %}
-            {% if entry.observed_at %}<span class="meta">Observed {{ entry.observed_at }}</span>{% endif %}
-          </div>
-          <p>{{ entry.text }}</p>
-          {% if entry.sources %}<p class="meta">Source: {{ entry.sources|join(', ') }}</p>{% endif %}
-        </li>
-        {% endfor %}
-      </ul>
-      {% else %}
-      <p class="empty">No reply preferences or rules extracted yet.</p>
-      {% endif %}
-    </article>
-
-    <article class="card">
-      <div class="card-head">
-        <div>
-          <h3 class="card-title">Time-scoped facts</h3>
-          <p class="muted">Tracks observation time and validity window (current, expired, or uncertain).</p>
-        </div>
-        <span class="tag read">{{ analysis_sections.time_scoped_facts|length }}</span>
-      </div>
-      {% if analysis_sections.time_scoped_facts %}
-      <ul class="kb-result-list">
-        {% for entry in analysis_sections.time_scoped_facts %}
-        <li class="kb-result-item kb-fact-{{ entry.temporal_status }}">
-          <div class="kb-result-head">
-            <span class="tag kb-status-{{ entry.temporal_status }}">{{ entry.temporal_label }}</span>
-            {% if entry.observed_at %}<span class="meta">Observed {{ entry.observed_at }}</span>{% endif %}
-          </div>
-          <p>{{ entry.text }}</p>
-          <p class="meta">
-            {% if entry.valid_from or entry.valid_until %}Applies {{ entry.valid_from or '?' }} – {{ entry.valid_until or 'ongoing' }}{% else %}Validity window not specified{% endif %}
-            {% if entry.sources %} · Source: {{ entry.sources|join(', ') }}{% endif %}
-          </p>
-        </li>
-        {% endfor %}
-      </ul>
-      {% else %}
-      <p class="empty">No time-scoped facts yet.</p>
-      {% endif %}
-    </article>
-  </div>
+  {% for group in groups if group.kind == 'storyline' %}
+  {% if group.cards %}
+  <ul class="kb-result-list">
+    {% for item in group.cards %}
+    <li class="card kb-result-item" id="item-{{ item.id }}">
+      <p>{{ item.text }}</p>
+      <p class="meta">{% if item.source %}{{ item.source }}{% endif %}{% if item.valid_from or item.at %} · {{ item.valid_from or item.at }}{% endif %}</p>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty">No storylines yet. Analyse knowledge, and a thread you have replied in more than once will appear here.</p>
+  {% endif %}
+  {% endfor %}
 </section>
-
+{% endif %}
 <section class="section" id="cards">
   <div class="section-head">
     <h2>Memory</h2>
@@ -226,7 +158,7 @@
 
   {% if not kind %}
   <div class="kb-tiles">
-    {% for tile in tiles %}
+    {% for tile in tiles if tile.kind != 'storyline' %}
     <a class="card kb-tile" href="{{ url_for('knowledge_page', kind=tile.kind) }}#kind-{{ tile.kind }}">
       <h3><i class="sw kind-{{ tile.kind }}"></i> {{ tile.label }} <span>{{ tile.count }}</span></h3>
       {% if tile.preview %}
@@ -235,7 +167,7 @@
         <li>{{ item.text }}</li>
         {% endfor %}
       </ul>
-      {% if tile.more %}<p class="meta">+{{ tile.more }} more…</p>{% endif %}
+      {% if tile.more %}<p class="meta">+{{ tile.more }} moreâ€¦</p>{% endif %}
       {% else %}
       <p class="empty">Nothing current</p>
       {% endif %}
@@ -254,7 +186,7 @@
       {% if not group.locked %}
       <form method="post" action="{{ url_for('knowledge_item_add') }}" class="inline-form kb-add">
         <input type="hidden" name="kind" value="{{ group.kind }}">
-        <input name="text" maxlength="300" placeholder="Add one…" required>
+        <input name="text" maxlength="300" placeholder="Add oneâ€¦" required>
         <button class="quiet small" type="submit">Add</button>
       </form>
       {% endif %}
@@ -274,8 +206,8 @@
         </form>
         {% else %}
         <p>{{ item.text }}</p>
-        <p class="meta">Current since {{ item.valid_from or item.at }}
-          {% if item.source %} · {{ item.source }}{% elif item.origin == 'user' %} · added by you{% endif %}
+        <p class="meta">Current since {{ item.valid_from or item.at }}{% if item.valid_until %} until {{ item.valid_until }}{% endif %}
+          {% if item.source %} Â· {{ item.source }}{% elif item.origin == 'user' %} Â· added by you{% endif %}
           {% if item.locked %}<span class="tag read">Locked fact</span>{% endif %}</p>
         <div class="button-row">
           <form method="post" action="{{ url_for('knowledge_item_save', item_id=item.id) }}" data-confirm="Keep the wording, but stop using this in replies?">
@@ -303,7 +235,7 @@
       {% for item in group.past %}
       <li class="kb-card past" id="item-{{ item.id }}">
         <p>{{ item.text }}</p>
-        <p class="meta">{{ item.valid_from or item.at }} → {{ item.valid_until }} · {{ item.status }}</p>
+        <p class="meta">{{ item.valid_from or item.at }} â†’ {{ item.valid_until }} Â· {{ item.status }}</p>
       </li>
       {% endfor %}
     </ul>
@@ -337,12 +269,12 @@
 <section class="section" id="sources">
   <div class="section-head">
     <h2>Sources</h2>
-    <p class="muted">Step 1 — what the map is built from</p>
+    <p class="muted">Step 1 â€” what the map is built from</p>
   </div>
   <div class="grid-3">
-    <form class="card source" method="post" action="{{ url_for('knowledge_upload') }}" enctype="multipart/form-data" data-busy="Reading files…" data-upload-max="{{ upload_max_bytes }}" data-upload-label="{{ upload_limit }}" data-next="{{ url_for('knowledge_page') }}#documents">
+    <form class="card source" method="post" action="{{ url_for('knowledge_upload') }}" enctype="multipart/form-data" data-busy="Reading filesâ€¦" data-upload-max="{{ upload_max_bytes }}" data-upload-label="{{ upload_limit }}" data-next="{{ url_for('knowledge_page') }}#documents">
       <h3>Upload files</h3>
-      <p class="muted">{{ file_types }}. Each file under {{ upload_limit }} — the hosted site rejects anything larger. Several smaller files are sent one by one.</p>
+      <p class="muted">{{ file_types }}. Each file under {{ upload_limit }} â€” the hosted site rejects anything larger. Several smaller files are sent one by one.</p>
       <label class="drop" data-drop>
         <input type="file" name="files" multiple required>
         <span data-drop-label>Choose files or drop them here</span>
@@ -350,11 +282,11 @@
       <button type="submit">Add to knowledge</button>
     </form>
 
-    <form class="card source" method="post" action="{{ url_for('knowledge_sharepoint') }}" id="sharepoint" data-busy="Reading SharePoint…">
+    <form class="card source" method="post" action="{{ url_for('knowledge_sharepoint') }}" id="sharepoint" data-busy="Reading SharePointâ€¦">
       <h3>SharePoint</h3>
       {% if sharepoint.connected %}
       <p class="muted">Connected{% if sharepoint.account %} as {{ sharepoint.account }}{% endif %}. Paste a site, folder or file link.</p>
-      <input name="url" type="url" placeholder="https://contoso.sharepoint.com/sites/Team/Shared Documents/…" required>
+      <input name="url" type="url" placeholder="https://contoso.sharepoint.com/sites/Team/Shared Documents/â€¦" required>
       <button type="submit">Read documents</button>
       {% else %}
       <p class="muted">Connect SharePoint to read a site, a library folder or a single file.</p>
@@ -373,7 +305,7 @@
 
   <form class="card" method="post" action="{{ url_for('knowledge_rules') }}" id="rules">
     <h3 class="card-title">Rules that always win</h3>
-    <p class="muted">One per line. These are also cards under Rules, and they override everything else.</p>
+    <p class="muted">One per line. Analysis adds reply rules here from mail you sent. Edit or delete any line. These override everything else.</p>
     <textarea name="rules" rows="6" placeholder="Always ask me before agreeing to a meeting or a price.&#10;Never reply to recruiters.&#10;Emails from school are important: always ask me first.">{{ rules_text }}</textarea>
     <button type="submit">Save rules</button>
   </form>
@@ -386,7 +318,7 @@
     </div>
     {% if query %}
       {% for hit in hits %}
-      <div class="hit"><p class="hit-title">{{ hit.title }}</p><p>{{ hit.text[:320] }}{% if hit.text|length > 320 %}…{% endif %}</p></div>
+      <div class="hit"><p class="hit-title">{{ hit.title }}</p><p>{{ hit.text[:320] }}{% if hit.text|length > 320 %}â€¦{% endif %}</p></div>
       {% else %}
       <p class="empty">Nothing in the documents matches that.</p>
       {% endfor %}
@@ -406,7 +338,7 @@
             <td>{{ item.files }}</td>
             <td class="nowrap">{{ item.synced_at }}</td>
             <td class="actions">
-              <form method="post" action="{{ url_for('knowledge_sharepoint') }}" data-busy="Reading…"><input type="hidden" name="url" value="{{ item.url }}"><button class="quiet small" type="submit">Read again</button></form>
+              <form method="post" action="{{ url_for('knowledge_sharepoint') }}" data-busy="Readingâ€¦"><input type="hidden" name="url" value="{{ item.url }}"><button class="quiet small" type="submit">Read again</button></form>
               <form method="post" action="{{ url_for('knowledge_sharepoint') }}" data-confirm="Remove this source and the documents read from it?"><input type="hidden" name="url" value="{{ item.url }}"><button class="quiet small danger-text" type="submit" name="remove" value="1">Remove</button></form>
             </td>
           </tr>
@@ -421,7 +353,7 @@
 <section class="section" id="documents">
   <div class="section-head">
     <h2>Documents</h2>
-    <p class="muted">{{ overview.documents }} kept · {{ '{:,}'.format(overview.characters) }} characters</p>
+    <p class="muted">{{ overview.documents }} kept Â· {{ '{:,}'.format(overview.characters) }} characters</p>
   </div>
   {% if docs %}
   <div class="doc-list">
@@ -433,17 +365,17 @@
           {% set role = role_of(doc) %}
           <p class="meta"><span class="chip tiny src-{{ doc.source }}">{{ sources.get(doc.source, doc.source) }}</span>
             {% if role != 'reference' %}<span class="chip tiny role-{{ role }}">{{ roles[role] }}</span>{% endif %}
-            <span class="dot">·</span> added {{ doc.added_at }}
-            <span class="dot">·</span> {{ '{:,}'.format(doc.chars) }} characters{% if doc.clipped %} (cut to fit){% endif %}</p>
+            <span class="dot">Â·</span> added {{ doc.added_at }}
+            <span class="dot">Â·</span> {{ '{:,}'.format(doc.chars) }} characters{% if doc.clipped %} (cut to fit){% endif %}</p>
         </div>
         <div class="doc-actions">
-          <form method="post" action="{{ url_for('knowledge_role', doc_id=doc.id) }}" class="role-form" data-busy="Updating…">
+          <form method="post" action="{{ url_for('knowledge_role', doc_id=doc.id) }}" class="role-form" data-busy="Updatingâ€¦">
             <select name="role" aria-label="Use this document as" onchange="this.form.requestSubmit()">
               {% for key, label in roles.items() %}<option value="{{ key }}" {% if key == role %}selected{% endif %}>{{ label }}</option>{% endfor %}
             </select>
             <noscript><button class="quiet small" type="submit">Set</button></noscript>
           </form>
-          <form method="post" action="{{ url_for('knowledge_delete', doc_id=doc.id) }}" data-confirm="Remove “{{ doc.title }}” from the knowledge base?">
+          <form method="post" action="{{ url_for('knowledge_delete', doc_id=doc.id) }}" data-confirm="Remove â€œ{{ doc.title }}â€ from the knowledge base?">
             <button class="quiet small danger-text" type="submit">Remove</button>
           </form>
         </div>

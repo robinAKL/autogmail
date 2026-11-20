@@ -70,15 +70,21 @@ class KnowledgeAnalysisTests(TempHome):
             self.assertEqual(browser.post("/knowledge/analyze/step").json["documents"], 1)
             self.assertEqual(browser.post("/knowledge/analyze/step").json["skipped"], 1)
             self.assertEqual(browser.post("/knowledge/analyze/step").json["status"], "error")
-            self.assertEqual(browser.post("/knowledge/analyze/step").json["emails"], 1)
-            self.assertEqual(browser.post("/knowledge/analyze/step").json["emails"], 3)
+            received = browser.post("/knowledge/analyze/step").json
+            self.assertEqual(received["emails"], 1)
+            self.assertEqual(received["received"], 1)
+            sent = browser.post("/knowledge/analyze/step").json
+            self.assertEqual(sent["emails"], 3)
+            self.assertEqual(sent["sent"], 2)
             self.assertEqual(browser.post("/knowledge/analyze/step").json["status"], "done")
 
         index = knowledge.load_index()
         learned = [item for item in index["model"]["items"] if item["origin"] == "analysis"]
-        self.assertEqual(len(learned), 3)
-        self.assertEqual(index["rules"], ["Use the contact's preferred name."])
-        self.assertIn("Observed reply practice", index["brief"]["text"])
+        self.assertEqual([item["kind"] for item in learned].count("fact"), 2)
+        self.assertEqual([item["kind"] for item in learned].count("storyline"), 1)
+        self.assertEqual(index["rules"][0], "Use the contact's preferred name.")
+        self.assertIn("Open workflow enquiries with a thank-you.", index["rules"])
+        self.assertIn("Open workflow enquiries with a thank-you.", index["brief"]["text"])
         self.assertNotIn("Codex is active", index["brief"]["text"])
         subscription = next(item for item in learned if item["temporal"] == "dated")
         self.assertEqual(subscription["valid_until"][:10], "2027-02-28")
@@ -123,6 +129,46 @@ class KnowledgeAnalysisTests(TempHome):
         self.assertEqual(model.call_args_list[0].kwargs["response_format"]["type"], "json_schema")
         self.assertIn("compact JSON object", model.call_args_list[1].args[0])
         self.assertEqual(knowledge.list_items()[0]["source"], "Company")
+
+    def test_same_source_facts_collapse_and_observation_only_facts_are_dropped(self):
+        text = "The monthly price is $129 and the yearly price is $1299."
+        refs = {"1": {
+            "source_id": "deck", "source": "Sales deck", "type": "document",
+            "observed_at": "2026-01-01", "text": text,
+        }}
+        unknown = knowledge_analysis._supported_item(
+            model_item("fact", "Monthly price is $129.", "1", "The monthly price is $129", temporal="unknown"),
+            refs,
+        )
+        self.assertIsNone(unknown)
+        kept = [
+            knowledge_analysis._supported_item(
+                model_item("fact", "Monthly price is $129.", "1", "The monthly price is $129", temporal="stable"),
+                refs,
+            ),
+            knowledge_analysis._supported_item(
+                model_item("fact", "Yearly price is $1299.", "1", "the yearly price is $1299", temporal="stable"),
+                refs,
+            ),
+        ]
+        collapsed = knowledge_analysis._collapse_facts(kept)
+        self.assertEqual(len(collapsed), 1)
+        self.assertIn("Monthly price is $129", collapsed[0]["text"])
+        self.assertIn("Yearly price is $1299", collapsed[0]["text"])
+
+    def test_storyline_needs_more_than_one_reply(self):
+        knowledge_analysis._flush_storylines({"threads": {
+            "gmail:once": {
+                "count": 2, "sent": 1, "subject": "Hello", "parties": ["a@example.com"], "sample": "Thanks",
+            },
+            "gmail:twice": {
+                "count": 3, "sent": 2, "subject": "Project", "parties": ["c@example.com"], "sample": "Following up",
+            },
+        }})
+        items = knowledge.list_items("storyline")
+        self.assertEqual(len(items), 1)
+        self.assertIn("Project", items[0]["text"])
+        self.assertIn("2 written by you", items[0]["text"])
 
     def test_provider_without_schema_support_uses_prompt_constrained_json(self):
         error = ReplyError("The AI provider returned an error (400): response_format json_schema is not supported.")

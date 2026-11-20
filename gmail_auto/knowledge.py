@@ -91,6 +91,11 @@ KINDS = {
         "locked": False,
         "hint": "Calls you have already made that later mail should not reopen.",
     },
+    "storyline": {
+        "label": "Storylines",
+        "locked": False,
+        "hint": "A thread you have replied in more than once. Later replies can follow the arc.",
+    },
 }
 _KIND_ORDER = tuple(KINDS)
 _HEADING_KIND = {
@@ -450,7 +455,11 @@ def merge_analysis(extracted: list[dict]) -> None:
         index = load_index()
         items = index["model"]["items"]
         by_key = {_analysis_key(item): pos for pos, item in enumerate(items)}
+        rule_texts = []
         for raw in extracted:
+            if str(raw.get("kind") or "").strip().lower() in ("rule", "preference"):
+                rule_texts.append(raw.get("text") or "")
+                continue
             item = _clean_item(raw, origin="analysis")
             if not item:
                 continue
@@ -469,7 +478,11 @@ def merge_analysis(extracted: list[dict]) -> None:
             else:
                 by_key[key] = len(items)
                 items.append(item)
+        if rule_texts:
+            index["rules"] = _extend_rules(index["rules"], rule_texts)
+            items = _sync_rules(items, index["rules"])
         now = _now()
+        index["model"]["items"] = items
         index["model"]["updated_at"] = now
         index["brief"] = {"text": brief_from_items(items, index["rules"]), "updated_at": now, "stale": False}
         _save_index(index)
@@ -608,6 +621,15 @@ def items_from_brief(text: str) -> list[dict]:
     return [item for item in items if item]
 
 
+def is_shown(item: dict) -> bool:
+    """A mail date alone does not make a fact. Those observations stay stored, not on the page."""
+    return not (
+        item.get("kind") == "fact"
+        and item.get("origin") == "analysis"
+        and item.get("temporal") == "unknown"
+    )
+
+
 def is_active(item: dict) -> bool:
     status = str(item.get("status") or "active")
     if status in ("ended", "superseded"):
@@ -649,6 +671,7 @@ def brief_from_items(items: list[dict], rules: list[str] | None = None) -> str:
             block("Ongoing topics and commitments", groups["topic"] + groups["decision"]),
             block("How I write", groups["preference"] + groups["experience"]),
             block("How to handle my mail", groups["rule"]),
+            block("Storylines", groups["storyline"][:8]),
         ]
     )
 
@@ -656,7 +679,7 @@ def brief_from_items(items: list[dict], rules: list[str] | None = None) -> str:
 def graph_view(items: list[dict] | None = None) -> dict:
     """Topology for the D3 map: you, kind hubs, and current items. Layout is done in the browser."""
     items = items if items is not None else load_index()["model"]["items"]
-    items = [item for item in items if is_active(item)]
+    items = [item for item in items if is_shown(item) and is_active(item)]
     present = [kind for kind in _KIND_ORDER if any(item["kind"] == kind for item in items)]
     nodes = [
         {
@@ -704,7 +727,7 @@ def graph_view(items: list[dict] | None = None) -> dict:
 def memory_tiles(items: list[dict] | None = None, preview: int = 4) -> list[dict]:
     """Compact Memory view: one tile per kind, with the live bullets on top."""
     items = items if items is not None else load_index()["model"]["items"]
-    live = [item for item in items if is_active(item)]
+    live = [item for item in items if is_shown(item) and is_active(item)]
     tiles = []
     for kind in _KIND_ORDER:
         cards = [item for item in live if item["kind"] == kind]
@@ -725,6 +748,7 @@ def memory_tiles(items: list[dict] | None = None, preview: int = 4) -> list[dict
 def timeline(items: list[dict] | None = None) -> list[dict]:
     """Newest-first days. Each event is when something became true, was replaced, or ended."""
     items = items if items is not None else load_index()["model"]["items"]
+    items = [item for item in items if is_shown(item)]
     events = []
     by_id = {item["id"]: item for item in items}
     for item in items:
@@ -937,8 +961,9 @@ def overview() -> dict:
     counts: dict[str, int] = {}
     for item in index["docs"]:
         counts[item["source"]] = counts.get(item["source"], 0) + 1
-    live = [item for item in index["model"]["items"] if is_active(item)]
-    past = [item for item in index["model"]["items"] if not is_active(item)]
+    visible = [item for item in index["model"]["items"] if is_shown(item)]
+    live = [item for item in visible if is_active(item)]
+    past = [item for item in visible if not is_active(item)]
     by_kind = {kind: 0 for kind in _KIND_ORDER}
     for item in live:
         by_kind[item["kind"]] = by_kind.get(item["kind"], 0) + 1
@@ -1135,6 +1160,19 @@ def _clean_item(raw: dict, origin: str = "") -> dict | None:
         "replaces": str(raw.get("replaces") or "")[:16],
         "key": _item_key({"kind": kind, "text": text}),
     }
+
+
+def _extend_rules(rules: list[str], texts: list[str]) -> list[str]:
+    """Add reply rules the user can still edit. Existing lines stay first."""
+    seen = {rule.strip().casefold() for rule in rules}
+    out = list(rules)
+    for raw in texts:
+        text = re.sub(r"\s+", " ", str(raw or "").strip())[:300]
+        if not text or text.casefold() in seen or len(out) >= MAX_RULES:
+            continue
+        out.append(text)
+        seen.add(text.casefold())
+    return out
 
 
 def _sync_rules(items: list[dict], rules: list[str]) -> list[dict]:

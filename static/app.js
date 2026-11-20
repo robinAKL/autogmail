@@ -321,7 +321,8 @@
     var analyzeBadge = document.getElementById("kb-analyze-badge");
     var analyzeMsg = document.getElementById("kb-analyze-message");
     var statDocs = document.getElementById("kb-stat-docs");
-    var statEmails = document.getElementById("kb-stat-emails");
+    var statReceived = document.getElementById("kb-stat-received");
+    var statSent = document.getElementById("kb-stat-sent");
     var statSkipped = document.getElementById("kb-stat-skipped");
     var analysisKey = "kb_analyze_summary";
     var inFlight = false;
@@ -336,12 +337,13 @@
         analyzeBadge.textContent = statusLabels[st] || st;
       }
       if (statDocs) { statDocs.textContent = String((payload && payload.documents) || 0); }
-      if (statEmails) { statEmails.textContent = String((payload && payload.emails) || 0); }
+      if (statReceived) { statReceived.textContent = String((payload && payload.received) || 0); }
+      if (statSent) { statSent.textContent = String((payload && payload.sent) || 0); }
       if (statSkipped) { statSkipped.textContent = String((payload && payload.skipped) || 0); }
       if (analyzeMsg) {
         analyzeMsg.textContent = (payload && payload.message) || ({
           idle: "Ready to analyse connected mailboxes and documents.",
-          running: "Reading the next batch of emails or documents.",
+          running: "Reading the next batch. Received and sent are counted separately.",
           done: "Analysis complete.",
           error: "Analysis paused. Select Analyse knowledge to retry."
         })[st];
