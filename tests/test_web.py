@@ -178,6 +178,32 @@ class PageTests(WebCase):
         self.assertIn("Ponsonby Dental, 12 Example Rd", text)
         self.assertIn("1 invited", text)
 
+    def test_calendar_source_switch_keeps_the_day_and_shows_which_provider_failed(self):
+        from datetime import datetime
+        from gmail_auto.calendars import ZONE, _item
+
+        gmail = _item("g1", "gmail", "Parent interview", datetime(2026, 11, 13, 15, 0, tzinfo=ZONE), datetime(2026, 11, 13, 16, 0, tzinfo=ZONE), "", [], "")
+        outlook = _item("o1", "outlook", "Site visit", datetime(2026, 11, 13, 9, 0, tzinfo=ZONE), datetime(2026, 11, 13, 10, 0, tzinfo=ZONE), "", [], "")
+        with patch("gmail_auto.calendars._gmail_events", return_value=([gmail], "me@example.com")), patch(
+            "gmail_auto.calendars._outlook_events", return_value=([outlook], "robin@example.com")
+        ):
+            response, text = self.page("/calendar?year=2026&month=11&day=2026-11-13&provider=outlook")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('aria-current="page"', text)
+        self.assertIn("Site visit", text)
+        self.assertNotIn("Parent interview", text)
+        self.assertIn("day=2026-11-13&amp;provider=outlook", text)
+        self.assertIn(">2<", text)
+        self.assertIn(">1<", text)
+
+        with patch("gmail_auto.calendars._gmail_events", return_value=([gmail], "me@example.com")), patch(
+            "gmail_auto.calendars._outlook_events", side_effect=ConfigError("Calendar permission was not granted.")
+        ):
+            _, failed = self.page("/calendar?year=2026&month=11&day=2026-11-13")
+        self.assertIn("Outlook: Calendar permission was not granted.", failed)
+        self.assertIn('title="Could not read this calendar"', failed)
+        self.assertIn(">—<", failed)
+
     def test_inbox_lists_mail_and_serves_the_letter_as_safe_formatted_html(self):
         html_mail = sample(
             id="h1",
