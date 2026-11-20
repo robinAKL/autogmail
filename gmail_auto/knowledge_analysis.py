@@ -357,7 +357,7 @@ def _note_thread(job: dict, provider: str, mail, direction: str, text: str, obse
             "outbound": direction == "sent",
             "summary": summary,
         })
-        if len(entry["steps"]) > 24:
+        if len(entry["steps"]) > 40:
             del entry["steps"][1]
     threads[key] = entry
 
@@ -373,8 +373,8 @@ def _flush_storylines(job: dict) -> None:
             f"{entry['count']} letters, {entry['sent']} written by you."
         )
         steps = sorted(entry.get("steps") or [], key=lambda step: str(step.get("at") or ""))
-        if len(steps) > 6:
-            steps = steps[:1] + steps[-5:]
+        if len(steps) > 40:
+            steps = steps[:1] + steps[-39:]
         if not steps and entry.get("sample"):
             steps = [{"at": "", "who": "You", "outbound": True, "summary": _step_summary(entry["sample"])}]
         observed = steps[-1]["at"] if steps else ""
@@ -401,9 +401,7 @@ def _person_name(value: str) -> str:
 
 
 def _step_summary(text: str) -> str:
-    line = " ".join(str(text or "").split())
-    line = re.sub(r"(?i)^subject:\s*", "", line)
-    return line[:110]
+    return knowledge._story_sentence(text)[:110]
 
 
 def _collapse_facts(extracted: list[dict]) -> list[dict]:

@@ -126,52 +126,48 @@
 <section class="section" id="storylines">
   <div class="section-head">
     <h2>Storylines</h2>
-    <p class="muted">Newest first. Open one to read its timeline.</p>
+    <p class="muted">Newest first. Open a row where it sits. The timeline reads down to the latest letter.</p>
   </div>
-  {% if open_story %}
-  <article class="card kb-story-open">
-    <header class="matter-drawer-head">
-      <div>
-        <h3 id="story-title">{{ open_story.title }}</h3>
-        <p class="meta">{{ open_story.who }} · {{ open_story.label }} · {{ open_story.size }} letters</p>
-      </div>
-      <a class="button quiet small" href="{{ url_for('knowledge_page', story_page=story_pager.page) }}#storylines">Close</a>
-    </header>
-    <p class="ai-note"><b>Status</b> {{ open_story.label }}</p>
-    <h3 class="matter-h">Timeline</h3>
-    <ol class="story-line">
-      {% for step in open_story.steps %}
-      <li class="{% if step.current %}on{% endif %}{% if step.outbound %} out{% endif %}">
-        <span class="story-who">{{ step.who }}</span>
-        {% if step.day %}<span class="story-date">{{ step.day }}</span>{% endif %}
-        <span class="story-summary">{{ step.summary }}</span>
-      </li>
-      {% endfor %}
-    </ol>
-  </article>
-  {% endif %}
   {% if storylines %}
   <div class="card kb-story-list">
     {% for card in storylines %}
-    <a class="story-card {% if open_story and open_story.id == card.id %}on{% endif %}" id="item-{{ card.id }}" href="{{ url_for('knowledge_page', story=card.id, story_page=story_pager.page) }}#storylines">
-      <span class="story-card-top">
-        <span class="story-card-title">{{ card.title }}</span>
-        <span class="tag {{ card.status }}">{{ card.label }}</span>
-      </span>
-      <span class="story-card-who">{{ card.who }}</span>
-      <span class="story-card-foot">{{ card.size }} letters{% if card.sent %} · {{ card.sent }} from you{% endif %}{% if card.day %} · {{ card.day }}{% endif %}</span>
-    </a>
+    <details class="kb-story" id="item-{{ card.id }}">
+      <summary>
+        <span class="story-card-top">
+          <span class="story-card-title">{{ card.title }}</span>
+          <span class="tag {{ card.status }}">{{ card.label }}</span>
+        </span>
+        <span class="story-card-who">{{ card.who }}</span>
+        <span class="story-card-foot">{{ card.size }} letters{% if card.sent %} · {{ card.sent }} from you{% endif %}{% if card.day %} · {{ card.day }}{% endif %}</span>
+      </summary>
+      <div class="kb-story-body">
+        <p class="ai-note"><b>Status</b> {{ card.label }}</p>
+        <h3 class="matter-h">Timeline</h3>
+        <ol class="story-line">
+          {% for step in card.steps %}
+          <li class="{% if step.current %}on{% endif %}{% if step.outbound %} out{% endif %}">
+            <span class="story-who">{{ step.who }}</span>
+            <span class="story-date">{{ step.day or "Date unknown" }}</span>
+            <span class="story-summary">{{ step.summary }}</span>
+          </li>
+          {% endfor %}
+        </ol>
+        {% if card.size > card.steps|length %}
+        <p class="meta">{{ card.size - card.steps|length }} earlier letters are not on this timeline yet. Analyse knowledge again to add each one.</p>
+        {% endif %}
+      </div>
+    </details>
     {% endfor %}
     {% if story_pager.pages > 1 %}
     <nav class="pager" aria-label="Storyline pages">
       {% if story_pager.prev %}
-      <a class="button quiet small" href="{{ url_for('knowledge_page', story_page=story_pager.prev) }}#storylines">Newer</a>
+      <a class="button quiet small" href="{{ url_for('knowledge_page', story_page=story_pager.prev) }}">Newer</a>
       {% else %}
       <span class="button quiet small" aria-disabled="true">Newer</span>
       {% endif %}
       <span class="pager-status">{{ story_pager.page }} / {{ story_pager.pages }}</span>
       {% if story_pager.next %}
-      <a class="button quiet small" href="{{ url_for('knowledge_page', story_page=story_pager.next) }}#storylines">Older</a>
+      <a class="button quiet small" href="{{ url_for('knowledge_page', story_page=story_pager.next) }}">Older</a>
       {% else %}
       <span class="button quiet small" aria-disabled="true">Older</span>
       {% endif %}

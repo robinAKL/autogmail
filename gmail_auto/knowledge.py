@@ -501,7 +501,7 @@ def merge_analysis(extracted: list[dict]) -> None:
 
 def _story_steps(raw: dict) -> list[dict]:
     steps = []
-    for source in (raw.get("steps") if isinstance(raw.get("steps"), list) else [])[:8]:
+    for source in (raw.get("steps") if isinstance(raw.get("steps"), list) else [])[:40]:
         if not isinstance(source, dict):
             continue
         summary = re.sub(r"\s+", " ", str(source.get("summary") or "").strip())
@@ -815,15 +815,20 @@ def _storyline_card(item: dict, display_title) -> dict:
         summary = re.sub(r"\s+", " ", str(raw.get("summary") or "")).strip()
         if not summary:
             continue
+        when = _as_of(raw.get("at")) or _date_in_text(summary)
+        summary = _story_sentence(summary)
         steps.append({
             "who": str(raw.get("who") or ("You" if raw.get("outbound") else who))[:80],
-            "date": _as_of(raw.get("at")),
+            "date": when,
             "outbound": bool(raw.get("outbound")),
             "summary": summary[:160],
         })
-    steps.sort(key=lambda step: step["date"])
     if not steps and latest:
-        steps.append({"who": "You", "date": "", "outbound": True, "summary": latest[:160]})
+        sentence = _story_sentence(latest)
+        steps.append({
+            "who": "You", "date": _date_in_text(latest), "outbound": True, "summary": sentence[:160],
+        })
+    steps.sort(key=lambda step: step["date"])
     newest = steps[-1] if steps else {}
     if newest.get("outbound"):
         status = "waiting_on_them"
@@ -831,9 +836,8 @@ def _storyline_card(item: dict, display_title) -> dict:
         status = "waiting_on_me"
     else:
         status = "in_progress"
-    steps.reverse()
     for index, step in enumerate(steps):
-        step["current"] = index == 0
+        step["current"] = index == len(steps) - 1
         step["day"] = _story_day(step["date"])
     return {
         "id": item.get("id") or "",
@@ -863,6 +867,34 @@ def _storyline_parts(item: dict) -> tuple[str, str, int, int, str]:
 
 
 _STORY_MONTHS = ("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _story_sentence(text: str) -> str:
+    line = " ".join(str(text or "").split())
+    line = re.sub(r"(?i)^subject:\s*", "", line)
+    line = re.split(r"\s+On\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*,", line, maxsplit=1)[0]
+    line = re.split(r"\s+On\s+.{0,80}?wrote:", line, maxsplit=1)[0]
+    return line.strip()
+
+
+def _date_in_text(text: str) -> str:
+    months = {
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+        "jul": 7, "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+    }
+    match = re.search(
+        r"\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(\d{4})\b",
+        str(text or ""),
+        re.I,
+    )
+    if not match:
+        return ""
+    day = int(match.group(1))
+    name = match.group(2).lower()
+    month = months["sept" if name.startswith("sept") else name[:3]]
+    if not 1 <= day <= 31:
+        return ""
+    return f"{int(match.group(3)):04d}-{month:02d}-{day:02d} 00:00"
 
 
 def _story_day(value: str) -> str:

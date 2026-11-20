@@ -245,6 +245,41 @@ class KnowledgeAnalysisTests(TempHome):
         self.assertEqual(items[0]["steps"][0]["summary"], "Following up")
         self.assertTrue(items[0]["steps"][0]["outbound"])
 
+    def test_storyline_keeps_every_letter_and_a_date(self):
+        knowledge_analysis._flush_storylines({"threads": {"gmail:policy": {
+            "count": 7,
+            "sent": 2,
+            "subject": "Partners Life Policy",
+            "parties": ["Ryan Lelievre <ryan@example.com>"],
+            "sample": "",
+            "steps": [
+                {"at": f"2026-09-{day:02d} 09:00", "who": "Ryan" if day % 2 else "You", "outbound": day % 2 == 0, "summary": f"Letter {day}"}
+                for day in range(1, 8)
+            ],
+        }}})
+        item = knowledge.list_items("storyline")[0]
+        self.assertEqual(len(item["steps"]), 7)
+        card = knowledge.storyline_cards()[0]
+        self.assertEqual(card["day"], "7 Sep")
+        self.assertEqual(card["steps"][0]["day"], "1 Sep")
+        self.assertEqual(card["steps"][-1]["day"], "7 Sep")
+        self.assertTrue(card["steps"][-1]["current"])
+
+        legacy = knowledge.storyline_cards([{
+            "id": "old",
+            "kind": "storyline",
+            "status": "active",
+            "text": (
+                "With Ryan Lelievre <ryan@example.com> about Partners Life Policy. "
+                "7 letters, 2 written by you. Latest: Hi Ryan, please reschedule. "
+                "On Fri, 25 Sept 2026, 11:56 Ryan wrote: the earlier note"
+            ),
+        }])
+        self.assertEqual(legacy[0]["day"], "25 Sep")
+        self.assertEqual(len(legacy[0]["steps"]), 1)
+        self.assertIn("reschedule", legacy[0]["steps"][0]["summary"])
+        self.assertNotIn("On Fri", legacy[0]["steps"][0]["summary"])
+
     def test_provider_without_schema_support_uses_prompt_constrained_json(self):
         error = ReplyError("The AI provider returned an error (400): response_format json_schema is not supported.")
         with patch("gmail_auto.knowledge_analysis.complete", side_effect=[error, '{"items":[]}']) as model:
