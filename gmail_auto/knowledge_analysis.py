@@ -27,12 +27,51 @@ owner-confirmed fact. Only infer experience, preference, or rule from messages m
 evidence from two separate sent messages. Explain which correspondent or type of email the pattern applies to.
 For reply patterns, optionally provide a short recipient or audience and tone; leave these fields blank for other items.
 An inferred rule is an observed practice, never a directive. Use kinds fact, person, topic, experience, preference, rule
-or decision. Use short, exact quotes and at most 12 items. Leave fields empty when unsupported.
+or decision. Use short, exact quotes and at most eight items. Use empty strings for fields that do not apply. Return an empty items list if no knowledge is supported.
 Use temporal "stable" for enduring information, "dated" for facts with evidence of their effective or expiry dates, and
 "unknown" when a changing fact only has an observation date. Use dates in YYYY-MM-DD. Subscriptions, quotes, availability
 and commitments are time-sensitive. A bill this month is evidence for that billing period only. Never extrapolate a
 subscription into next month, or treat an upload date, mail date, or analysis date as the start or end of a claim.
 Only give validity dates stated in the evidence. Use none for fields that do not apply."""
+
+
+_ITEM_FIELDS = {
+    **{key: {"type": "string"} for key in ("text", "valid_from", "valid_until", "recipient", "tone")},
+    "kind": {"type": "string", "enum": list(knowledge.KINDS)},
+    "temporal": {"type": "string", "enum": ["stable", "dated", "unknown"]},
+    "evidence": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {"ref": {"type": "string"}, "quote": {"type": "string"}},
+            "required": ["ref", "quote"],
+            "additionalProperties": False,
+        },
+    },
+}
+_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "knowledge_analysis",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": _ITEM_FIELDS,
+                        "required": list(_ITEM_FIELDS),
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["items"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 
 def status() -> dict:
@@ -171,15 +210,43 @@ def _analyze(records: list[dict]) -> None:
         ref: {"title": item["source"], "type": item["type"], "observed_at": item["observed_at"], "text": item["text"]}
         for ref, item in refs.items()
     }, ensure_ascii=False)
-    result = parse_json(complete(_SYSTEM, prompt, max_tokens=2200, temperature=0.1))
-    if not isinstance(result, dict) or not isinstance(result.get("items"), list):
-        raise ReplyError("The model did not return structured knowledge. Retry this batch.")
     extracted = []
-    for candidate in result["items"][:12]:
+    for candidate in _request_items(prompt)[:8]:
         item = _supported_item(candidate, refs)
         if item is not None:
             extracted.append(item)
     knowledge.merge_analysis(extracted)
+
+
+def _request_items(prompt: str) -> list:
+    schema = _RESPONSE_FORMAT
+    instruction = _SYSTEM
+    for _ in range(2):
+        try:
+            result = parse_json(complete(
+                instruction, prompt, max_tokens=4800, temperature=0.1,
+                response_format=schema, timeout=45.0,
+            ))
+        except ReplyError as exc:
+            error = str(exc).lower()
+            format_rejected = (
+                schema is not None
+                and any(code in error for code in ("(400)", "(422)"))
+                and any(field in error for field in ("response_format", "json_schema", "structured output"))
+            )
+            if format_rejected:
+                schema = None
+            elif "empty reply" not in error:
+                raise
+        else:
+            if result is not None and isinstance(result.get("items"), list):
+                return result["items"]
+        instruction = _SYSTEM + (
+            "\nThe previous response could not be read. Return only a compact JSON object with "
+            "an items array, no Markdown, and at most four short records."
+        )
+    raise ReplyError("The model did not return structured knowledge after retrying. "
+                     "Analyse knowledge can resume this batch.")
 
 
 def _supported_item(raw, refs: dict) -> dict | None:
