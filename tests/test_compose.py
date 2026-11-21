@@ -35,6 +35,20 @@ def _issued_invoice(email_address="lee@client.example"):
 
 
 class ComposeTests(WebCase):
+    def test_a_new_email_adds_the_saved_signature_once(self):
+        from gmail_auto.settings import save_settings
+
+        save_settings({"mail_signatures": {"gmail": "Robin E\nInnoPro"}})
+        item = approvals.create_new("lee@a.example", "Test email", "Hello,\n\nKind regards")
+        box = NewMailbox()
+        approvals.approve(item["id"], "web", client=box)
+        body = box.new[0][2]
+        self.assertIn("Kind regards", body)
+        self.assertTrue(body.endswith("Robin E\nInnoPro"))
+        again = approvals.create_new("lee@a.example", "Again", body)
+        approvals.approve(again["id"], "web", client=box)
+        self.assertEqual(box.new[1][2].count("Robin E\nInnoPro"), 1)
+
     def test_recipients_are_checked(self):
         self.assertEqual(outgoing.clean_recipients("lee@a.example; ann@b.example lee@a.example"), "lee@a.example, ann@b.example")
         with self.assertRaises(ConfigError):

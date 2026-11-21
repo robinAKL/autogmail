@@ -115,3 +115,46 @@ do not share them. `profile.json` becomes your personal profile; look at it befo
 ```powershell
 python -m unittest discover -s tests -t . -v
 ```
+
+## Hosted SaaS
+
+Set `AUTOMAIL_SAAS=1` only for a separate SaaS deployment. Keep the existing
+single-user deployment and its storage separate. SaaS starts each verified
+login address with its own workspace. A Gmail or Outlook connection stays
+with the workspace that authorized it, even if that mailbox address is
+later used to sign in to another workspace.
+
+Configure these services once on the server:
+
+| Setting | Platform configuration |
+| --- | --- |
+| `AUTOMAIL_PUBLIC_ORIGIN` | Canonical HTTPS origin, without a path |
+| `FLASK_SECRET_KEY` | Strong random session signing secret, shared across instances |
+| Redis | Persistent Redis or Upstash credentials, dedicated to SaaS |
+| `TOKEN_ENCRYPTION_KEY` | Separate strong random secret for encrypted provider grants |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `MAIL_FROM` | Platform SMTP delivery of sign-in codes. Alternatively set `RESEND_API_KEY` and `MAIL_FROM` |
+| `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET` | Google Web OAuth client |
+| `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_TENANT_ID` | Microsoft Web registration with organizational and personal accounts, using `common` where appropriate |
+| `R2_*` | Persistent downloads and uploads, required for hosted attachments |
+| AI model credentials | Platform model for draft generation, if enabled |
+
+Register the public origin plus `/oauth/callback` in Google and the same origin
+plus `/oauth/microsoft/callback` in Microsoft. Users connect through the
+providers' consent screens. The inherited single-user cron and WhatsApp
+routes are disabled in SaaS mode. Use manual refresh and approve sending in
+the web app during the initial rollout.
+
+Before accepting real accounts, smoke-test on the deployment domain:
+
+1. Verify a non-Gmail sign-in address receives a code and can create a workspace.
+2. Connect a different Gmail address. Sign out and sign in as that Gmail
+   address. Confirm the new workspace starts without the first workspace's
+   connections, mail, settings, approvals, or attachments.
+3. Connect an Outlook.com address and a Microsoft 365 mailbox separately.
+   Check refresh, manual reply, disconnect, reconnect, and access after logout.
+4. Check that a duplicate approval sends once and that a timed-out delivery
+   appears as unconfirmed. Check the provider's Sent folder before resending.
+5. Complete the applicable Google verification and security assessment
+   before opening public onboarding for Gmail.
+
+Single-user records are not imported automatically into the hosted deployment.

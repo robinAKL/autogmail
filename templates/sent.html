@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Sent{% endblock %}
+{% block body %}
+<header class="page-head">
+  <div>
+    <h1>Sent</h1>
+    <p class="sub">Letters sent from the mailboxes connected to this sign-in. Each one keeps the mailbox it came from.</p>
+    {% if accounts %}
+    <p class="sub">
+      {% for item in accounts %}<span class="chip {{ item.provider }}">{{ item.label }} · <span translate="no">{{ item.email }}</span></span>{% endfor %}
+    </p>
+    {% endif %}
+  </div>
+  <div class="head-actions">
+    <a class="button quiet" href="{{ url_for('sent_page') }}">Refresh list</a>
+  </div>
+</header>
+
+{% for message in errors %}
+<p class="banner danger">{{ message }}</p>
+{% endfor %}
+
+{% if not connected and not rows %}
+<section class="card empty-state">
+  <h2>Connect a mailbox to see mail you have sent.</h2>
+  <a class="button" href="{{ url_for('connections_page') }}">Open Connections</a>
+</section>
+{% else %}
+<section class="list" aria-label="Sent mail">
+  {% for row in rows %}
+  <article class="row">
+    <span class="row-top">
+      <span class="row-who" translate="no">{{ row.who }}</span>
+      <span class="row-date">{{ row.short_date }}</span>
+    </span>
+    <span class="row-subject" translate="no">{{ row.subject }}</span>
+    {% if row.snippet %}<span class="row-snippet" translate="no">{{ row.snippet }}</span>{% endif %}
+    <span class="row-foot">
+      <span class="chip tiny {{ row.provider }}">{{ row.provider_label }}</span>
+      <span class="chip tiny source-mailbox" translate="no">{{ row.mailbox }}</span>
+    </span>
+  </article>
+  {% else %}
+  <p class="empty">No sent mail in the connected mailboxes.</p>
+  {% endfor %}
+</section>
+{% endif %}
+{% endblock %}

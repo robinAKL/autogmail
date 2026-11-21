@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from gmail_auto.errors import ConfigError
 from gmail_auto.paths import data_dir
 from gmail_auto.storage import LOCK, load_doc, save_doc
+from gmail_auto.tenant import require_user_id, saas_enabled
 
 # Gmail takes a message of up to 25 MB once encoded, which leaves about 18 MB of files. Outlook takes files over
 # 3 MB through an upload session. Files over ~4 MB go from the browser straight to R2 (see start_direct), since
@@ -205,7 +206,8 @@ def _r2_size(file_id: str) -> int:
 def _where(file_id: str) -> tuple[str, str]:
     account = os.environ["R2_ACCOUNT_ID"].strip()
     bucket = os.environ["R2_BUCKET"].strip()
-    return f"{account}.r2.cloudflarestorage.com", f"/{bucket}/{_PREFIX}{file_id}"
+    prefix = f"{_PREFIX}users/{require_user_id()}/" if saas_enabled() else _PREFIX
+    return f"{account}.r2.cloudflarestorage.com", f"/{bucket}/{prefix}{file_id}"
 
 
 def presign(method: str, file_id: str, expires: int = 600, filename: str = "", now: datetime | None = None) -> str:

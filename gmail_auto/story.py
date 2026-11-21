@@ -17,7 +17,7 @@ _STATUS = {
     "waiting_on_me": "Waiting on you",
     "waiting_on_them": "Waiting on them",
     "in_progress": "In progress",
-    "settled": "",
+    "settled": "Settled",
 }
 
 
@@ -42,9 +42,8 @@ def attach_stories(rows: list[dict]) -> list[dict]:
     for members in by_id.values():
         members.sort(key=_when)
         status = story_status(members)
-        size = len(members)
-        system = all(is_system_address((item.get("email") or "").strip()) for item in members)
-        open_story = size >= 2 and status != "settled" and not system
+        size = _letter_count(members)
+        open_story = size >= 2
         for row in members:
             row["story_size"] = size
             row["story_status"] = status
@@ -61,7 +60,8 @@ def story_view(row: dict | None, rows: list[dict]) -> dict | None:
         return None
     members = [item for item in rows if item.get("story_id") == story_id]
     members.sort(key=_when)
-    if len(members) < 2:
+    size = _letter_count(members)
+    if size < 2:
         return None
     status = row.get("story_status") or story_status(members)
     sources: list[str] = []
@@ -79,10 +79,15 @@ def story_view(row: dict | None, rows: list[dict]) -> dict | None:
         "id": story_id,
         "status": status,
         "label": _STATUS.get(status, ""),
-        "size": len(members),
+        "size": size,
         "steps": steps,
         "sources": sources,
     }
+
+
+def _letter_count(members: list[dict]) -> int:
+    # Sent replies are stored on their incoming row, rather than as another inbox row.
+    return len(members) + sum(1 for item in members if item.get("kind") == "sent" and item.get("reply"))
 
 
 def story_status(members: list[dict]) -> str:
@@ -182,7 +187,7 @@ def _topic_row(row: dict) -> bool:
 
 
 def story_board(rows: list[dict], hidden: set[str] | None = None) -> list[dict]:
-    """One card per open matter, newest activity first. Hidden ids stay off the rail."""
+    """One card per multi-letter matter. Hidden ids stay off the rail."""
     skip = hidden if hidden is not None else hidden_ids()
     groups: dict[str, list[dict]] = {}
     for row in rows:
@@ -204,7 +209,7 @@ def story_board(rows: list[dict], hidden: set[str] | None = None) -> list[dict]:
                 "blurb": (newest.get("summary") or newest.get("snippet") or newest.get("subject") or "")[:160],
                 "status": status,
                 "label": _STATUS.get(status, "In progress") or "In progress",
-                "size": len(members),
+                "size": _letter_count(members),
                 "date": newest.get("short_date") or newest.get("date") or "",
                 "open_key": newest.get("key") or "",
                 "letters": [

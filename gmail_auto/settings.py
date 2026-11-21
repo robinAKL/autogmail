@@ -56,7 +56,15 @@ DEFAULTS = {
     "translation_mode": "seamless",
     "translate_outgoing": True,
     "preserve_langs": [],
+    "default_sender": "",
+    "auto_reply_allow": [],
+    "auto_reply_block": [],
+    "mail_signatures": {},
+    "signature_logos": {},
+    "signature_logo_positions": {},
 }
+
+LOGO_POSITIONS = ("bottom", "top", "left", "right")
 
 
 def load_settings() -> dict:
@@ -149,6 +157,11 @@ def _clean(data: dict, strict: bool = False) -> dict:
         preserve_langs = [str(p).strip().lower() for p in raw_preserve if str(p).strip()]
     else:
         preserve_langs = list(DEFAULTS["preserve_langs"])
+    default_sender = str(data.get("default_sender") or "").strip().lower()
+    if default_sender not in {"", "gmail", "outlook"}:
+        if strict:
+            raise ConfigError("Choose Gmail, Outlook, or automatic for the default sender.")
+        default_sender = ""
 
     return {
         "reply_language": language,
@@ -174,6 +187,12 @@ def _clean(data: dict, strict: bool = False) -> dict:
         "translation_mode": translation_mode,
         "translate_outgoing": bool(data.get("translate_outgoing", DEFAULTS["translate_outgoing"])),
         "preserve_langs": preserve_langs,
+        "default_sender": default_sender,
+        "auto_reply_allow": _rule_lines(data.get("auto_reply_allow"), strict),
+        "auto_reply_block": _rule_lines(data.get("auto_reply_block"), strict),
+        "mail_signatures": _clean_signatures(data.get("mail_signatures"), strict),
+        "signature_logos": _clean_signature_logos(data.get("signature_logos")),
+        "signature_logo_positions": _clean_signature_logo_positions(data.get("signature_logo_positions")),
     }
 
 
@@ -226,3 +245,203 @@ def _union_lines(items: list[str], fallback: list[str]) -> list[str]:
             out.append(item)
             seen.add(item.lower())
     return out[:_CLEANUP_LINES]
+
+
+def _rule_lines(value, strict: bool) -> list[str]:
+    if not value:
+        return []
+    if isinstance(value, str):
+        raw = [line.strip() for line in value.splitlines() if line.strip()]
+    elif isinstance(value, (list, tuple)):
+        raw = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        return []
+    if len(raw) > _CLEANUP_LINES:
+        if strict:
+            raise ConfigError(f"Keep auto-reply rules to {_CLEANUP_LINES} or fewer lines.")
+        raw = raw[:_CLEANUP_LINES]
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if len(item) > _CLEANUP_CHARS:
+            if strict:
+                raise ConfigError("One of the auto-reply rules is too long.")
+            item = item[:_CLEANUP_CHARS]
+        key = item.lower()
+        if key not in seen:
+            out.append(item)
+            seen.add(key)
+    return out
+
+
+def _clean_signatures(value, strict: bool) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, str] = {}
+    for raw_key, raw_sig in value.items():
+        key = str(raw_key or "").strip().lower()
+        if not key or not isinstance(raw_sig, str):
+            continue
+        sig = raw_sig.replace("\r\n", "\n").strip()
+        if len(sig) > 2000:
+            if strict:
+                raise ConfigError("Keep each mailbox signature to 2000 characters or fewer.")
+            sig = sig[:2000]
+        if sig:
+            out[key] = sig
+    return out
+
+
+def _rule_matches(rule: str, sender: str, haystack: str) -> bool:
+    needle = (rule or "").strip().lower()
+    if not needle:
+        return False
+    if needle.startswith("@"):
+        return needle in sender
+    if "@" in needle and " " not in needle:
+        return needle in sender or needle in haystack
+    return needle in sender or needle in haystack
+
+
+def evaluate_auto_reply_rules(mail, settings: dict) -> tuple[bool, str]:
+    """Tighten whether a reply may be auto-sent in smart/never modes."""
+    sender = " ".join(
+        part for part in (
+            getattr(mail, "from_email", "") or "",
+            getattr(mail, "reply_email", "") or "",
+            getattr(mail, "from_name", "") or "",
+        ) if part
+    ).lower()
+    haystack = " ".join(
+        part for part in (
+            getattr(mail, "subject", "") or "",
+            getattr(mail, "body", "") or "",
+            getattr(mail, "snippet", "") or "",
+        ) if part
+    ).lower()
+    for rule in settings.get("auto_reply_block") or []:
+        if _rule_matches(rule, sender, haystack):
+            return False, f"Held by never-auto-reply rule: {rule}"
+    allow_rules = settings.get("auto_reply_allow") or []
+    if allow_rules and not any(_rule_matches(rule, sender, haystack) for rule in allow_rules):
+        return False, "Held because it did not match your auto-reply allow rules."
+    return True, ""
+
+
+def signature_for_mailbox(settings: dict, provider: str = "", email: str = "") -> str:
+    sigs = settings.get("mail_signatures") or {}
+    if not isinstance(sigs, dict):
+        return ""
+    for candidate in ((email or "").strip().lower(), (provider or "").strip().lower()):
+        if candidate and isinstance(sigs.get(candidate), str) and sigs[candidate].strip():
+            return sigs[candidate].strip()
+    return ""
+
+
+def append_signature(body: str, signature: str) -> str:
+    text = (body or "").rstrip()
+    sig = (signature or "").strip()
+    if not sig:
+        return text
+    if not text:
+        return sig
+    if text.endswith(sig):
+        return text
+    return f"{text}\n\n{sig}"
+
+
+def _clean_signature_logos(value) -> dict[str, dict]:
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for raw_key, raw_meta in value.items():
+        key = str(raw_key or "").strip().lower()
+        if not key or not isinstance(raw_meta, dict):
+            continue
+        file_id = str(raw_meta.get("file_id") or "").strip()
+        if not file_id:
+            continue
+        mime = str(raw_meta.get("mime") or "image/png").strip().lower()
+        name = str(raw_meta.get("name") or "logo").strip()[:120]
+        account = str(raw_meta.get("account") or "").strip().lower()[:200]
+        try:
+            size = max(0, int(raw_meta.get("size") or 0))
+        except (TypeError, ValueError):
+            size = 0
+        entry = {"file_id": file_id, "name": name, "mime": mime, "size": size, "account": account}
+        if raw_meta.get("position"):
+            entry["position"] = normalize_logo_position(raw_meta.get("position"))
+        out[key] = entry
+    return out
+
+
+def normalize_logo_position(value) -> str:
+    pos = str(value or "").strip().lower()
+    return pos if pos in LOGO_POSITIONS else "bottom"
+
+
+def _clean_signature_logo_positions(value) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    out: dict[str, str] = {}
+    for raw_key, raw_pos in value.items():
+        key = str(raw_key or "").strip().lower()
+        if not key:
+            continue
+        out[key] = normalize_logo_position(raw_pos)
+    return out
+
+
+def signature_logo_position_for_mailbox(settings: dict, provider: str = "", email: str = "") -> str:
+    positions = settings.get("signature_logo_positions") or {}
+    prov = (provider or "").strip().lower()
+    acct = (email or "").strip().lower()
+    if isinstance(positions, dict):
+        candidates = [f"{prov}:{acct}" if prov and acct else "", acct, prov]
+        for candidate in candidates:
+            if candidate and candidate in positions:
+                return normalize_logo_position(positions[candidate])
+    meta = signature_logo_for_mailbox(settings, provider=provider, email=email)
+    if isinstance(meta, dict) and meta.get("position"):
+        return normalize_logo_position(meta.get("position"))
+    return "bottom"
+
+
+def signature_logo_for_mailbox(settings: dict, provider: str = "", email: str = "") -> dict | None:
+    logos = settings.get("signature_logos") or {}
+    if not isinstance(logos, dict):
+        return None
+    prov = (provider or "").strip().lower()
+    acct = (email or "").strip().lower()
+    if acct:
+        for candidate in (f"{prov}:{acct}" if prov else "", acct):
+            meta = logos.get(candidate) if candidate else None
+            if isinstance(meta, dict) and meta.get("file_id"):
+                saved_acct = str(meta.get("account") or "").strip().lower()
+                if not saved_acct or saved_acct == acct:
+                    return dict(meta)
+        meta = logos.get(prov) if prov else None
+        if isinstance(meta, dict) and meta.get("file_id"):
+            saved_acct = str(meta.get("account") or "").strip().lower()
+            if saved_acct == acct:
+                return dict(meta)
+        return None
+    meta = logos.get(prov) if prov else None
+    if isinstance(meta, dict) and meta.get("file_id") and not str(meta.get("account") or "").strip():
+        return dict(meta)
+    return None
+
+
+def signature_logo_bytes(settings: dict, provider: str = "", email: str = "") -> tuple[dict, bytes] | None:
+    meta = signature_logo_for_mailbox(settings, provider=provider, email=email)
+    if meta is None:
+        return None
+    from gmail_auto import files
+
+    try:
+        data = files.read(meta["file_id"])
+    except ConfigError:
+        return None
+    if not data:
+        return None
+    return meta, data

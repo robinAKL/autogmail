@@ -111,6 +111,133 @@ class SendWithAttachmentTests(WebCase):
         self.assertEqual([call[1] for call in calls], ["/me/messages/o1/createReply", "/me/messages/d1", "/me/messages/d1/attachments", "/me/messages/d1/send"])
         self.assertEqual(calls[2][2]["name"], "a.pdf")
         self.assertEqual(base64.b64decode(calls[2][2]["contentBytes"]), b"abc")
+        self.assertNotIn("isInline", calls[2][2])
+
+    def test_outlook_reply_embeds_a_signature_image_and_escapes_the_text(self):
+        from gmail_auto.outlook_client import OutlookClient
+
+        calls = []
+
+        def fake_graph(kind, method, path, params=None, body=None, headers=None, **_):
+            calls.append((method, path, body))
+            return {"id": "d1", "body": {"content": "<p>quoted</p>"}} if path.endswith("createReply") else {}
+
+        with patch("gmail_auto.microsoft.graph", side_effect=fake_graph):
+            OutlookClient.__new__(OutlookClient).send_reply(
+                sample(id="o1", provider="outlook"),
+                "Hi <there>",
+                "me@example.com",
+                [("a.pdf", "application/pdf", b"abc")],
+                html_suffix='<img src="cid:logo">',
+                inline_images=[("cid:logo", "logo.png", "image/png", b"\x89PNG")],
+            )
+        html_body = calls[1][2]["body"]["content"]
+        self.assertIn("Hi &lt;there&gt;", html_body)
+        self.assertIn('<img src="cid:logo">', html_body)
+        self.assertNotIn("isInline", calls[2][2])
+        self.assertEqual(calls[3][2]["isInline"], True)
+        self.assertEqual(calls[3][2]["contentId"], "logo")
+        self.assertEqual(calls[3][2]["contentType"], "image/png")
+        self.assertEqual(base64.b64decode(calls[3][2]["contentBytes"]), b"\x89PNG")
+
+    def test_outlook_new_mail_embeds_a_signature_image(self):
+        from gmail_auto.outlook_client import OutlookClient
+
+        calls = []
+        with patch("gmail_auto.microsoft.graph", side_effect=lambda *a, **k: calls.append((a, k)) or {}):
+            OutlookClient.__new__(OutlookClient).send_new(
+                "lee@a.example",
+                "Hello",
+                "Hi <there>",
+                html_suffix='<img src="cid:logo">',
+                inline_images=[("logo", "logo.png", "image/png", b"\x89PNG")],
+            )
+        message = calls[0][1]["body"]["message"]
+        self.assertEqual(message["body"]["contentType"], "HTML")
+        self.assertIn("Hi &lt;there&gt;", message["body"]["content"])
+        self.assertIn('<img src="cid:logo">', message["body"]["content"])
+        logo = message["attachments"][0]
+        self.assertEqual(logo["isInline"], True)
+        self.assertEqual(logo["contentId"], "logo")
+        self.assertEqual(base64.b64decode(logo["contentBytes"]), b"\x89PNG")
+
+    def test_outlook_refuses_a_signature_image_over_three_megabytes(self):
+        from gmail_auto.outlook_client import OutlookClient
+
+        graph = patch("gmail_auto.microsoft.graph")
+        with graph as fake, self.assertRaises(ConfigError) as raised:
+            OutlookClient.__new__(OutlookClient).send_new(
+                "lee@a.example",
+                "Hello",
+                "Hi",
+                inline_images=[("logo", "logo.png", "image/png", b"x" * 3_000_001)],
+            )
+        fake.assert_not_called()
+        self.assertIn("too large to embed", str(raised.exception))
+
+    def test_outlook_send_embeds_the_saved_logo_for_that_mailbox(self):
+        from gmail_auto.outlook_client import OutlookClient
+
+        calls = []
+        client = OutlookClient.__new__(OutlookClient)
+        client._email = "robin@innopro.co.nz"
+        with patch("gmail_auto.microsoft.graph", side_effect=lambda *a, **k: calls.append(k) or {}), patch(
+            "gmail_auto.signatures.load_logo", return_value=('evil".png', "image/png", b"\x89PNG")
+        ) as loader:
+            client.send_new("lee@a.example", "Hello", "Hi <there>")
+        loader.assert_called_once_with("outlook", "robin@innopro.co.nz")
+        message = calls[0]["body"]["message"]
+        self.assertEqual(message["body"]["contentType"], "HTML")
+        self.assertIn("Hi &lt;there&gt;", message["body"]["content"])
+        logo = message["attachments"][0]
+        self.assertEqual(logo["isInline"], True)
+        self.assertTrue(logo["contentId"].startswith("logo.png."))
+        self.assertTrue(logo["contentId"].endswith("@autogmail"))
+        self.assertNotIn('"', logo["contentId"])
+        self.assertIn(f'cid:{logo["contentId"]}', message["body"]["content"])
+        self.assertEqual(base64.b64decode(logo["contentBytes"]), b"\x89PNG")
+
+    def test_outlook_uses_a_draft_when_the_logo_and_files_exceed_one_request(self):
+        from gmail_auto.outlook_client import OutlookClient
+
+        calls = []
+
+        def fake_graph(kind, method, path, params=None, body=None, headers=None, **_):
+            calls.append((method, path))
+            return {"id": "draft-1"}
+
+        client = OutlookClient.__new__(OutlookClient)
+        client._email = "robin@innopro.co.nz"
+        big = b"x" * 2_000_000
+        with patch("gmail_auto.microsoft.graph", side_effect=fake_graph), patch(
+            "gmail_auto.signatures.load_logo", return_value=("logo.png", "image/png", big)
+        ):
+            client.send_new("lee@a.example", "Hello", "Hi", attachments=[("notes.pdf", "application/pdf", big)])
+        self.assertEqual(calls[0], ("POST", "/me/messages"))
+        self.assertIn(("POST", "/me/messages/draft-1/attachments"), calls)
+        self.assertEqual(calls[-1], ("POST", "/me/messages/draft-1/send"))
+        self.assertNotIn(("POST", "/me/sendMail"), calls)
+
+    def test_outlook_reads_the_address_when_the_saved_account_is_blank(self):
+        from gmail_auto.outlook_client import OutlookClient
+
+        calls = []
+        client = OutlookClient.__new__(OutlookClient)
+        client._email = ""
+
+        def address():
+            client._email = "robin@innopro.co.nz"
+            return client._email
+
+        client.get_user_email = address
+        with patch("gmail_auto.microsoft.graph", side_effect=lambda *a, **k: calls.append(k) or {}), patch(
+            "gmail_auto.microsoft.status", return_value={"connected": True, "account": ""}
+        ), patch("gmail_auto.signatures.load_logo", return_value=("logo.png", "image/png", b"\x89PNG")) as loader:
+            client.send_new("lee@a.example", "Hello", "Hi")
+        loader.assert_called_once_with("outlook", "robin@innopro.co.nz")
+        logo = calls[0]["body"]["message"]["attachments"][0]
+        self.assertEqual(logo["isInline"], True)
+        self.assertEqual(base64.b64decode(logo["contentBytes"]), b"\x89PNG")
 
 
 class AttachOnPageTests(WebCase):

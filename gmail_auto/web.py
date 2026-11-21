@@ -5,19 +5,26 @@ import re
 import secrets
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import urlsplit
 
-from flask import Flask, Response, abort, flash, redirect, request, session, url_for
+from flask import Flask, Response, abort, flash, g, redirect, request, session, url_for
 from markupsafe import Markup
 
-from gmail_auto import approvals, files, knowledge, microsoft, sharepoint, stats, whatsapp
+from gmail_auto import approvals, files, knowledge, login_sessions, microsoft, sharepoint, stats, whatsapp
 from gmail_auto.console import say
-from gmail_auto.accounts import finish_verification, gmail_status, mark_gmail_authorized, start_verification
+from gmail_auto.accounts import (
+    cancel_verification,
+    finish_verification,
+    gmail_status,
+    mark_gmail_authorized,
+    start_verification,
+)
 from gmail_auto.envfile import has_openai_key, using_gateway
 from gmail_auto.errors import ConfigError, NotConnected, ReplyError, named_error
 from gmail_auto.llm import active_model, complete
 from gmail_auto.extractors import SUPPORTED, extract_text
 from gmail_auto.filters import Skip, classify
-from gmail_auto.gmail_client import SCOPES, web_client_config
+from gmail_auto.gmail_client import OAUTH_SCOPES, SCOPES, web_client_config
 from gmail_auto.mailboxes import PROVIDERS, client_for, connected_clients
 from gmail_auto.mailer import deliver_code
 from gmail_auto.mailview import FRAME_POLICY, document
@@ -33,7 +40,8 @@ from gmail_auto.importance import (
     known_from_knowledge,
     preset_of,
 )
-from gmail_auto.storage import persistent
+from gmail_auto.storage import persistent, workspace_operation
+from gmail_auto.tenant import require_user_id, saas_enabled, user_scope
 from gmail_auto.token_store import storage_hint, storage_kind, storage_ready
 from gmail_auto.store import get_state, is_live, list_processed, load_last_run, load_processed, now_text, set_state
 from gmail_auto.story import attach_stories, hide_story, story_board, story_detail, story_view
@@ -45,6 +53,7 @@ _OPEN_PATHS = {"/whatsapp/webhook"}
 _INBOX_TTL = 60
 _INBOX_STORE_TTL = 15 * 60
 _INBOX_PAGE = 20
+_INBOX_CAP = 100
 _inbox_cache: dict = {"at": 0.0, "who": None, "data": None}
 _FILTERS = {
     "all": "All",
@@ -76,12 +85,16 @@ def create_app() -> Flask:
 
 def configure_app(app: Flask) -> None:
     hosted = bool(os.environ.get("VERCEL"))
+    if saas_enabled():
+        _configured_saas_origin()
+        if hosted and not storage_ready():
+            raise ConfigError("Connect persistent Redis storage before enabling hosted SaaS mode.")
     app.config["MAX_CONTENT_LENGTH"] = 4_400_000 if hosted else 30_000_000
     app.config["TEMPLATES_AUTO_RELOAD"] = True
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
     app.secret_key = _secret()
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-    app.config["SESSION_COOKIE_SECURE"] = hosted
+    app.config["SESSION_COOKIE_SECURE"] = hosted or saas_enabled()
     app.jinja_env.filters["md"] = render_markdown
 
     @app.before_request
@@ -94,7 +107,47 @@ def configure_app(app: Flask) -> None:
             origin = request.headers.get("Origin", "")
             if origin and not _host_allowed(_origin_host(origin)):
                 abort(403)
+            if origin and saas_enabled() and urlsplit(origin).netloc.lower() != request.host.lower():
+                abort(403)
         return None
+
+    @app.before_request
+    def workspace_scope():
+        if not saas_enabled():
+            return None
+        configured_origin = _configured_saas_origin()
+        if configured_origin and request.host.lower() != urlsplit(configured_origin).netloc.lower():
+            abort(403)
+        if request.path in {
+            "/cron", "/whatsapp/webhook", "/connections/whatsapp"
+        }:
+            abort(404)
+        if request.endpoint in {"login_page", "login_code", "login_submit", "logout", "privacy_page", "static"}:
+            return None
+        user_id = session.get("user_id")
+        if not user_id:
+            return redirect(url_for("login_page"))
+        try:
+            active = login_sessions.is_active(session.get("login_session_id"), user_id)
+        except ConfigError:
+            abort(503)
+        if not active:
+            session.clear()
+            return redirect(url_for("login_page"))
+        scope = user_scope(user_id)
+        try:
+            scope.__enter__()
+        except ConfigError:
+            session.clear()
+            return redirect(url_for("login_page"))
+        g.workspace_scope = scope
+        return None
+
+    @app.teardown_request
+    def close_workspace(_error):
+        scope = g.pop("workspace_scope", None)
+        if scope is not None:
+            scope.__exit__(None, None, None)
 
     @app.context_processor
     def shell():
@@ -114,6 +167,12 @@ def configure_app(app: Flask) -> None:
             "file_max": files.MAX_FILE_BYTES,
             "ui_lang": _ui_language(),
         }
+
+    @app.after_request
+    def private_workspace_responses(response):
+        if saas_enabled() and request.endpoint != "static":
+            response.headers["Cache-Control"] = "private, no-store"
+        return response
 
     @app.after_request
     def interface_language(response):
@@ -154,43 +213,43 @@ def configure_app(app: Flask) -> None:
 
     @app.post("/login/code")
     def login_code():
-        mode = _mode(request.form.get("mode"))
         email = request.form.get("email", "").strip()
         if not _email_ok(email):
-            return _login_view(mode=mode, email=email, error="Enter your email address."), 400
+            return _login_view(email=email, error="Enter your email address."), 400
         try:
-            code, otp = start_verification(email, mode, session.get("otp"))
+            code = start_verification(email, _client_ip())
             try:
                 deliver_code(email, code)
             except ConfigError:
-                session.pop("otp", None)
+                cancel_verification(email, code)
                 raise
         except ConfigError as exc:
-            return _login_view(mode=mode, email=email, error=str(exc)), 400
-        session["otp"] = otp
+            return _login_view(email=email, error=str(exc)), 400
         session["pending_email"] = email.strip().lower()
-        session["pending_mode"] = mode
-        return redirect(url_for("login_page", mode=mode, sent=1))
+        session.pop("otp", None)
+        return redirect(url_for("login_page", sent=1))
 
     @app.post("/login")
     def login_submit():
-        mode = _mode(request.form.get("mode") or session.get("pending_mode"))
         email = (request.form.get("email") or session.get("pending_email") or "").strip()
         code = request.form.get("code", "").strip()
         if not _email_ok(email):
-            return _login_view(mode=mode, email=email, error="Enter your email address."), 400
+            return _login_view(email=email, error="Enter your email address."), 400
         if not code:
-            return _login_view(mode=mode, email=email, sent=True, error="Enter the code from the email."), 400
-        otp = dict(session.get("otp") or {})
+            return _login_view(email=email, sent=True, error="Enter the code from the email."), 400
         try:
-            user = finish_verification(email, mode, code, otp)
+            account = finish_verification(email, code, _client_ip())
+            login_session_id = None
+            if saas_enabled():
+                login_sessions.revoke(session.get("login_session_id"))
+                login_session_id = login_sessions.create(account["user_id"])
         except ConfigError as exc:
-            session["otp"] = otp
-            return _login_view(mode=mode, email=email, sent=True, error=str(exc)), 400
-        session["user"] = user
-        session.pop("otp", None)
-        session.pop("pending_email", None)
-        session.pop("pending_mode", None)
+            return _login_view(email=email, sent=True, error=str(exc)), 400
+        session.clear()
+        session["user"] = account["email"]
+        session["user_id"] = account["user_id"]
+        if login_session_id:
+            session["login_session_id"] = login_session_id
         flash("You are signed in.")
         return redirect(url_for("home"))
 
@@ -207,7 +266,12 @@ def configure_app(app: Flask) -> None:
 
     @app.get("/logout")
     def logout():
-        session.pop("user", None)
+        if saas_enabled():
+            try:
+                login_sessions.revoke(session.get("login_session_id"))
+            except (ConfigError, OSError):
+                abort(503)
+        session.clear()
         return redirect(url_for("login_page"))
 
     # ---- inbox ---------------------------------------------------------------
@@ -224,14 +288,40 @@ def configure_app(app: Flask) -> None:
         blocked = _login_required()
         if blocked:
             return blocked
-        inbox = _inbox(live=True)
+        inbox = _inbox(live=True, force=True, prefetch=True)
         if "application/json" in (request.headers.get("Accept") or ""):
             return {
                 "ok": True,
                 "count": len(inbox.get("rows") or []),
+                "provider_counts": inbox.get("provider_counts", {}),
                 "errors": inbox.get("errors") or [],
             }
         return redirect(url_for("home", **_inbox_query()))
+
+    @app.get("/inbox/more")
+    def inbox_more():
+        """One more metadata page per mailbox. The browser asks again until each box hits 100."""
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        who = session.get("user", "")
+        data = _inbox(live=False)
+        if not data.get("rows") and not data.get("cursors"):
+            data = _inbox(live=True, force=True)
+        added = _fetch_inbox_slice(who, data) if _inbox_has_more(data) else 0
+        return {
+            "ok": True,
+            "added": added,
+            "count": len(data.get("rows") or []),
+            "hasMore": _inbox_has_more(data),
+        }
+
+    @app.get("/sent")
+    def sent_page():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        return _render("sent.html", **_sent())
 
     @app.post("/inbox/story/hide")
     def story_hide():
@@ -350,12 +440,19 @@ def configure_app(app: Flask) -> None:
         mode = request.form.get("mode", "")
         if mode not in _MODES:
             abort(400)
+        confirmed = request.form.get("confirm") == "1"
         try:
-            if mode == "draft":
-                switch_live(False)
-            else:
-                switch_live(True, request.form.get("confirm") == "1")
-                save_settings({"approval_mode": mode})
+            with workspace_operation("mail-check"):
+                if mode == "draft":
+                    switch_live(False)
+                elif saas_enabled():
+                    if mode != _current_mode() and (mode in {"smart", "never"} or not is_live()) and not confirmed:
+                        raise ConfigError("Confirm before enabling this sending mode.")
+                    save_settings({"approval_mode": mode})
+                    switch_live(True, confirmed)
+                else:
+                    switch_live(True, confirmed)
+                    save_settings({"approval_mode": mode})
         except ConfigError as exc:
             flash(str(exc), "error")
             return redirect(url_for("profile_page") + "#send")
@@ -668,7 +765,12 @@ def configure_app(app: Flask) -> None:
 
             to = (invoices.get(request.args["invoice"]) or {}).get("client_email") or ""
         try:
-            session = writer.start(to=to, subject=request.args.get("subject", ""), refs=refs)
+            session = writer.start(
+                to=to,
+                subject=request.args.get("subject", ""),
+                refs=refs,
+                provider=request.args.get("provider", ""),
+            )
         except ConfigError as exc:
             flash(str(exc), "error")
             return redirect(url_for("compose_page"))
@@ -686,8 +788,20 @@ def configure_app(app: Flask) -> None:
         if session is None:
             flash("That draft is no longer here. Start a new email.", "error")
             return redirect(url_for("write_start"))
-        from gmail_auto import contracts, invoices
+        from gmail_auto import contracts, invoices, outgoing
         from gmail_auto.writer import LANGUAGES
+
+        mailboxes = _compose_mailboxes()
+        available = [box["provider"] for box in mailboxes]
+        approval = approvals.get(session.get("approval_id") or "") if session.get("approval_id") else None
+        reply_locked = bool(approval and approval.get("mode") != "new")
+        if reply_locked:
+            chosen_provider = (approval.get("provider") or session.get("provider") or "").strip().lower()
+        else:
+            chosen_provider = (session.get("provider") or "").strip().lower()
+            if chosen_provider not in available:
+                preferred = outgoing.default_provider(available)
+                chosen_provider = preferred if preferred in available else (available[0] if available else chosen_provider)
 
         attached = {item.get("ref") for item in session.get("attachments") or []}
         choices = []
@@ -712,6 +826,9 @@ def configure_app(app: Flask) -> None:
             "write.html",
             languages=LANGUAGES,
             session=session,
+            mailboxes=mailboxes,
+            chosen_provider=chosen_provider,
+            reply_locked=reply_locked,
             people=_people_for_compose(),
             has_model=model_ready(),
             files_ready=files.ready(),
@@ -740,11 +857,12 @@ def configure_app(app: Flask) -> None:
                     detach=request.form.get("detach", ""),
                     language=request.form.get("language"),
                     cc=request.form.get("cc"),
+                    provider=request.form.get("provider"),
                 )
                 if session.get("language") != before and session["body"].strip():
                     writer.relanguage(session_id, load_profile())
             elif action == "upload":
-                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"), provider=request.form.get("provider"))
                 if not files.ready():
                     raise ConfigError("Set up R2 file storage to attach files.")
                 for record in _uploads("reply"):
@@ -754,19 +872,19 @@ def configure_app(app: Flask) -> None:
                         files.remove(record["id"])
                         raise
             elif action == "pick":
-                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"), provider=request.form.get("provider"))
                 if request.form.get("ref"):
                     writer.attach_ref(session_id, request.form["ref"])
             elif action == "issue":
-                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"), provider=request.form.get("provider"))
                 writer.issue_draft(session_id, request.form.get("invoice", ""))
             elif action == "queue":
-                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"), provider=request.form.get("provider"))
                 item = writer.queue(session_id)
                 flash(f"The email to {item['to']} is waiting in Approvals. Send it from there, or on WhatsApp.")
                 return redirect(url_for("approvals_page") + f"#a{item['id']}")
             elif action == "send":
-                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"), provider=request.form.get("provider"))
                 item = writer.send(session_id)
                 flash(f"Sent to {item['to']}.")
                 return redirect(url_for("home"))
@@ -783,17 +901,25 @@ def configure_app(app: Flask) -> None:
         blocked = _login_required()
         if blocked:
             return blocked
-        from gmail_auto import contracts, invoices
+        from gmail_auto import contracts, invoices, outgoing
         from gmail_auto.llm import model_ready
 
         issued = [item for item in invoices.list_invoices() if item.get("status") == "issued"]
         ready = [item for item in contracts.list_drafts() if not contracts.empty_fields(item)]
         chosen_invoice = invoices.get(request.args.get("invoice", ""))
+        mailboxes = _compose_mailboxes()
+        available = [box["provider"] for box in mailboxes]
+        chosen_provider = (request.args.get("provider") or "").strip().lower()
+        if chosen_provider not in available:
+            preferred = outgoing.default_provider(available)
+            chosen_provider = preferred if preferred in available else (available[0] if available else "")
         return _render(
             "compose.html",
             to=request.args.get("to") or (chosen_invoice or {}).get("client_email") or "",
             subject=request.args.get("subject", ""),
             points=request.args.get("points", ""),
+            mailboxes=mailboxes,
+            chosen_provider=chosen_provider,
             docs=knowledge.attachable_documents(),
             people=_people_for_compose(),
             issued=issued,
@@ -829,7 +955,15 @@ def configure_app(app: Flask) -> None:
             for record in _uploads("reply"):
                 uploaded.append(record)
                 records.append(record)
-            item = outgoing.start(to, request.form.get("points", ""), request.form.get("subject", ""), load_profile(), records, cc=request.form.get("cc", ""))
+            item = outgoing.start(
+                to,
+                request.form.get("points", ""),
+                request.form.get("subject", ""),
+                load_profile(),
+                records,
+                provider=request.form.get("provider", ""),
+                cc=request.form.get("cc", ""),
+            )
         except (ConfigError, ReplyError) as exc:
             for record in uploaded:
                 files.remove(record["id"])
@@ -840,6 +974,7 @@ def configure_app(app: Flask) -> None:
                     to=request.form.get("to", ""),
                     subject=request.form.get("subject", ""),
                     points=request.form.get("points", "")[:1500] or None,
+                    provider=request.form.get("provider") or None,
                     invoice=request.form.get("invoice") or None,
                     contract=request.form.get("contract") or None,
                 )
@@ -1034,12 +1169,14 @@ def configure_app(app: Flask) -> None:
             return blocked
         from gmail_auto import calendars
 
-        data = {"weeks": [], "accounts": [], "errors": [], "weekdays": [], "title": "Calendar"}
+        chosen = (request.args.get("provider") or "").strip().lower()
+        data = {"weeks": [], "accounts": [], "errors": [], "weekdays": [], "title": "Calendar", "sources": [], "provider": ""}
         try:
             data = calendars.month_board(
                 request.args.get("year", type=int),
                 request.args.get("month", type=int),
                 request.args.get("day") or "",
+                chosen,
             )
         except ConfigError as exc:
             data["errors"] = [str(exc)]
@@ -1130,7 +1267,7 @@ def configure_app(app: Flask) -> None:
         all_items = index["model"]["items"]
         groups = []
         for name, meta in knowledge.KINDS.items():
-            chunk = [item for item in all_items if item["kind"] == name]
+            chunk = [item for item in all_items if item["kind"] == name and knowledge.is_shown(item)]
             live = [item for item in chunk if knowledge.is_active(item)]
             past = [item for item in chunk if not knowledge.is_active(item)]
             groups.append({"kind": name, "cards": live, "past": past, "count": len(live), **meta})
@@ -1141,6 +1278,7 @@ def configure_app(app: Flask) -> None:
             kinds=knowledge.KINDS,
             groups=groups,
             tiles=knowledge.memory_tiles(all_items),
+            **_storyline_page(knowledge.storyline_cards(all_items), request.args.get("story_page"), request.args.get("story", "")),
             days=knowledge.timeline(all_items),
             graph=knowledge.graph_view(all_items),
             brief=index["brief"],
@@ -1154,6 +1292,7 @@ def configure_app(app: Flask) -> None:
             view=view,
             hits=knowledge.search(query, 5) if query else [],
             has_key=has_openai_key(),
+            has_sources=bool(mailboxes or index["docs"] or index["rules"]),
             editing=request.args.get("edit") == "brief",
             edit_item=request.args.get("item", ""),
             file_types=", ".join(sorted(item.lstrip(".") for item in SUPPORTED)),
@@ -1256,22 +1395,55 @@ def configure_app(app: Flask) -> None:
             flash(str(exc), "error")
         return redirect(url_for("knowledge_page") + "#documents")
 
+    @app.get("/knowledge/analyze")
+    def knowledge_analysis_status():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import knowledge_analysis
+
+        return knowledge_analysis.status()
+
+    @app.post("/knowledge/analyze")
+    def knowledge_analyze():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import knowledge_analysis
+
+        try:
+            clients, problems = connected_clients()
+            return knowledge_analysis.start(clients, problems)
+        except ConfigError as exc:
+            return {**knowledge_analysis.status(), "status": "error", "message": str(exc)}, 409
+
+    @app.post("/knowledge/analyze/step")
+    def knowledge_analyze_step():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        from gmail_auto import knowledge_analysis
+
+        try:
+            return knowledge_analysis.step(client_for)
+        except ConfigError as exc:
+            if "already in progress" in str(exc):
+                state = knowledge_analysis.status()
+                state["status"] = "running"
+                state["message"] = "Still reading the previous batch."
+                return state
+            return {**knowledge_analysis.status(), "status": "error", "message": str(exc)}, 409
+
     @app.post("/knowledge/learn")
     def knowledge_learn():
         blocked = _login_required()
         if blocked:
             return blocked
-        provider = request.form.get("provider", "gmail")
-        if provider not in PROVIDERS:
-            abort(400)
-        try:
-            entry = knowledge.learn_from_mailbox(client_for(provider), limit=12 if provider == "outlook" else 30)
-            flash(f"Read {entry['meta']['letters']} letters from {entry['meta']['account']} and saved what they show.")
-        except ConfigError as exc:
-            flash(str(exc), "error")
-        except Exception:
-            flash("Could not summarise that mailbox right now. Outlook was too slow or returned nothing readable.", "error")
-        return redirect(url_for("knowledge_page") + "#documents")
+        message = "Separate mailbox summarisation has been retired. Use Analyse knowledge to analyse connected mailboxes and documents together."
+        if "application/json" in (request.headers.get("Accept") or ""):
+            return {"ok": False, "deprecated": True, "message": message}, 410
+        flash(message, "error")
+        return redirect(url_for("knowledge_page") + "#sources")
 
     @app.post("/knowledge/sharepoint")
     def knowledge_sharepoint():
@@ -1482,14 +1654,35 @@ def configure_app(app: Flask) -> None:
             return blocked
         return _render("connections.html", **_connections_context())
 
+    def _tenant_scope() -> tuple[bool, str]:
+        try:
+            from gmail_auto.tenant import current_user_id, saas_enabled
+        except ImportError:
+            return False, ""
+        uid = str(current_user_id() or session.get("user_id") or "").strip()
+        return bool(saas_enabled()), uid
+
     @app.get("/oauth")
     def oauth_start():
         blocked = _login_required()
         if blocked:
             return blocked
+        saas, uid = _tenant_scope()
+        if saas and not uid:
+            _auth_failed("Sign in before connecting Gmail.")
+            return redirect(url_for("login_page"))
+        if saas:
+            from gmail_auto.token_crypto import encryption_ready
+            from gmail_auto.token_store import storage_ready
+
+            if not encryption_ready() or (os.environ.get("VERCEL") and not storage_ready()):
+                flash("Gmail connection is temporarily unavailable. Please contact support.", "error")
+                return redirect(url_for("connections_page"))
         config = web_client_config()
         if config is None:
-            if os.environ.get("VERCEL"):
+            if saas:
+                flash("Gmail connection is temporarily unavailable. Please contact support.", "error")
+            elif os.environ.get("VERCEL"):
                 flash("Set GMAIL_CLIENT_ID and GMAIL_CLIENT_SECRET in Vercel first.", "error")
             else:
                 flash(
@@ -1503,7 +1696,7 @@ def configure_app(app: Flask) -> None:
             return redirect(url_for("connections_page"))
         from google_auth_oauthlib.flow import Flow
 
-        flow = Flow.from_client_config(config, SCOPES)
+        flow = Flow.from_client_config(config, OAUTH_SCOPES, autogenerate_code_verifier=True)
         flow.redirect_uri = _oauth_redirect()
         hint = session.get("user") or ""
         options = {"access_type": "offline", "prompt": "consent"}
@@ -1511,55 +1704,116 @@ def configure_app(app: Flask) -> None:
             options["login_hint"] = hint
         auth_url, state = flow.authorization_url(**options)
         session["oauth_state"] = state
+        session["oauth_user_id"] = uid
         session["code_verifier"] = flow.code_verifier or ""
         session.pop("auth_error", None)
         return redirect(auth_url)
 
     @app.get("/oauth/callback")
     def oauth_callback():
+        saas, uid = _tenant_scope()
+        if saas:
+            blocked = _login_required()
+            if blocked:
+                return blocked
         config = web_client_config()
-        expected = session.get("oauth_state")
+        expected = session.pop("oauth_state", None)
+        expected_uid = session.pop("oauth_user_id", "")
+        verifier = session.pop("code_verifier", None) or None
         if config is None or not expected or request.args.get("state") != expected:
             _auth_failed("The sign-in could not be matched to this browser. Choose Connect Gmail again.")
+            return redirect(url_for("connections_page"))
+        if (saas or expected_uid) and expected_uid != uid:
+            _auth_failed("The sign-in could not be matched to this account. Choose Connect Gmail again.")
             return redirect(url_for("connections_page"))
         if request.args.get("error"):
             _auth_failed("Gmail was not connected. Choose Connect Gmail again.")
             return redirect(url_for("connections_page"))
         from google_auth_oauthlib.flow import Flow
-        from gmail_auto.token_store import save_token_raw, storage_ready
+        from gmail_auto.gmail_client import _build_service, local_token_path, stamp_token_gen
+        from gmail_auto.storage import workspace_operation
+        from gmail_auto.token_crypto import decrypt_token, encrypt_token, encryption_ready
+        from gmail_auto.token_store import load_token_raw, save_token_raw, storage_ready
 
-        flow = Flow.from_client_config(config, SCOPES)
+        if saas and (not encryption_ready() or (os.environ.get("VERCEL") and not storage_ready())):
+            flash("Gmail connection is temporarily unavailable. Please contact support.", "error")
+            return redirect(url_for("connections_page"))
+
+        flow = Flow.from_client_config(config, OAUTH_SCOPES)
         flow.redirect_uri = _oauth_redirect()
-        flow.code_verifier = session.get("code_verifier") or None
+        flow.code_verifier = verifier
         try:
             flow.fetch_token(authorization_response=_external_url())
         except Exception:
             _auth_failed("Google did not accept the sign-in. Choose Connect Gmail again.")
             return redirect(url_for("connections_page"))
         creds = flow.credentials
-        if not getattr(creds, "refresh_token", None):
-            flash("Google did not return a long-lived grant. Choose Connect Gmail again.", "error")
+        gmail_email = ""
+        try:
+            profile = _build_service(creds).users().getProfile(userId="me").execute()
+            gmail_email = (profile.get("emailAddress") or "").strip()
+        except Exception:
+            gmail_email = ""
+        if saas and not gmail_email:
+            flash("Could not confirm the Gmail address. Choose Connect Gmail again.", "error")
             return redirect(url_for("connections_page"))
         raw = creds.to_json()
-        session["gmail_token"] = raw
-        session.pop("oauth_state", None)
-        session.pop("code_verifier", None)
-        session.pop("auth_error", None)
-        if storage_ready():
-            save_token_raw(raw)
-        elif not os.environ.get("VERCEL"):
-            try:
-                atomic_write(root() / "token.json", raw)
-            except OSError:
-                pass
-        gmail_email = session.get("user") or ""
-        try:
-            from gmail_auto.gmail_client import GmailClient
+        with workspace_operation("oauth_gmail"):
+            if not getattr(creds, "refresh_token", None):
+                existing_email = (gmail_status().get("email") or "").strip()
+                existing_raw = load_token_raw() if storage_ready() else ""
+                if not existing_raw and not os.environ.get("VERCEL"):
+                    try:
+                        token_file = local_token_path()
+                        if token_file.exists():
+                            existing_raw = decrypt_token(token_file.read_text(encoding="utf-8"))
+                    except (ConfigError, OSError):
+                        existing_raw = ""
+                existing_refresh = ""
+                if existing_raw:
+                    try:
+                        existing_refresh = (json.loads(existing_raw) or {}).get("refresh_token") or ""
+                    except (ValueError, TypeError):
+                        existing_refresh = ""
+                same_identity = bool(existing_email and gmail_email and existing_email.lower() == gmail_email.lower())
+                if existing_refresh and (same_identity or not saas):
+                    merged = json.loads(raw)
+                    merged["refresh_token"] = existing_refresh
+                    raw = json.dumps(merged)
+                else:
+                    flash("Google did not return a long-lived grant for this mailbox. Choose Connect Gmail again.", "error")
+                    return redirect(url_for("connections_page"))
+            session.pop("auth_error", None)
+            raw = stamp_token_gen(raw)
+            if storage_ready():
+                save_token_raw(raw)
+                session.pop("gmail_token", None)
+            elif saas:
+                session.pop("gmail_token", None)
+                if os.environ.get("VERCEL"):
+                    flash("Gmail connection is temporarily unavailable. Please contact support.", "error")
+                    return redirect(url_for("connections_page"))
+                try:
+                    atomic_write(local_token_path(), encrypt_token(raw))
+                except (ConfigError, OSError):
+                    flash("Could not save the Gmail connection. Please try again.", "error")
+                    return redirect(url_for("connections_page"))
+            else:
+                session["gmail_token"] = raw
+                if not os.environ.get("VERCEL"):
+                    try:
+                        atomic_write(local_token_path(), raw)
+                    except OSError:
+                        pass
+            if not gmail_email:
+                gmail_email = session.get("user") or ""
+                try:
+                    from gmail_auto.gmail_client import GmailClient
 
-            gmail_email = GmailClient(allow_browser=False).get_user_email() or gmail_email
-        except ConfigError:
-            pass
-        mark_gmail_authorized(gmail_email)
+                    gmail_email = GmailClient(allow_browser=False).get_user_email() or gmail_email
+                except ConfigError:
+                    pass
+            mark_gmail_authorized(gmail_email)
         _forget_inbox()
         flash("Gmail is connected.")
         return redirect(url_for("home"))
@@ -1571,24 +1825,48 @@ def configure_app(app: Flask) -> None:
             return blocked
         if kind not in microsoft.SCOPES:
             abort(404)
+        saas, uid = _tenant_scope()
+        if saas and not uid:
+            flash("Sign in before connecting Microsoft.", "error")
+            return redirect(url_for("login_page"))
+        if saas:
+            from gmail_auto.token_crypto import encryption_ready
+            from gmail_auto.token_store import storage_ready
+
+            if not encryption_ready() or (os.environ.get("VERCEL") and not storage_ready()):
+                flash(f"{microsoft.LABELS[kind]} connection is temporarily unavailable. Please contact support.", "error")
+                return redirect(url_for("connections_page"))
         if not microsoft.configured():
-            flash("Set MS_CLIENT_ID and MS_CLIENT_SECRET first. The README explains how to create them.", "error")
+            if saas:
+                flash(f"{microsoft.LABELS[kind]} connection is temporarily unavailable. Please contact support.", "error")
+            else:
+                flash("Set MS_CLIENT_ID and MS_CLIENT_SECRET first. The README explains how to create them.", "error")
             return redirect(url_for("connections_page"))
         if not os.environ.get("VERCEL") and _request_host() != "localhost":
             # Microsoft only returns to the exact address that was registered, and the sign-in
             # cookie belongs to one host name, so the whole local sign-in runs on localhost.
             return redirect(_local_origin() + request.full_path.rstrip("?"))
         state = secrets.token_urlsafe(24)
-        session["ms_state"] = {"state": state, "kind": kind}
-        return redirect(microsoft.authorize_url(kind, _microsoft_redirect(), state))
+        verifier, challenge = microsoft.pkce_pair()
+        session["ms_state"] = {"state": state, "kind": kind, "user_id": uid, "code_verifier": verifier}
+        return redirect(microsoft.authorize_url(kind, _microsoft_redirect(), state, code_challenge=challenge))
 
     @app.get("/oauth/microsoft/callback")
     def microsoft_callback():
+        saas, uid = _tenant_scope()
+        if saas:
+            blocked = _login_required()
+            if blocked:
+                return blocked
         expected = session.pop("ms_state", None) or {}
         kind = expected.get("kind")
         label = microsoft.LABELS.get(kind, "Microsoft")
         if not kind or request.args.get("state") != expected.get("state"):
             flash("The sign-in could not be matched to this browser. Try connecting again.", "error")
+            return redirect(url_for("connections_page"))
+        expected_uid = expected.get("user_id", "")
+        if (saas or expected_uid) and expected_uid != uid:
+            flash("The sign-in could not be matched to this account. Try connecting again.", "error")
             return redirect(url_for("connections_page"))
         if request.args.get("error") or not request.args.get("code"):
             error = request.args.get("error", "")
@@ -1600,7 +1878,9 @@ def configure_app(app: Flask) -> None:
             flash(message, "error")
             return redirect(url_for("connections_page"))
         try:
-            account = microsoft.finish_sign_in(kind, request.args["code"], _microsoft_redirect())
+            account = microsoft.finish_sign_in(
+                kind, request.args["code"], _microsoft_redirect(), code_verifier=expected.get("code_verifier", "")
+            )
         except ConfigError as exc:
             flash(str(exc), "error")
             return redirect(url_for("connections_page"))
@@ -1617,14 +1897,17 @@ def configure_app(app: Flask) -> None:
             microsoft.disconnect(name)
             flash(f"{microsoft.LABELS[name]} was disconnected.")
         elif name == "gmail":
+            from gmail_auto.gmail_client import local_token_path
+            from gmail_auto.storage import workspace_operation
             from gmail_auto.token_store import clear_token
 
             session.pop("gmail_token", None)
             try:
-                clear_token()
-                (root() / "token.json").unlink(missing_ok=True)
-                mark_gmail_authorized("", at=0)
-            except (ConfigError, OSError):
+                with workspace_operation("oauth_gmail"):
+                    clear_token()
+                    local_token_path().unlink(missing_ok=True)
+                    mark_gmail_authorized("", at=0)
+            except (ConfigError, NotConnected, OSError):
                 pass
             flash("Gmail was disconnected.")
         else:
@@ -1760,6 +2043,32 @@ def configure_app(app: Flask) -> None:
             if "preserve_langs" in request.form:
                 raw_preserve = request.form.get("preserve_langs", "")
                 changes["preserve_langs"] = [p.strip().lower() for p in raw_preserve.split(",") if p.strip()]
+            if "default_sender" in request.form:
+                changes["default_sender"] = request.form.get("default_sender", "")
+            if "auto_reply_allow" in request.form:
+                changes["auto_reply_allow"] = request.form.get("auto_reply_allow", "")
+            if "auto_reply_block" in request.form:
+                changes["auto_reply_block"] = request.form.get("auto_reply_block", "")
+            if "signatures_present" in request.form:
+                from gmail_auto.settings import normalize_logo_position
+
+                sigs = dict(load_settings().get("mail_signatures") or {})
+                positions = dict(load_settings().get("signature_logo_positions") or {})
+                for provider in ("gmail", "outlook"):
+                    field = f"signature_{provider}"
+                    if field in request.form:
+                        val = (request.form.get(field) or "").strip()
+                        if val:
+                            sigs[provider] = val
+                        else:
+                            sigs.pop(provider, None)
+                    pos_field = f"signature_logo_position_{provider}"
+                    if pos_field in request.form:
+                        acct = _connected_mailbox_email(provider)
+                        key = f"{provider}:{acct}" if acct else provider
+                        positions[key] = normalize_logo_position(request.form.get(pos_field))
+                changes["mail_signatures"] = sigs
+                changes["signature_logo_positions"] = positions
             if "notify_preset" in request.form:
                 changes["notify_auto_replies"] = request.form.get("notify_auto_replies") == "1"
                 changes["notify_important"] = request.form.get("notify_important") == "1"
@@ -1782,9 +2091,107 @@ def configure_app(app: Flask) -> None:
         except ConfigError as exc:
             flash(str(exc), "error")
         nxt = request.form.get("next") or "#interrupt"
+        if nxt == "connections":
+            return redirect(url_for("connections_page"))
         if not nxt.startswith("#"):
             nxt = "#interrupt"
         return redirect(url_for("profile_page") + nxt)
+
+    @app.post("/settings/signature/import")
+    def signature_import():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        try:
+            sig = client_for("gmail").get_signature()
+            if sig:
+                session["imported_gmail_signature"] = sig
+                flash("Read your Gmail signature. Review it below and click Save signatures to keep it.")
+            else:
+                flash("Your Gmail account does not have a signature saved yet.", "error")
+        except (ConfigError, NotConnected) as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("profile_page") + "#signatures")
+
+    @app.post("/settings/signature/logo")
+    def signature_logo_save():
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        provider = (request.form.get("provider") or "").strip().lower()
+        if provider not in PROVIDERS:
+            abort(400)
+        account = _connected_mailbox_email(provider)
+        key = f"{provider}:{account}" if account else provider
+        settings = load_settings()
+        logos = dict(settings.get("signature_logos") or {})
+        old_meta = logos.get(key) or (logos.get(provider) if not account else None) or {}
+        old_id = (old_meta.get("file_id") or "").strip()
+        try:
+            action = request.form.get("action")
+            if action == "position":
+                from gmail_auto.settings import normalize_logo_position
+
+                positions = dict(settings.get("signature_logo_positions") or {})
+                positions[key] = normalize_logo_position(request.form.get("logo_position"))
+                save_settings({"signature_logo_positions": positions})
+                flash("Logo position saved.")
+            elif action == "remove":
+                logos.pop(key, None)
+                if not account:
+                    logos.pop(provider, None)
+                save_settings({"signature_logos": logos})
+                if old_id:
+                    try:
+                        files.remove(old_id)
+                    except ConfigError:
+                        pass
+                flash("Logo removed.")
+            else:
+                uploaded = request.files.get("logo")
+                if uploaded is None or not (uploaded.filename or "").strip():
+                    raise ConfigError("Choose a PNG, JPG, GIF, or WebP logo image first.")
+                data = uploaded.read(1_000_001)
+                if not data:
+                    raise ConfigError("That logo file is empty.")
+                if len(data) > 1_000_000:
+                    raise ConfigError("Keep signature logos to 1 MB or smaller.")
+                mime = _detect_logo_mime(data)
+                record = files.save(data, uploaded.filename, mime, origin="signature_logo")
+                logos[key] = {
+                    "file_id": record["id"],
+                    "name": record["name"],
+                    "mime": record["mime"],
+                    "size": record["size"],
+                    "account": account,
+                }
+                save_settings({"signature_logos": logos})
+                if old_id and old_id != record["id"]:
+                    try:
+                        files.remove(old_id)
+                    except ConfigError:
+                        pass
+                flash("Logo saved.")
+        except ConfigError as exc:
+            flash(str(exc), "error")
+        return redirect(url_for("profile_page") + "#signatures")
+
+    @app.get("/settings/signature/logo/<provider>")
+    def signature_logo_view(provider: str):
+        blocked = _login_required()
+        if blocked:
+            return blocked
+        provider = (provider or "").strip().lower()
+        if provider not in PROVIDERS:
+            abort(404)
+        from gmail_auto.settings import signature_logo_bytes
+
+        account = _connected_mailbox_email(provider)
+        loaded = signature_logo_bytes(load_settings(), provider=provider, email=account)
+        if loaded is None:
+            abort(404)
+        meta, data = loaded
+        return Response(data, mimetype=meta.get("mime") or "image/png", headers={"Cache-Control": "no-store"})
 
     @app.post("/settings/model")
     def model_save():
@@ -1916,6 +2323,29 @@ def render_markdown(text: str) -> Markup:
     flush()
     return Markup("".join(blocks))
 
+
+
+def _storyline_page(cards: list, raw_page, story_id: str) -> dict:
+    size = 8
+    try:
+        page = int(raw_page or 1)
+    except (TypeError, ValueError):
+        page = 1
+    pages = max(1, (len(cards) + size - 1) // size)
+    page = min(max(page, 1), pages)
+    start = (page - 1) * size
+    visible = cards[start:start + size]
+    chosen = next((card for card in visible if card["id"] == story_id), None)
+    return {
+        "storylines": visible,
+        "open_story": chosen,
+        "story_pager": {
+            "page": page,
+            "pages": pages,
+            "prev": page - 1 if page > 1 else 0,
+            "next": page + 1 if page < pages else 0,
+        },
+    }
 
 
 def _apply_role(entry: dict, role: str, text: str) -> str:
@@ -2168,10 +2598,24 @@ def _home_context() -> dict:
         errors.append(str(exc))
 
     hosted = bool(os.environ.get("VERCEL"))
-    inbox = _inbox(live=not hosted or request.args.get("live") == "1")
+    raw_page = request.args.get("page", "")
+    page_num = int(raw_page) if raw_page.isdigit() else 1
+    if page_num > 1:
+        inbox = _inbox(live=False)
+        if not inbox.get("rows") and not inbox.get("cursors"):
+            inbox = _inbox(live=True, force=True)
+        _fill_inbox_page(inbox, page_num)
+    else:
+        inbox = _inbox(live=not hosted or request.args.get("live") == "1")
     errors.extend(inbox["errors"])
-    rows = attach_stories(_merge_history(inbox["rows"]))
     accounts = _account_chips() or inbox["accounts"]
+    mailbox = request.args.get("mailbox", "")
+    if not any(item["provider"] == mailbox for item in accounts):
+        mailbox = None
+    rows = _merge_history(inbox["rows"])
+    if mailbox:
+        rows = [row for row in rows if row.get("provider") == mailbox]
+    rows = attach_stories(rows)
     from gmail_auto.importance import inbox_kinds
 
     kinds = set(inbox_kinds(load_settings()))
@@ -2187,6 +2631,8 @@ def _home_context() -> dict:
     visible = rows if show == "all" else [row for row in rows if row["bucket"] == show]
     wanted = request.args.get("open", "")
     page, pages = _inbox_page(visible, wanted)
+    if _inbox_has_more(inbox) and page >= pages:
+        pages = page + 1
     listed = visible[(page - 1) * _INBOX_PAGE : page * _INBOX_PAGE]
     opened = next((row for row in listed if row["key"] == wanted), None)
     if opened is None and listed and not hosted and not wanted:
@@ -2213,10 +2659,13 @@ def _home_context() -> dict:
         "live": is_live(),
         "placeholder": placeholder,
         "accounts": accounts,
+        "mailbox": mailbox,
+        "provider_counts": inbox.get("provider_counts", {}),
         "connected": bool(accounts),
         "offline": inbox["offline"],
         "errors": errors,
         "rows": listed,
+        "inbox_more": _inbox_has_more(inbox),
         "pager": {
             "page": page,
             "pages": pages,
@@ -2240,10 +2689,19 @@ def _home_context() -> dict:
     }
 
 
-def _inbox(live: bool = True) -> dict:
+def _request_inbox_cache() -> dict:
+    if not saas_enabled():
+        return _inbox_cache
+    if "workspace_inbox_cache" not in g:
+        g.workspace_inbox_cache = {"at": 0.0, "who": None, "data": None}
+    return g.workspace_inbox_cache
+
+
+def _inbox(live: bool = True, force: bool = False, prefetch: bool = False) -> dict:
     who = session.get("user", "")
-    cached = _inbox_cache["data"]
-    if cached is not None and _inbox_cache["who"] == who and time.time() - _inbox_cache["at"] < _INBOX_TTL:
+    cache = _request_inbox_cache()
+    cached = cache["data"]
+    if not force and cached is not None and cache["who"] == who and time.time() - cache["at"] < _INBOX_TTL:
         # Statuses change when a reply is approved, so they are always read fresh.
         _refresh_status(cached)
         cached["needs_fetch"] = False
@@ -2253,7 +2711,7 @@ def _inbox(live: bool = True) -> dict:
         if snapshot is not None:
             _refresh_status(snapshot)
             snapshot["needs_fetch"] = False
-            _inbox_cache.update({"at": time.time(), "who": who, "data": snapshot})
+            cache.update({"at": time.time(), "who": who, "data": snapshot})
             return snapshot
         rows = _rows_from_store()
         return {
@@ -2265,14 +2723,18 @@ def _inbox(live: bool = True) -> dict:
             "needs_fetch": False,
             "at": 0.0,
         }
-    data = {"rows": [], "mails": {}, "accounts": [], "errors": [], "offline": False, "needs_fetch": False, "at": time.time()}
+    data = {
+        "rows": [], "mails": {}, "accounts": [], "provider_counts": {}, "errors": [],
+        "cursors": {}, "loaded": {},
+        "offline": False, "needs_fetch": False, "at": time.time(),
+    }
     try:
         clients, problems = connected_clients()
     except Exception as exc:
         clients, problems = [], [_safe_error(exc)]
     data["errors"].extend(problems)
     pairs = []
-    fetched = _list_mailboxes(clients)
+    fetched = _list_mailboxes(clients, "refresh" if prefetch else "recent")
     for account, mails, error in fetched:
         if account.get("provider"):
             provider = account["provider"]
@@ -2280,7 +2742,12 @@ def _inbox(live: bool = True) -> dict:
             data["accounts"].append({"provider": provider, "label": label, "email": account.get("email") or label})
         if error:
             data["errors"].append(error)
-            continue
+            if not mails:
+                continue
+        if account.get("provider"):
+            data["provider_counts"][account["provider"]] = len(mails)
+            data["cursors"][account["provider"]] = account.get("cursor") or ""
+            data["loaded"][account["provider"]] = len(mails)
         for mail in mails:
             if not mail.account:
                 mail.account = account["email"]
@@ -2297,11 +2764,50 @@ def _inbox(live: bool = True) -> dict:
     if not pairs and not data["accounts"]:
         data["rows"] = _rows_from_store()
         data["offline"] = bool(data["rows"])
+    _keep_unfetched_mailboxes(who, data)
     data["at"] = time.time()
     data["needs_fetch"] = False
-    _inbox_cache.update({"at": data["at"], "who": who, "data": data})
+    cache.update({"at": data["at"], "who": who, "data": data})
     _write_inbox_snapshot(who, data)
     return data
+
+
+def _keep_unfetched_mailboxes(who: str, data: dict) -> None:
+    """A failed read must not replace the list the owner just saw with an empty one.
+
+    A mailbox that answers with zero letters is a real empty result and is left empty.
+    A mailbox that is still connected but did not answer keeps its previous rows.
+    """
+    fetched = set(data.get("provider_counts") or {})
+    missing = [chip for chip in _account_chips() if chip.get("provider") not in fetched]
+    if not missing:
+        return
+    previous = _read_inbox_snapshot(who)
+    kept = {chip.get("provider") for chip in missing}
+    for chip in missing:
+        label = chip.get("label") or "Mailbox"
+        provider = (chip.get("provider") or "").lower()
+        if not any(label in item or provider in item.lower() for item in data["errors"]):
+            data["errors"].append(f"{label} could not be read. The connection is still saved.")
+    if not previous:
+        return
+    seen = {row.get("key") for row in data["rows"]}
+    restored = False
+    for row in previous.get("rows") or []:
+        if row.get("provider") in kept and row.get("key") not in seen:
+            data["rows"].append(row)
+            seen.add(row.get("key"))
+            restored = True
+    if restored:
+        data["offline"] = True
+    previous_cursors = (previous or {}).get("cursors") or {}
+    previous_loaded = (previous or {}).get("loaded") or {}
+    data.setdefault("cursors", {})
+    data.setdefault("loaded", {})
+    for provider in kept:
+        if provider not in data["cursors"] and previous_cursors.get(provider):
+            data["cursors"][provider] = previous_cursors[provider]
+            data["loaded"][provider] = int(previous_loaded.get(provider) or 0)
 
 
 def _refresh_status(data: dict) -> None:
@@ -2320,46 +2826,127 @@ def _refresh_status(data: dict) -> None:
     data["rows"] = rows
 
 
-def _list_mailboxes(clients) -> list[tuple]:
+def _sent() -> dict:
+    """Sent mail from the mailboxes connected to the signed-in workspace."""
+    data = {"rows": [], "accounts": [], "errors": [], "connected": False}
+    try:
+        clients, problems = connected_clients()
+    except Exception as exc:
+        clients, problems = [], [_safe_error(exc)]
+    data["errors"].extend(problems)
+    for account, mails, error in _list_mailboxes(clients, "sent"):
+        if account.get("provider"):
+            provider = account["provider"]
+            label = PROVIDERS.get(provider, "Mailbox")
+            data["accounts"].append({"provider": provider, "label": label, "email": account.get("email") or label})
+            data["connected"] = True
+        if error:
+            data["errors"].append(error)
+            continue
+        for mail in mails:
+            if not mail.account:
+                mail.account = account.get("email") or ""
+            data["rows"].append(_sent_row(mail, account))
+    data["rows"].sort(key=lambda row: row.get("received_ts") or 0, reverse=True)
+    return data
+
+
+def _sent_row(mail, account: dict) -> dict:
+    mailbox = (account.get("email") or mail.account or "").strip()
+    recipient = (mail.headers or {}).get("to") or ""
+    return {
+        "key": mail.key,
+        "who": recipient or mail.from_name or mail.from_email or "Unknown",
+        "subject": mail.subject or "(no subject)",
+        "snippet": " ".join((mail.snippet or mail.body or "").split())[:160],
+        "short_date": _short_date(mail.date),
+        "provider": mail.provider,
+        "provider_label": PROVIDERS.get(mail.provider, "Mail"),
+        "mailbox": mailbox or PROVIDERS.get(account.get("provider"), "Mailbox"),
+        "received_ts": float(mail.received_ts or 0),
+    }
+
+
+def _list_mailboxes(clients, reader: str = "recent") -> list[tuple]:
     """Read each mailbox on its own thread so Gmail and Outlook do not wait for each other."""
     if not clients:
         return []
     if len(clients) == 1:
-        return [_list_one_mailbox(clients[0])]
+        return [_list_one_mailbox(clients[0], reader)]
     from flask import copy_current_request_context
 
-    wrapped = [copy_current_request_context(lambda client=client: _list_one_mailbox(client)) for client in clients]
-    out = []
-    with ThreadPoolExecutor(max_workers=len(wrapped)) as pool:
-        futures = [pool.submit(item) for item in wrapped]
-        for future in as_completed(futures):
-            out.append(future.result())
-    return out
+    with ThreadPoolExecutor(max_workers=len(clients)) as pool:
+        if saas_enabled():
+            user_id = require_user_id()
+
+            def read_in_workspace(client, reader=reader):
+                with user_scope(user_id):
+                    return _list_one_mailbox(client, reader)
+
+            futures = [pool.submit(read_in_workspace, client) for client in clients]
+        else:
+            readers = [
+                copy_current_request_context(lambda client=client, reader=reader: _list_one_mailbox(client, reader))
+                for client in clients
+            ]
+            futures = [pool.submit(reader) for reader in readers]
+        return [future.result() for future in as_completed(futures)]
 
 
-def _list_one_mailbox(client) -> tuple:
+def _list_one_mailbox(client, reader: str = "recent") -> tuple:
     label = PROVIDERS.get(getattr(client, "provider", "gmail"), "Mailbox")
     email = ""
     try:
         email = client.get_user_email()
-        mails = client.list_recent(_INBOX_PAGE, full=False)
-        return ({"provider": client.provider, "email": email}, mails, "")
+        cursor = ""
+        if reader == "sent":
+            mails = client.list_sent(_INBOX_PAGE, full=False)
+        elif reader == "refresh":
+            return _refresh_one_mailbox(client, email, label)
+        else:
+            mails, cursor = _recent_page(client, _INBOX_PAGE)
+        return ({"provider": client.provider, "email": email, "cursor": cursor}, mails, "")
+    except NotConnected as exc:
+        return (_known_account(client, email), [], named_error(label, exc))
     except ConfigError as exc:
         return (_known_account(client, email), [], named_error(label, exc))
     except Exception as extra:
         return (_known_account(client, email), [], named_error(label, _safe_error(extra)))
 
 
+def _refresh_one_mailbox(client, email: str, label: str) -> tuple:
+    account = {"provider": client.provider, "email": email, "cursor": ""}
+    mails = []
+    cursor = ""
+    seen_cursors = set()
+    while len(mails) < _INBOX_CAP and cursor not in seen_cursors:
+        seen_cursors.add(cursor)
+        try:
+            remaining = _INBOX_CAP - len(mails)
+            page, cursor = _recent_page(client, remaining, cursor)
+        except (ConfigError, NotConnected) as exc:
+            return account, mails, named_error(label, exc)
+        except Exception as exc:
+            return account, mails, named_error(label, _safe_error(exc))
+        mails.extend(page[:remaining])
+        if not cursor:
+            break
+    return account, mails, ""
+
+
 def _known_account(client, email: str) -> dict:
     if not email and getattr(client, "provider", "") == "outlook":
-        email = (microsoft.status("outlook").get("account") or "").strip()
+        try:
+            email = (microsoft.status("outlook").get("account") or "").strip()
+        except ConfigError:
+            return {}
     if not email:
         return {}
     return {"provider": client.provider, "email": email}
 
 
 def _forget_inbox() -> None:
-    _inbox_cache.update({"at": 0.0, "data": None})
+    _request_inbox_cache().update({"at": 0.0, "data": None})
     try:
         from gmail_auto.storage import delete_doc
 
@@ -2388,14 +2975,16 @@ def _read_inbox_snapshot(who: str) -> dict | None:
         return None
     if not isinstance(saved, dict) or saved.get("who") != who:
         return None
-    if time.time() - float(saved.get("at") or 0) > _INBOX_STORE_TTL:
-        return None
+    stale = time.time() - float(saved.get("at") or 0) > _INBOX_STORE_TTL
     return {
         "rows": list(saved.get("rows") or []),
         "mails": {},
         "accounts": list(saved.get("accounts") or []),
+        "provider_counts": dict(saved.get("provider_counts") or {}),
+        "cursors": dict(saved.get("cursors") or {}),
+        "loaded": {key: int(value or 0) for key, value in (saved.get("loaded") or {}).items()},
         "errors": list(saved.get("errors") or []),
-        "offline": bool(saved.get("offline")),
+        "offline": bool(saved.get("offline")) or stale,
         "needs_fetch": False,
         "at": float(saved.get("at") or 0),
     }
@@ -2412,6 +3001,9 @@ def _write_inbox_snapshot(who: str, data: dict) -> None:
                 "at": data.get("at") or time.time(),
                 "rows": data.get("rows") or [],
                 "accounts": data.get("accounts") or [],
+                "provider_counts": data.get("provider_counts") or {},
+                "cursors": data.get("cursors") or {},
+                "loaded": data.get("loaded") or {},
                 "errors": data.get("errors") or [],
                 "offline": bool(data.get("offline")),
             },
@@ -2423,9 +3015,10 @@ def _write_inbox_snapshot(who: str, data: dict) -> None:
 def _find_mail(key: str):
     if not key:
         return None
-    cached = _inbox_cache["data"]
+    cache = _request_inbox_cache()
+    cached = cache["data"]
     listed = None
-    if cached is not None and _inbox_cache["who"] == session.get("user", ""):
+    if cached is not None and cache["who"] == session.get("user", ""):
         listed = cached["mails"].get(key)
         if listed is not None and (listed.html or listed.body):
             return listed
@@ -2435,7 +3028,11 @@ def _find_mail(key: str):
     if provider not in PROVIDERS or not re.fullmatch(r"[A-Za-z0-9_=+\-/.!]{1,400}", message_id):
         return listed
     try:
-        mail = client_for(provider).get_message(message_id)
+        client = client_for(provider)
+        account = client.get_user_email() if saas_enabled() else ""
+        mail = client.get_message(message_id)
+        if mail is not None and account:
+            mail.account = account
     except Exception:
         return listed
     if cached is not None and mail is not None:
@@ -2445,6 +3042,9 @@ def _find_mail(key: str):
 
 def _inbox_query() -> dict:
     query = {}
+    mailbox = request.args.get("mailbox", "")
+    if mailbox in PROVIDERS:
+        query["mailbox"] = mailbox
     show = request.args.get("show", "")
     show = _OLD_FILTERS.get(show, show)
     if show in _FILTERS and show != _DEFAULT_FILTER:
@@ -2459,6 +3059,95 @@ def _inbox_query() -> dict:
     if page.isdigit() and int(page) > 1:
         query["page"] = int(page)
     return query
+
+
+def _recent_page(client, limit: int, token: str = "") -> tuple[list, str]:
+    """One metadata page. Clients without a cursor API return the first page only."""
+    from unittest.mock import Mock
+
+    page_fn = getattr(client, "list_recent_page", None)
+    if callable(page_fn) and not isinstance(page_fn, Mock):
+        mails, nxt = page_fn(limit=limit, token=token, full=False)
+        return list(mails or []), nxt or ""
+    if token:
+        return [], ""
+    return list(client.list_recent(limit, full=False) or []), ""
+
+
+def _inbox_has_more(data: dict) -> bool:
+    cursors = data.get("cursors") or {}
+    loaded = data.get("loaded") or {}
+    return any(token and int(loaded.get(provider) or 0) < _INBOX_CAP for provider, token in cursors.items())
+
+
+def _fill_inbox_page(data: dict, page: int) -> None:
+    """Fetch later provider pages until this screen is filled or each mailbox reaches 100."""
+    who = session.get("user", "")
+    while len(data.get("rows") or []) < page * _INBOX_PAGE and _inbox_has_more(data):
+        if not _fetch_inbox_slice(who, data):
+            break
+
+
+def _fetch_inbox_slice(who: str, data: dict) -> int:
+    """Append the next saved cursor page for each mailbox still under the cap."""
+    try:
+        clients, problems = connected_clients()
+    except Exception as exc:
+        data.setdefault("errors", []).append(_safe_error(exc))
+        return 0
+    data.setdefault("errors", []).extend(problems)
+    data.setdefault("cursors", {})
+    data.setdefault("loaded", {})
+    data.setdefault("mails", {})
+    data.setdefault("rows", [])
+    try:
+        processed = load_processed()
+    except ConfigError:
+        processed = {}
+    added = 0
+    seen = {row.get("key") for row in data["rows"]}
+    for client in clients:
+        provider = getattr(client, "provider", "")
+        token = data["cursors"].get(provider) or ""
+        loaded = int(data["loaded"].get(provider) or 0)
+        if not token or loaded >= _INBOX_CAP:
+            continue
+        want = min(_INBOX_PAGE, _INBOX_CAP - loaded)
+        try:
+            mails, nxt = _recent_page(client, want, token)
+        except (ConfigError, NotConnected) as exc:
+            label = PROVIDERS.get(provider, "Mailbox")
+            data["errors"].append(named_error(label, exc))
+            data["cursors"][provider] = ""
+            continue
+        except Exception as exc:
+            label = PROVIDERS.get(provider, "Mailbox")
+            data["errors"].append(named_error(label, _safe_error(exc)))
+            data["cursors"][provider] = ""
+            continue
+        email = ""
+        try:
+            email = client.get_user_email()
+        except Exception:
+            email = ""
+        for mail in mails:
+            if not mail.account:
+                mail.account = email
+            if mail.key in seen:
+                continue
+            data["mails"][mail.key] = mail
+            data["rows"].append(_row_from_mail(mail, processed.get(mail.key), email))
+            seen.add(mail.key)
+            added += 1
+        data["loaded"][provider] = loaded + len(mails)
+        data["cursors"][provider] = "" if data["loaded"][provider] >= _INBOX_CAP or not nxt else nxt
+    if added:
+        data["rows"].sort(key=lambda row: row.get("received_ts") or 0, reverse=True)
+    data["at"] = time.time()
+    cache = _request_inbox_cache()
+    cache.update({"at": data["at"], "who": who, "data": data})
+    _write_inbox_snapshot(who, data)
+    return added
 
 
 def _inbox_page(rows: list[dict], wanted: str) -> tuple[int, int]:
@@ -2540,12 +3229,14 @@ def _attach_review(opened: dict) -> None:
     from gmail_auto.llm import model_ready
     from gmail_auto.models import Mail
     from gmail_auto.screen import screen_mail
-    from gmail_auto.worker import brief_mail, load_review, remember_verdict
+    from gmail_auto.worker import brief_mail, clean_summary, load_review, remember_verdict
 
     key = opened.get("key") or ""
+    if opened.get("summary"):
+        opened["summary"] = clean_summary(opened.get("summary"), 800)
     review = load_review(key)
     if review.get("summary") and not opened.get("summary"):
-        opened["summary"] = review["summary"]
+        opened["summary"] = clean_summary(review["summary"], 800)
     if review.get("disposition"):
         opened["advice"] = _advice_line(review.get("disposition"), review.get("advice") or review.get("summary"))
         return
@@ -2565,7 +3256,7 @@ def _attach_review(opened: dict) -> None:
     )
     brief = brief_mail(mail)
     if brief.get("summary") and not opened.get("summary"):
-        opened["summary"] = brief["summary"]
+        opened["summary"] = clean_summary(brief["summary"], 800)
     verdict = screen_mail(mail, brief)
     if verdict is None:
         return
@@ -2596,7 +3287,7 @@ def _bucket(row: dict, kinds: set[str]) -> str:
     it matters and that kind is switched on in Settings.
     """
     kind = row.get("kind")
-    if kind in ("waiting", "drafted"):
+    if kind in ("waiting", "drafted", "send_unconfirmed"):
         return "todo"
     if row.get("handled"):
         # Dealt with: out of To do and Notices, still under All.
@@ -2696,6 +3387,8 @@ def _describe_record(record: dict) -> tuple[str, str, str]:
         return ("Draft saved, needs a look" if record.get("needs_review") else "Draft saved"), "drafted", "drafts"
     if action == "waiting":
         return "Waiting for your OK", "waiting", "needs"
+    if action == "send_unconfirmed":
+        return "Delivery unconfirmed. Check Sent mail.", "send_unconfirmed", "needs"
     if action == "rejected":
         return "Not sent: you declined", "skipped", "skipped"
     if action == "expired":
@@ -2735,6 +3428,8 @@ def _short_date(value: str) -> str:
 
 
 def _interval_text() -> str:
+    if saas_enabled():
+        return "when you select Check mail now"
     if os.environ.get("VERCEL"):
         return "every 5 minutes"
     minutes = check_interval_seconds() // 60
@@ -2849,7 +3544,15 @@ def _connections_context() -> dict:
     kind = whatsapp.provider()
     origin = _public_origin()
     local = not os.environ.get("VERCEL")
+    saas, _ = _tenant_scope() if "_tenant_scope" in locals() else (False, "")
+    try:
+        from gmail_auto.tenant import saas_enabled
+
+        saas = bool(saas_enabled())
+    except ImportError:
+        saas = False
     return {
+        "saas": saas,
         "gmail": {
             "account": gmail_account or ("" if gmail_error else auth.get("email", "")),
             "connected": bool(gmail_account),
@@ -2881,14 +3584,41 @@ def _connections_context() -> dict:
             "super_model": active_model("super"),
             "gateway": using_gateway(),
         },
+        "default_sender": load_settings().get("default_sender", ""),
         "local": local,
     }
+
+
+def _compose_mailboxes() -> list[dict]:
+    try:
+        clients, _ = connected_clients()
+    except Exception:
+        return []
+    boxes = []
+    for client in clients:
+        provider = getattr(client, "provider", "") or ""
+        if provider not in PROVIDERS:
+            continue
+        account = ""
+        try:
+            account = (client.get_user_email() or "").strip()
+        except Exception:
+            account = ""
+        label = PROVIDERS[provider]
+        boxes.append(
+            {
+                "provider": provider,
+                "label": f"{label} ({account})" if account else label,
+                "account": account,
+            }
+        )
+    return boxes
 
 
 def _provider_connected(provider: str) -> bool:
     if provider == "outlook":
         return microsoft.status("outlook")["connected"]
-    cached = _inbox_cache["data"]
+    cached = _request_inbox_cache()["data"]
     if cached is not None and any(item["provider"] == "gmail" for item in cached["accounts"]):
         return True
     try:
@@ -2896,6 +3626,17 @@ def _provider_connected(provider: str) -> bool:
     except Exception:
         return False
     return True
+
+
+def _sending_mode_options() -> dict:
+    if not saas_enabled():
+        return _MODES
+    return {
+        **_MODES,
+        "draft": (_MODES["draft"][0], "Checking mail saves drafts for you to review."),
+        "always": (_MODES["always"][0], "All replies wait for your approval in the web app."),
+        "never": (_MODES["never"][0], "Sends eligible replies after you check mail. Replies held by safeguards still wait for approval."),
+    }
 
 
 def _current_mode() -> str:
@@ -2924,28 +3665,58 @@ def _auth_failed(message: str) -> None:
 
 
 def _login_required():
+    if saas_enabled() and not session.get("user_id"):
+        return redirect(url_for("login_page"))
     if os.environ.get("VERCEL") and not session.get("user"):
         return redirect(url_for("login_page"))
     return None
 
 
-def _mode(value) -> str:
-    return value if value in {"login", "register"} else "login"
+def _client_ip() -> str:
+    if os.environ.get("VERCEL"):
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()[:64]
+    return (request.remote_addr or "")[:64]
 
 
-def _login_view(mode=None, email=None, sent=None, error=""):
-    chosen = _mode(mode or request.args.get("mode"))
+def _login_view(email=None, sent=None, error=""):
     pending = session.get("pending_email", "")
     showing_code = sent if sent is not None else request.args.get("sent") == "1"
-    if showing_code and pending and chosen != session.get("pending_mode"):
-        showing_code = False
+    shown = email if email is not None else (pending if showing_code else "")
     return _render(
         "login.html",
-        mode=chosen,
-        email=email if email is not None else (pending if showing_code else ""),
-        sent=bool(showing_code and (email or pending)),
+        email=shown,
+        sent=bool(showing_code and shown),
         error=error,
     )
+
+
+def _connected_mailbox_email(provider: str) -> str:
+    prov = (provider or "").strip().lower()
+    if not prov:
+        return ""
+    for chip in _account_chips():
+        if (chip.get("provider") or "").strip().lower() == prov:
+            email = (chip.get("email") or "").strip().lower()
+            if email and email != (chip.get("label") or "").strip().lower():
+                return email
+    try:
+        return (client_for(prov).get_user_email() or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _detect_logo_mime(data: bytes) -> str:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    raise ConfigError("Upload a PNG, JPG, GIF, or WebP logo image.")
 
 
 def _profile_context(form=None) -> dict:
@@ -2954,14 +3725,37 @@ def _profile_context(form=None) -> dict:
     from gmail_auto.translator import SUPPORTED_LANGUAGES
 
     settings = load_settings()
+    imported_gmail = session.pop("imported_gmail_signature", None)
+    from gmail_auto.settings import signature_logo_for_mailbox, signature_logo_position_for_mailbox
+
+    sigs = settings.get("mail_signatures") or {}
+    gmail_acct = _connected_mailbox_email("gmail")
+    outlook_acct = _connected_mailbox_email("outlook")
+    signature_gmail = imported_gmail if imported_gmail is not None else (sigs.get("gmail") or "")
     shared = {
         "settings": settings,
+        "auto_reply_allow_text": "\n".join(settings.get("auto_reply_allow") or []),
+        "auto_reply_block_text": "\n".join(settings.get("auto_reply_block") or []),
+        "signature_gmail": signature_gmail,
+        "signature_gmail_unsaved": imported_gmail is not None,
+        "signature_outlook": sigs.get("outlook") or "",
+        "signature_logo_gmail": signature_logo_for_mailbox(settings, provider="gmail", email=gmail_acct),
+        "signature_logo_outlook": signature_logo_for_mailbox(settings, provider="outlook", email=outlook_acct),
+        "signature_logo_pos_gmail": signature_logo_position_for_mailbox(settings, provider="gmail", email=gmail_acct),
+        "signature_logo_pos_outlook": signature_logo_position_for_mailbox(settings, provider="outlook", email=outlook_acct),
+        "signature_logo_positions": [
+            ("bottom", "Below signature"),
+            ("top", "Above signature"),
+            ("left", "Left of signature"),
+            ("right", "Right of signature"),
+        ],
         "languages": LANGUAGES,
         "translation_modes": TRANSLATION_MODES,
         "supported_languages": SUPPORTED_LANGUAGES,
         "preserve_langs_text": ", ".join(settings.get("preserve_langs", [])),
         "approval_labels": APPROVALS,
-        "modes": _MODES,
+        "modes": _sending_mode_options(),
+        "saas_mode": saas_enabled(),
         "mode": _current_mode(),
         "whatsapp_ready": whatsapp.ready(),
         "cleanup_limit": LIMIT,
@@ -3033,7 +3827,7 @@ def _oauth_redirect() -> str:
 
 
 def _microsoft_redirect() -> str:
-    if not os.environ.get("VERCEL"):
+    if not os.environ.get("VERCEL") and not (saas_enabled() and _configured_saas_origin()):
         return _local_origin() + "/oauth/microsoft/callback"
     return _public_origin() + "/oauth/microsoft/callback"
 
@@ -3048,7 +3842,28 @@ def _external_url() -> str:
     return _public_origin() + path
 
 
+def _configured_saas_origin() -> str:
+    origin = os.environ.get("AUTOMAIL_PUBLIC_ORIGIN", "").strip().rstrip("/")
+    if not origin and not os.environ.get("VERCEL"):
+        return ""
+    try:
+        parsed = urlsplit(origin)
+        valid = bool(parsed.hostname) and parsed.scheme == "https" and not (
+            parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment
+        )
+        parsed.port
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ConfigError("Set AUTOMAIL_PUBLIC_ORIGIN to the public HTTPS origin, with no path.")
+    return origin
+
+
 def _public_origin() -> str:
+    if saas_enabled():
+        origin = _configured_saas_origin()
+        if origin:
+            return origin
     proto = (request.headers.get("X-Forwarded-Proto") or request.scheme or "https").split(",")[0].strip()
     host = (request.headers.get("X-Forwarded-Host") or request.host or "").split(",")[0].strip()
     return f"{proto}://{host}"
@@ -3073,6 +3888,10 @@ def _origin_host(origin: str) -> str:
 
 
 def _host_allowed(host: str) -> bool:
+    if saas_enabled():
+        origin = _configured_saas_origin()
+        if origin:
+            return host == urlsplit(origin).hostname
     if os.environ.get("VERCEL"):
         return True
     return host in _ALLOWED_HOSTS
@@ -3082,6 +3901,8 @@ def _secret() -> str:
     configured = os.environ.get("FLASK_SECRET_KEY", "").strip()
     if configured:
         return configured
+    if saas_enabled():
+        raise ConfigError("Set a private FLASK_SECRET_KEY before enabling SaaS mode.")
     if os.environ.get("VERCEL"):
         return "autogmail-vercel"
     try:

@@ -59,13 +59,22 @@ def _is_reasoning_model(model: str) -> bool:
     return bare.startswith("gpt-5")
 
 
-def complete(system: str, user: str, max_tokens: int = 900, temperature: float = 0.3, role: str = "worker") -> str:
+def complete(
+    system: str,
+    user: str,
+    max_tokens: int = 900,
+    temperature: float = 0.3,
+    role: str = "worker",
+    *,
+    response_format: dict | None = None,
+    timeout: float = 60.0,
+) -> str:
     try:
         from openai import APIConnectionError, APIStatusError, AuthenticationError, OpenAI, RateLimitError
     except ImportError as exc:
         raise ReplyError("The openai library is not installed. Run: pip install -r requirements.txt") from exc
 
-    kwargs = {"api_key": require_openai_key(), "timeout": 60.0, "max_retries": 0}
+    kwargs = {"api_key": require_openai_key(), "timeout": timeout, "max_retries": 0}
     base_url = openai_base_url()
     if base_url:
         kwargs["base_url"] = base_url
@@ -78,6 +87,8 @@ def complete(system: str, user: str, max_tokens: int = 900, temperature: float =
             {"role": "user", "content": user},
         ],
     }
+    if response_format is not None:
+        req["response_format"] = response_format
     if _is_reasoning_model(model):
         req["reasoning_effort"] = "low"
         req["max_completion_tokens"] = max(max_tokens, 2000)

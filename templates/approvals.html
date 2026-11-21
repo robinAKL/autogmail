@@ -73,7 +73,7 @@
         <textarea id="draft{{ item.id }}" name="draft" rows="10" maxlength="5000" required>{{ item.draft }}</textarea>
         {% set languages = (translation_languages|default({})).get(item.id) %}
         {% if languages %}
-        <label class="inline-check">
+        <label class="check">
           <input type="checkbox" name="translate_draft" value="1">
           Translate my edit from {{ languages[0]|upper }} to {{ languages[1]|upper }}
         </label>
@@ -113,6 +113,8 @@
           <td>{{ item.from_name or item.from_email }}</td>
           <td>
             {% if item.status == 'sent' %}<span class="tag sent">Sent{% if item.edited %}, edited{% endif %}</span>
+            {% elif item.status == 'send_unconfirmed' %}<span class="tag waiting">Delivery unconfirmed. Check Sent mail.</span>
+            {% elif item.status == 'sending' %}<span class="tag waiting">Sending. Check Sent mail if this persists.</span>
             {% elif item.status == 'rejected' %}<span class="tag skipped">Not sent</span>
             {% else %}<span class="tag skipped">{{ item.status|title }}</span>{% endif %}
           </td>

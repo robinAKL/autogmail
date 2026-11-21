@@ -211,6 +211,61 @@ class KnowledgeTests(TempHome):
         self.assertIn("healthy eating", seen[0])
         self.assertEqual(entry["title"], "What your email shows (robin@kiwiknowledge.co.nz)")
 
+    def test_received_history_stays_in_the_inbox_and_skips_junk_categories(self):
+        from gmail_auto.gmail_client import RECEIVED_HISTORY_QUERY, RECENT_QUERY, GmailClient
+        from gmail_auto.outlook_client import OutlookClient
+
+        self.assertTrue(RECENT_QUERY.startswith("in:inbox"))
+        self.assertTrue(RECEIVED_HISTORY_QUERY.startswith("in:inbox"))
+        for folder in ("sent", "drafts", "spam", "trash"):
+            self.assertIn(f"-in:{folder}", RECEIVED_HISTORY_QUERY)
+        for category in ("promotions", "social", "forums"):
+            self.assertIn(f"-category:{category}", RECEIVED_HISTORY_QUERY)
+
+        gmail = GmailClient.__new__(GmailClient)
+        seen = []
+
+        def listed(query, limit, full=False):
+            seen.append((query, limit, full))
+            return []
+
+        gmail._list = listed
+        gmail.list_received_history(8, full=True)
+        self.assertEqual(seen, [(RECEIVED_HISTORY_QUERY, 8, True)])
+
+        outlook = OutlookClient.__new__(OutlookClient)
+        folders = []
+
+        def newest(folder, limit, field):
+            folders.append(folder)
+            return [sample(id="in", provider="outlook", subject="New thread", received_ts=20)]
+
+        outlook._list_newest = newest
+        mails = outlook.list_received_history(5, full=False)
+        self.assertEqual(folders, ["inbox"])
+        self.assertEqual([mail.id for mail in mails], ["in"])
+
+        class Box(FakeGmail):
+            def list_sent(self, limit=30, full=False):
+                return []
+
+            def list_recent(self, limit=30, full=False):
+                raise AssertionError("knowledge must use received history")
+
+            def list_received_history(self, limit=30, full=False):
+                return [sample(id="in", body="The inbox note is still here.", label_ids=["INBOX"])]
+
+        seen = []
+
+        def fake_complete(_system, user, **_kwargs):
+            seen.append(user)
+            return "## People and organisations\n- Lee."
+
+        with patch("gmail_auto.knowledge.complete", fake_complete):
+            entry = knowledge.learn_from_mailbox(Box([]))
+        self.assertEqual(entry["meta"]["letters"], 1)
+        self.assertIn("inbox note", seen[0])
+
 
 class CalendarTests(TempHome):
     def test_meeting_mail_becomes_a_calendar_draft_and_job_alerts_do_not(self):
@@ -281,6 +336,36 @@ class CalendarTests(TempHome):
         self.assertEqual(found["events"][0]["title"], "Parent interview")
         self.assertEqual(board["selected_label"], "Friday 13 November")
         self.assertEqual(len(board["selected_events"]), 1)
+        self.assertEqual(board["provider"], "")
+        self.assertEqual([row["label"] for row in board["sources"]], ["All calendars", "Gmail", "Outlook"])
+        self.assertEqual([row["count"] for row in board["sources"]], [1, 1, 0])
+
+    def test_month_board_filters_one_provider_keeps_the_day_and_names_a_failed_provider(self):
+        from datetime import datetime
+        from gmail_auto.calendars import ZONE, _item, month_board
+
+        gmail = _item("g1", "gmail", "Parent interview", datetime(2026, 11, 13, 15, 0, tzinfo=ZONE), datetime(2026, 11, 13, 16, 0, tzinfo=ZONE), "", [], "")
+        outlook = _item("o1", "outlook", "Site visit", datetime(2026, 11, 13, 9, 0, tzinfo=ZONE), datetime(2026, 11, 13, 10, 0, tzinfo=ZONE), "", [], "")
+
+        with patch("gmail_auto.calendars._outlook_events", return_value=([outlook], "robin@example.com")), patch(
+            "gmail_auto.calendars._gmail_events", return_value=([gmail], "me@example.com")
+        ):
+            board = month_board(2026, 11, "2026-11-13", "outlook")
+        self.assertEqual(board["provider"], "outlook")
+        self.assertEqual(board["selected"], "2026-11-13")
+        self.assertEqual([event["title"] for event in board["selected_events"]], ["Site visit"])
+        self.assertEqual([row["count"] for row in board["sources"]], [2, 1, 1])
+        self.assertTrue(board["sources"][2]["on"])
+
+        with patch("gmail_auto.calendars._outlook_events", side_effect=ConfigError("Calendar permission was not granted.")), patch(
+            "gmail_auto.calendars._gmail_events", return_value=([gmail], "me@example.com")
+        ):
+            failed = month_board(2026, 11, "2026-11-13", "gmail")
+        self.assertEqual(failed["errors"], ["Outlook: Calendar permission was not granted."])
+        self.assertEqual(failed["selected"], "2026-11-13")
+        self.assertEqual(failed["sources"][1]["count"], 1)
+        self.assertIsNone(failed["sources"][2]["count"])
+        self.assertIn("permission", failed["sources"][2]["error"])
 
     def test_items_added_from_mail_can_be_removed_and_hand_made_ones_stay(self):
         from gmail_auto import calendars

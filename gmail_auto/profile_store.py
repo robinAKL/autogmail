@@ -2,8 +2,9 @@ import json
 import re
 
 from gmail_auto.errors import ConfigError, ProfileError
-from gmail_auto.paths import atomic_write, root
+from gmail_auto.paths import atomic_write, data_dir, root
 from gmail_auto.storage import load_doc, save_doc
+from gmail_auto.tenant import saas_enabled
 from gmail_auto.token_store import storage_ready
 
 _SECRET = re.compile(r"sk-[A-Za-z0-9]{10,}|BEGIN PRIVATE KEY")
@@ -12,7 +13,8 @@ _PLACEHOLDER_MARKS = ("请填写", "请用几句", "请描述", "(please fill", 
 
 
 def profile_path():
-    return root() / "profile.json"
+    directory = data_dir(create=False) if saas_enabled() else root()
+    return directory / "profile.json"
 
 
 def clean_profile(data: object) -> dict:
@@ -39,6 +41,15 @@ def load_profile() -> dict:
             return clean_profile(saved)
     path = profile_path()
     if not path.exists():
+        if saas_enabled():
+            return {
+                "name": "Mailbox owner",
+                "role": "The person sending this reply",
+                "introduction": "No personal or business details have been supplied.",
+                "tone": "Clear, polite, and concise. Do not add a name or signature unless supplied.",
+                "cannot_promise": ["Do not invent facts, commitments, contact details, or a signature."],
+                "sample_phrases": ["Thank you for your message."],
+            }
         raise ConfigError("profile.json was not found.")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))

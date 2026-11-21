@@ -8,14 +8,41 @@ import json
 import os
 import re
 import threading
+import secrets
+from contextlib import contextmanager
 
 from gmail_auto.errors import ConfigError
 from gmail_auto.paths import atomic_write, data_dir
-from gmail_auto.token_store import kv_delete, kv_get, kv_set, storage_ready
+from gmail_auto.tenant import require_user_id, saas_enabled
+from gmail_auto.token_store import (
+    kv_delete, kv_delete_if_value, kv_get, kv_set, kv_set_if_absent, storage_ready,
+)
 
 _PREFIX = "autogmail:"
 _NAME = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 LOCK = threading.RLock()
+
+
+@contextmanager
+def workspace_operation(name: str, *, platform: bool = False):
+    """Serialize a workspace operation across instances when using hosted storage."""
+    if not saas_enabled() or not storage_ready():
+        with LOCK:
+            yield
+        return
+    scope = "platform" if platform else f"u:{require_user_id()}"
+    key = f"{_PREFIX}{scope}:operation:{name}"
+    owner = secrets.token_hex(16)
+    if not kv_set_if_absent(key, owner, 120):
+        raise ConfigError("This workspace operation is already in progress. Try again shortly.")
+    try:
+        yield
+    finally:
+        try:
+            kv_delete_if_value(key, owner)
+        except ConfigError:
+            # The lease will expire even if storage is temporarily unavailable.
+            pass
 
 
 def persistent() -> bool:
@@ -27,7 +54,7 @@ def load_doc(name: str, default=None):
     _check(name)
     if storage_ready():
         try:
-            raw = kv_get(_PREFIX + name)
+            raw = kv_get(_key(name))
         except ConfigError:
             raise
         except Exception as exc:
@@ -52,7 +79,7 @@ def load_doc(name: str, default=None):
 def save_doc(name: str, data) -> None:
     _check(name)
     if storage_ready():
-        kv_set(_PREFIX + name, json.dumps(data, ensure_ascii=False))
+        kv_set(_key(name), json.dumps(data, ensure_ascii=False))
         return
     try:
         atomic_write(data_dir() / f"{name}.json", json.dumps(data, ensure_ascii=False, indent=2) + "\n")
@@ -65,13 +92,19 @@ def save_doc(name: str, data) -> None:
 def delete_doc(name: str) -> None:
     _check(name)
     if storage_ready():
-        kv_delete(_PREFIX + name)
+        kv_delete(_key(name))
         return
     path = data_dir(create=False) / f"{name}.json"
     try:
         path.unlink(missing_ok=True)
     except OSError:
         return
+
+
+def _key(name: str) -> str:
+    if saas_enabled():
+        return f"{_PREFIX}u:{require_user_id()}:{name}"
+    return _PREFIX + name
 
 
 def _check(name: str) -> None:

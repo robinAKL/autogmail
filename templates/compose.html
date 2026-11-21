@@ -12,6 +12,18 @@
 <form method="post" action="{{ url_for('compose_send') }}" enctype="multipart/form-data" class="stack compose-form" data-busy="Writing the email…">
 <div class="grid-2 wide-left">
   <section class="card">
+    {% if mailboxes|length > 1 %}
+    <label>From
+      <select name="provider">
+        {% for box in mailboxes %}
+        <option value="{{ box.provider }}" {% if box.provider == chosen_provider %}selected{% endif %}>{{ box.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    {% elif mailboxes|length == 1 %}
+    <input type="hidden" name="provider" value="{{ mailboxes[0].provider }}">
+    <p class="hint">Sending from <strong>{{ mailboxes[0].label }}</strong></p>
+    {% endif %}
     <label>To <input name="to" value="{{ to }}" maxlength="600" required placeholder="lee@example.com (separate several with commas)" autocomplete="email" list="people"></label>
     <datalist id="people">{% for item in people %}<option value="{{ item.emails[0] }}">{{ item.name }}{% if item.company %} · {{ item.company }}{% endif %}</option>{% endfor %}</datalist>
     <label>Cc <span class="hint">Optional</span><input name="cc" value="" maxlength="600" list="people" placeholder="Copy someone in (separate several with commas)"></label>

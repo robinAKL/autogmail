@@ -4,34 +4,52 @@
 <header class="page-head">
   <div>
     <h1>Knowledge</h1>
-    <p class="sub">Sources become a map of current knowledge. The timeline keeps what used to be true. Replies use only what is still current.</p>
+    <p class="sub">Connected mail and documents become facts you can use, and storylines from threads you have replied in. Reply rules are written into Rules that always win, where you can edit them. The timeline records when any of that was true.</p>
   </div>
-  <form method="post" action="{{ url_for('knowledge_brief') }}" data-busy="Reorganising knowledge…">
-    <button type="submit" name="rebuild" value="1" {% if not has_key %}disabled{% endif %}>Reorganise knowledge</button>
+  <form id="kb-analyze-form" method="post" action="/knowledge/analyze" data-has-key="{{ '1' if has_key else '0' }}" data-has-sources="{{ '1' if has_sources else '0' }}">
+    <button id="kb-analyze-btn" type="submit" {% if not has_key or not has_sources %}disabled{% endif %}>Analyse knowledge</button>
   </form>
 </header>
 
 {% if not has_key %}
-<p class="banner warn">OPENAI_API_KEY is not set, so the map cannot be written yet. You can still add documents and rules.</p>
+<p class="banner warn">OPENAI_API_KEY is not set, so analysis cannot run yet. You can still add documents and rules.</p>
+{% elif not has_sources %}
+<p class="banner warn">No connected mailboxes, documents, or rules yet. <a href="{{ url_for('connections_page') }}">Connect a mailbox</a> or <a href="#sources">add a document</a> before running analysis.</p>
 {% endif %}
 {% if overview.brief_stale and overview.brief_ready %}
-<p class="banner warn">Sources have changed since the last organisation. Choose <b>Reorganise knowledge</b> before the next round of mail, or it will be done automatically.</p>
+<p class="banner warn">Sources have changed since the last analysis. Choose <b>Analyse knowledge</b> before the next round of mail, or it will be done automatically.</p>
 {% endif %}
 
+<section class="card kb-analyze-status" id="kb-analyze-status" hidden aria-live="polite">
+  <div class="card-head">
+    <div>
+      <h2 class="card-title">Analysis progress</h2>
+      <p class="muted" id="kb-analyze-message">Ready to analyse connected mailboxes and documents.</p>
+    </div>
+    <span class="tag kb-status-idle" id="kb-analyze-badge" data-status="idle">Idle</span>
+  </div>
+  <div class="head-stats kb-analyze-stats">
+    <span><strong id="kb-stat-docs">0</strong> documents</span>
+    <span><strong id="kb-stat-received">0</strong> received</span>
+    <span><strong id="kb-stat-sent">0</strong> sent</span>
+    <span><strong id="kb-stat-skipped">0</strong> skipped</span>
+  </div>
+</section>
+
 <ol class="kb-steps">
-  <li class="{% if overview.documents or overview.rules %}done{% endif %}">
+  <li class="{% if has_sources %}done{% endif %}">
     <b>1. Add sources</b>
-    <span>Upload files, notes, SharePoint or a summary of past email. Write the rules that always win.</span>
+    <span>Connect a mailbox, upload files, link SharePoint or write notes. Write the rules that always win.</span>
     <a href="#sources">Go to sources</a>
   </li>
   <li class="{% if overview.item_count %}done{% endif %}">
-    <b>2. Reorganise</b>
-    <span>The assistant reads those sources and your settings, then draws facts, people, topics, rules and the rest.</span>
-    <a href="#map">See the map</a>
+    <b>2. Analyse knowledge</b>
+    <span>The assistant reads your mail and documents, keeps the facts worth using, and writes reply rules where you can edit them.</span>
+    <a href="#storylines">See storylines</a>
   </li>
   <li class="{% if overview.brief_ready and not overview.brief_stale %}done{% endif %}">
     <b>3. Check Memory and Timeline</b>
-    <span>Memory is current. Timeline is history. Facts cannot be rewritten — mark them no longer current, or reorganise so a new fact replaces the old one.</span>
+    <span>Memory is what is current. Timeline is the time on every fact, rule and storyline: when it started, and when it stopped.</span>
     <a href="#cards">Review Memory</a>
   </li>
 </ol>
@@ -59,7 +77,7 @@
   <div class="kb-graph" id="kb-map" role="img" aria-label="Knowledge map"></div>
   <p class="meta kb-graph-hint">Drag a node to tuck it aside. Scroll to zoom. Hover to read the full line.</p>
   <ul class="legend kb-legend">
-    {% for name, meta in kinds.items() %}
+    {% for name, meta in kinds.items() if name != 'rule' %}
     <li><i class="sw kind-{{ name }}"></i>{{ meta.label }}{% if overview.by_kind[name] %} · {{ overview.by_kind[name] }}{% endif %}</li>
     {% endfor %}
   </ul>
@@ -104,6 +122,63 @@
   {% endif %}
 </section>
 {% else %}
+{% if not kind %}
+<section class="section" id="storylines">
+  <div class="section-head">
+    <h2>Storylines</h2>
+    <p class="muted">Newest first. Open a row where it sits. The timeline reads down to the latest letter.</p>
+  </div>
+  {% if storylines %}
+  <div class="card kb-story-list">
+    {% for card in storylines %}
+    <details class="kb-story" id="item-{{ card.id }}">
+      <summary>
+        <span class="story-card-top">
+          <span class="story-card-title">{{ card.title }}</span>
+          <span class="tag {{ card.status }}">{{ card.label }}</span>
+        </span>
+        <span class="story-card-who">{{ card.who }}</span>
+        <span class="story-card-foot">{{ card.size }} letters{% if card.sent %} · {{ card.sent }} from you{% endif %}{% if card.day %} · {{ card.day }}{% endif %}</span>
+      </summary>
+      <div class="kb-story-body">
+        <p class="ai-note"><b>Status</b> {{ card.label }}</p>
+        <h3 class="matter-h">Timeline</h3>
+        <ol class="story-line">
+          {% for step in card.steps %}
+          <li class="{% if step.current %}on{% endif %}{% if step.outbound %} out{% endif %}">
+            <span class="story-who">{{ step.who }}</span>
+            <span class="story-date">{{ step.day or "Date unknown" }}</span>
+            <span class="story-summary">{{ step.summary }}</span>
+          </li>
+          {% endfor %}
+        </ol>
+        {% if card.size > card.steps|length %}
+        <p class="meta">{{ card.size - card.steps|length }} earlier letters are not on this timeline yet. Analyse knowledge again to add each one.</p>
+        {% endif %}
+      </div>
+    </details>
+    {% endfor %}
+    {% if story_pager.pages > 1 %}
+    <nav class="pager" aria-label="Storyline pages">
+      {% if story_pager.prev %}
+      <a class="button quiet small" href="{{ url_for('knowledge_page', story_page=story_pager.prev) }}">Newer</a>
+      {% else %}
+      <span class="button quiet small" aria-disabled="true">Newer</span>
+      {% endif %}
+      <span class="pager-status">{{ story_pager.page }} / {{ story_pager.pages }}</span>
+      {% if story_pager.next %}
+      <a class="button quiet small" href="{{ url_for('knowledge_page', story_page=story_pager.next) }}">Older</a>
+      {% else %}
+      <span class="button quiet small" aria-disabled="true">Older</span>
+      {% endif %}
+    </nav>
+    {% endif %}
+  </div>
+  {% else %}
+  <p class="empty">No storylines yet. Analyse knowledge, and a thread you have replied in more than once will appear here.</p>
+  {% endif %}
+</section>
+{% endif %}
 <section class="section" id="cards">
   <div class="section-head">
     <h2>Memory</h2>
@@ -111,14 +186,14 @@
   </div>
   <nav class="tabs-row" aria-label="Knowledge kind">
     <a class="tab {% if not kind %}on{% endif %}" href="{{ url_for('knowledge_page') }}#cards">All<span>{{ overview.item_count }}</span></a>
-    {% for name, meta in kinds.items() %}
+    {% for name, meta in kinds.items() if name != 'rule' and name != 'storyline' %}
     <a class="tab {% if kind == name %}on{% endif %}" href="{{ url_for('knowledge_page', kind=name) }}#cards">{{ meta.label }}<span>{{ overview.by_kind[name] }}</span></a>
     {% endfor %}
   </nav>
 
   {% if not kind %}
   <div class="kb-tiles">
-    {% for tile in tiles %}
+    {% for tile in tiles if tile.kind != 'storyline' and tile.kind != 'rule' %}
     <a class="card kb-tile" href="{{ url_for('knowledge_page', kind=tile.kind) }}#kind-{{ tile.kind }}">
       <h3><i class="sw kind-{{ tile.kind }}"></i> {{ tile.label }} <span>{{ tile.count }}</span></h3>
       {% if tile.preview %}
@@ -136,7 +211,7 @@
   </div>
   {% endif %}
 
-  {% for group in groups if kind and group.kind == kind %}
+  {% for group in groups if kind and group.kind == kind and group.kind != 'rule' and group.kind != 'storyline' %}
   <section class="card kb-kind" id="kind-{{ group.kind }}">
     <div class="card-head">
       <div>
@@ -166,7 +241,7 @@
         </form>
         {% else %}
         <p>{{ item.text }}</p>
-        <p class="meta">Current since {{ item.valid_from or item.at }}
+        <p class="meta">Current since {{ item.valid_from or item.at }}{% if item.valid_until %} until {{ item.valid_until }}{% endif %}
           {% if item.source %} · {{ item.source }}{% elif item.origin == 'user' %} · added by you{% endif %}
           {% if item.locked %}<span class="tag read">Locked fact</span>{% endif %}</p>
         <div class="button-row">
@@ -231,7 +306,7 @@
     <h2>Sources</h2>
     <p class="muted">Step 1 — what the map is built from</p>
   </div>
-  <div class="grid-4">
+  <div class="grid-3">
     <form class="card source" method="post" action="{{ url_for('knowledge_upload') }}" enctype="multipart/form-data" data-busy="Reading files…" data-upload-max="{{ upload_max_bytes }}" data-upload-label="{{ upload_limit }}" data-next="{{ url_for('knowledge_page') }}#documents">
       <h3>Upload files</h3>
       <p class="muted">{{ file_types }}. Each file under {{ upload_limit }} — the hosted site rejects anything larger. Several smaller files are sent one by one.</p>
@@ -240,20 +315,6 @@
         <span data-drop-label>Choose files or drop them here</span>
       </label>
       <button type="submit">Add to knowledge</button>
-    </form>
-
-    <form class="card source" method="post" action="{{ url_for('knowledge_learn') }}" data-busy="Reading your email…">
-      <h3>Learn from past email</h3>
-      <p class="muted">Reads recent sent and received mail. Passwords and codes are left out.</p>
-      {% if mailboxes %}
-      <div class="button-row">
-        {% for item in mailboxes %}
-        <button class="{% if not loop.first %}quiet{% endif %}" type="submit" name="provider" value="{{ item.provider }}" {% if not has_key %}disabled{% endif %}>Summarise {{ item.label }} history</button>
-        {% endfor %}
-      </div>
-      {% else %}
-      <a class="button quiet" href="{{ url_for('connections_page') }}">Connect a mailbox first</a>
-      {% endif %}
     </form>
 
     <form class="card source" method="post" action="{{ url_for('knowledge_sharepoint') }}" id="sharepoint" data-busy="Reading SharePoint…">
@@ -279,7 +340,7 @@
 
   <form class="card" method="post" action="{{ url_for('knowledge_rules') }}" id="rules">
     <h3 class="card-title">Rules that always win</h3>
-    <p class="muted">One per line. These are also cards under Rules, and they override everything else.</p>
+    <p class="muted">One per line. Analyse knowledge writes reply rules here, and fills your profile and auto-reply keywords when those are still the defaults. Edit or delete any line. These override everything else.</p>
     <textarea name="rules" rows="6" placeholder="Always ask me before agreeing to a meeting or a price.&#10;Never reply to recruiters.&#10;Emails from school are important: always ask me first.">{{ rules_text }}</textarea>
     <button type="submit">Save rules</button>
   </form>
@@ -362,7 +423,7 @@
   {% else %}
   <div class="card empty-state">
     <h2>No documents yet</h2>
-    <p>Upload files, summarise email history, or link SharePoint. Then reorganise so replies use those facts instead of guessing.</p>
+    <p>Upload files, link SharePoint, or connect a mailbox. Then run <b>Analyse knowledge</b> so replies use those facts instead of guessing.</p>
   </div>
   {% endif %}
 </section>

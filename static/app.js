@@ -314,6 +314,118 @@
     activateTab(hashToTab(window.location.hash));
   }
 
+  var analyzeForm = document.getElementById("kb-analyze-form");
+  var analyzeBtn = document.getElementById("kb-analyze-btn");
+  var analyzeCard = document.getElementById("kb-analyze-status");
+  if (analyzeForm && analyzeBtn && analyzeCard) {
+    var analyzeBadge = document.getElementById("kb-analyze-badge");
+    var analyzeMsg = document.getElementById("kb-analyze-message");
+    var statDocs = document.getElementById("kb-stat-docs");
+    var statReceived = document.getElementById("kb-stat-received");
+    var statSent = document.getElementById("kb-stat-sent");
+    var statSkipped = document.getElementById("kb-stat-skipped");
+    var analysisKey = "kb_analyze_summary";
+    var inFlight = false;
+    var statusLabels = { idle: "Idle", running: "Running", done: "Done", error: "Error" };
+    var renderAnalyzeState = function (payload) {
+      var st = (payload && payload.status) || "idle";
+      if (["idle", "running", "done", "error"].indexOf(st) === -1) { st = "idle"; }
+      analyzeCard.hidden = false;
+      if (analyzeBadge) {
+        analyzeBadge.className = "tag kb-status-" + st;
+        analyzeBadge.setAttribute("data-status", st);
+        analyzeBadge.textContent = statusLabels[st] || st;
+      }
+      if (statDocs) { statDocs.textContent = String((payload && payload.documents) || 0); }
+      if (statReceived) { statReceived.textContent = String((payload && payload.received) || 0); }
+      if (statSent) { statSent.textContent = String((payload && payload.sent) || 0); }
+      if (statSkipped) { statSkipped.textContent = String((payload && payload.skipped) || 0); }
+      if (analyzeMsg) {
+        analyzeMsg.textContent = (payload && payload.message) || ({
+          idle: "Ready to analyse connected mailboxes and documents.",
+          running: "Reading the next batch from the inbox and sent mail. Archived mail and junk categories are left out.",
+          done: "Analysis complete.",
+          error: "Analysis paused. Select Analyse knowledge to retry."
+        })[st];
+      }
+    };
+    try {
+      var saved = window.sessionStorage ? window.sessionStorage.getItem(analysisKey) : null;
+      if (saved) {
+        window.sessionStorage.removeItem(analysisKey);
+        renderAnalyzeState(JSON.parse(saved));
+      }
+    } catch (e) {}
+    var requestJson = function (url, method) {
+      return fetch(url, { method: method, headers: { "Accept": "application/json" } }).then(function (resp) {
+        return resp.json().catch(function () { return null; }).then(function (data) {
+          if (!resp.ok) {
+            throw new Error((data && data.message) || (data && data.error) || ("Request failed (" + resp.status + ")."));
+          }
+          return data || { status: "error", documents: 0, emails: 0, skipped: 0, message: "Empty response." };
+        });
+      });
+    };
+    var stepLoop = function () {
+      return requestJson("/knowledge/analyze/step", "POST").then(function (data) {
+        renderAnalyzeState(data);
+        if (data.status === "running") {
+          return new Promise(function (resolve) { window.setTimeout(resolve, 250); }).then(stepLoop);
+        }
+        return data;
+      });
+    };
+    var setAnalyzing = function (busy) {
+      inFlight = busy;
+      analyzeBtn.disabled = busy;
+      analyzeBtn.classList.toggle("busy", busy);
+      if (busy) { analyzeBtn.setAttribute("aria-busy", "true"); }
+      else { analyzeBtn.removeAttribute("aria-busy"); }
+      analyzeBtn.textContent = busy ? "Analysing…" : "Analyse knowledge";
+    };
+    var runAnalysis = function (initial) {
+      setAnalyzing(true);
+      initial.then(function (data) {
+        renderAnalyzeState(data);
+        if (data.status === "running") { return stepLoop(); }
+        return data;
+      }).then(function (finalData) {
+        setAnalyzing(false);
+        if (finalData && finalData.status === "done") {
+          try {
+            if (window.sessionStorage) { window.sessionStorage.setItem(analysisKey, JSON.stringify(finalData)); }
+          } catch (e) {}
+          window.location.hash = "storylines";
+          window.location.reload();
+        }
+      }).catch(function (err) {
+        setAnalyzing(false);
+        renderAnalyzeState({
+          status: "error",
+          documents: parseInt((statDocs && statDocs.textContent) || "0", 10) || 0,
+          received: parseInt((statReceived && statReceived.textContent) || "0", 10) || 0,
+          sent: parseInt((statSent && statSent.textContent) || "0", 10) || 0,
+          skipped: parseInt((statSkipped && statSkipped.textContent) || "0", 10) || 0,
+          message: (err && err.message) || "Analysis could not complete."
+        });
+      });
+    };
+    analyzeForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      if (inFlight || analyzeBtn.disabled) { return; }
+      runAnalysis(requestJson(analyzeForm.action, "POST"));
+    });
+    requestJson(analyzeForm.action, "GET").then(function (state) {
+      if (inFlight || state.status === "idle") { return; }
+      if (state.status === "running" && !analyzeBtn.disabled) {
+        runAnalysis(Promise.resolve(state));
+      } else {
+        renderAnalyzeState(state);
+      }
+    }).catch(function () {});
+
+  }
+
   document.addEventListener("keydown", function (event) {
     if (event.key !== "Escape") { return; }
     var close = document.querySelector(".matter-drawer a[aria-label='Close storyline'], .matter-drawer-head a");

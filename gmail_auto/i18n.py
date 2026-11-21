@@ -112,7 +112,7 @@ def _translate_attr(match: re.Match) -> str:
 
 ZH = {
     # menu and shell
-    "Inbox": "收件箱", "Dashboard": "概览", "Contacts": "联系人", "Knowledge": "知识库", "Documents": "文档库",
+    "Inbox": "收件箱", "Sent": "已发件", "Dashboard": "概览", "Contacts": "联系人", "Knowledge": "知识库", "Documents": "文档库",
     "Calendar": "日历", "Connections": "连接", "Settings": "设置", "Sign out": "退出登录", "This computer": "本机",
     "Mail Autopilot": "邮件自动驾驶", "· Mail Autopilot": "· 邮件自动驾驶", "Main": "主菜单",
     "Change how far replies can go": "修改回复可以自动发到什么程度", "Drafts waiting for your OK": "等你确认的草稿",
@@ -134,6 +134,10 @@ ZH = {
     "Nothing to do. New letters that need a reply show up here with a draft ready.": "没有待处理的邮件。需要回复的新邮件会带着写好的草稿出现在这里。",
     "No notices. Bills, fines, school and government letters land here when they arrive.": "没有提醒。账单、罚单、学校和政府来信到了会放在这里。",
     "Nothing here.": "这里没有邮件。", "Selected email": "选中的邮件", "Select an email to read it.": "选一封邮件来阅读。",
+    "Sent mail": "已发邮件",
+    "Letters sent from the mailboxes connected to this sign-in. Each one keeps the mailbox it came from.": "这里是当前登录账号已连接邮箱发出的邮件。每封都标着它来自哪个邮箱。",
+    "Connect a mailbox to see mail you have sent.": "先连接一个邮箱，才能看到已发出的邮件。",
+    "No sent mail in the connected mailboxes.": "已连接的邮箱里还没有已发邮件。",
     "What they want": "对方想要什么", "What to do": "该怎么办", "Open storyline": "打开故事线", "Add to calendar": "加到日历",
     "Adding to calendar…": "正在加到日历…", "Mark handled": "标记为已处理", "Not handled yet": "还没处理",
     "Paid, read or done: take it off Notices and To do": "已付款、已读或已办完：从“提醒”和“待处理”中移除",
@@ -441,6 +445,9 @@ ZH = {
     "Knowledge, approvals and history are kept in: This computer (data folder).": "知识库、待确认和历史记录保存在：本机（data 文件夹）。",
     # calendar
     "Today": "今天", "Nothing on this day.": "这天没有安排。", "From email": "来自邮件",
+    "Gmail could not be read. The connection is still saved.": "Gmail 这次没读出来。连接还在。",
+    "Outlook could not be read. The connection is still saved.": "Outlook 这次没读出来。连接还在。",
+    "All calendars": "全部日历", "Could not read this calendar": "这个日历读不出来", "Calendar source": "日历来源",
     "Pacific/Auckland · Gmail and Outlook": "奥克兰时间 · Gmail 和 Outlook",
     "A letter from a real person that names a meeting or appointment with a date still ahead can be added automatically. Notifications, newsletters and letters without a date are never added. You can also add the opened letter from the inbox.": "真人来信里提到未来日期的会议或约会，可以自动加到日历。通知、新闻简报和没有日期的邮件不会加。你也可以在收件箱里把打开的邮件加到日历。",
     "Add dated meetings and appointments from mail to this calendar": "把邮件里带日期的会议和约会加到这个日历",

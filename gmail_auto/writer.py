@@ -12,7 +12,8 @@ import time
 
 from gmail_auto import approvals, contacts, knowledge, outgoing
 from gmail_auto.errors import ConfigError, ReplyError
-from gmail_auto.storage import LOCK, load_doc, save_doc
+from gmail_auto.storage import LOCK, load_doc, save_doc, workspace_operation
+from gmail_auto.tenant import saas_enabled
 
 _KEEP = 25
 LANGUAGES = {"auto": "Match the person", "en": "English", "zh": "Chinese", "bilingual": "Chinese and English"}
@@ -74,11 +75,13 @@ Return JSON only:
 # ---- sessions ---------------------------------------------------------------------------
 
 
-def start(to: str = "", subject: str = "", body: str = "", refs: list[str] | None = None, source: str = "web", language: str = "") -> dict:
+def start(to: str = "", subject: str = "", body: str = "", refs: list[str] | None = None, source: str = "web", language: str = "", provider: str = "") -> dict:
+    chosen_provider = outgoing.validate_provider(provider) if (provider or "").strip() else outgoing.default_provider()
     session = {
         "id": secrets.token_hex(5),
         "source": source,
         "language": language if language in LANGUAGES else default_language(),
+        "provider": chosen_provider,
         "to": (to or "").strip(),
         "cc": "",
         "subject": " ".join((subject or "").split())[:200],
@@ -106,6 +109,8 @@ def start(to: str = "", subject: str = "", body: str = "", refs: list[str] | Non
 def from_approval(item: dict, source: str = "whatsapp") -> dict:
     """A session for a new email that is already waiting in the queue, so it can be changed by talking."""
     session = start(to=item.get("to") or "", subject=item.get("subject") or "", body=item.get("draft") or "", source=source)
+    if item.get("provider"):
+        session["provider"] = item["provider"]
     session["cc"] = item.get("cc") or ""
     session["attachments"] = [{"ref": f"file:{entry['id']}", **entry} for entry in item.get("attachments") or []]
     session["approval_id"] = item["id"]
@@ -143,12 +148,21 @@ def get(session_id: str) -> dict | None:
 
 def edit(
     session_id: str, to: str | None = None, subject: str | None = None, body: str | None = None, detach: str = "", language: str | None = None,
-    cc: str | None = None,
+    cc: str | None = None, provider: str | None = None,
 ) -> dict:
     """The owner typed into the draft directly. A new language is stored; see relanguage()."""
     session = _open(session_id)
     if language in LANGUAGES:
         session["language"] = language
+    if provider is not None:
+        chosen = outgoing.validate_provider(provider)
+        if chosen:
+            existing = approvals.get(session["approval_id"]) if session.get("approval_id") else None
+            if existing is not None and existing.get("mode") != "new":
+                if chosen != (existing.get("provider") or "").strip().lower():
+                    raise ConfigError("Replies must be sent from the mailbox that received the original email.")
+            else:
+                session["provider"] = chosen
     if cc is not None:
         session["cc"] = cc.strip()
     if to is not None:
@@ -282,6 +296,13 @@ def relanguage(session_id: str, profile: dict, complete=None) -> dict:
 
 def queue(session_id: str, provider: str = "") -> dict:
     """Put the finished email in the approvals queue (or update the one already there). Returns the item."""
+    if saas_enabled():
+        with workspace_operation(f"writer:{session_id}"):
+            return _queue(session_id, provider)
+    return _queue(session_id, provider)
+
+
+def _queue(session_id: str, provider: str) -> dict:
     session = _open(session_id)
     to = outgoing.clean_recipients(_resolve_to(session["to"]))
     cc = outgoing.clean_recipients(_resolve_to(session.get("cc") or "")) if (session.get("cc") or "").strip() else ""
@@ -289,9 +310,13 @@ def queue(session_id: str, provider: str = "") -> dict:
         raise ConfigError("The email is empty.")
     subject = session["subject"] or "Hello"
     item = approvals.get(session["approval_id"]) if session.get("approval_id") else None
+    if saas_enabled() and item and item.get("status") in {"sending", "send_unconfirmed", "sent"}:
+        raise ConfigError("This message was already sent or is awaiting delivery confirmation. Check Sent mail.")
+    chosen_provider = outgoing.validate_provider(provider) if (provider or "").strip() else (session.get("provider") or "").strip().lower()
     if item is None or item.get("status") != "pending":
-        item = approvals.create_new(to, subject, session["body"], provider=provider or outgoing.default_provider(), cc=cc)
+        item = approvals.create_new(to, subject, session["body"], provider=chosen_provider or outgoing.default_provider(), cc=cc)
         session["approval_id"] = item["id"]
+    session["provider"] = chosen_provider or item.get("provider") or outgoing.default_provider()
     session["to"] = to
     session["cc"] = cc
     session["status"] = "queued"
@@ -660,7 +685,13 @@ def _sync(session: dict) -> None:
         cc = outgoing.clean_recipients(_resolve_to(session.get("cc") or "")) if (session.get("cc") or "").strip() else ""
     except ConfigError:
         cc = item.get("cc") or ""
-    approvals.set_new_fields(item_id, to, session["subject"] or item.get("subject") or "Hello", cc=cc)
+    approvals.set_new_fields(
+        item_id,
+        to,
+        session["subject"] or item.get("subject") or "Hello",
+        cc=cc,
+        provider=session.get("provider") or None,
+    )
     if session["body"].strip() and session["body"] != item.get("draft"):
         approvals.set_draft(item_id, session["body"])
     have = {entry.get("id") for entry in item.get("attachments") or []}

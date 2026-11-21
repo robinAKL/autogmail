@@ -55,6 +55,47 @@ class OutlookClient:
         mails = self._list_newest("inbox", limit, "receivedDateTime")
         return self._hydrate(mails) if full else mails
 
+    def list_received_history(self, limit: int = 25, full: bool = False) -> list[Mail]:
+        """Received mail still in the inbox.
+
+        Archive, Junk, Deleted, Sent, and Drafts are not read. The inbox screen keeps list_recent.
+        """
+        want = max(1, min(int(limit), 25))
+        found: dict[str, Mail] = {}
+        for folder in ("inbox",):
+            try:
+                page = self._list_newest(folder, want, "receivedDateTime")
+            except ConfigError:
+                continue
+            for mail in page:
+                if mail.id and mail.id not in found:
+                    found[mail.id] = mail
+        mails = sorted(found.values(), key=lambda mail: mail.received_ts or 0, reverse=True)[:want]
+        return self._hydrate(mails) if full else mails
+
+    def list_recent_page(self, limit: int = 20, token: str = "", full: bool = False) -> tuple[list[Mail], str]:
+        """One inbox page, plus Graph's nextLink. Does not follow that link."""
+        want = max(1, min(int(limit), 50))
+        path = token or "/me/mailFolders/inbox/messages"
+        params = None if token else {"$top": want, "$select": _SELECT_LIST, "$orderby": "receivedDateTime desc"}
+        try:
+            data = microsoft.graph("outlook", "GET", path, params=params, timeout=8, attempts=1)
+        except ConfigError:
+            if token:
+                raise
+            data = microsoft.graph(
+                "outlook",
+                "GET",
+                path,
+                params={"$top": want, "$select": _SELECT_LIST},
+                timeout=8,
+                attempts=1,
+            )
+        mails = [self._stamp(parse_message(item)) for item in data.get("value") or []]
+        if full:
+            mails = self._hydrate(mails)
+        return mails[:want], data.get("@odata.nextLink") or ""
+
     def search(self, text: str, limit: int = 25, raw: bool = False) -> list[Mail]:
         """Outlook's own search over every folder. Graph takes plain words; Gmail operators are dropped."""
         words = re.sub(r"\b(?:subject|from|to|newer_than|older_than|after|before|in|label|has):\S*", " ", text or "")
@@ -80,14 +121,42 @@ class OutlookClient:
         raw = microsoft.graph("outlook", "GET", f"/me/messages/{message_id}", params={"$select": _SELECT}, headers=_HTML)
         return self._stamp(parse_message(raw))
 
-    def send_reply(self, mail: Mail, body: str, user_email: str, attachments: list | None = None) -> str:
-        """Reply on the same conversation. The draft Outlook builds already quotes the original below."""
+    def send_reply(
+        self,
+        mail: Mail,
+        body: str,
+        user_email: str,
+        attachments: list | None = None,
+        html_suffix: str = "",
+        inline_images: list | None = None,
+    ) -> str:
+        """Reply on the same conversation. The draft Outlook builds already quotes the original below.
+
+        html_suffix is appended as HTML after the escaped text. inline_images are
+        (content_id, filename, mime, bytes) and referenced from that HTML as cid:content_id.
+        A saved logo for this Outlook account is added the same way.
+        """
+        logo_html, logo_images = _saved_outlook_logo(self)
+        images = _inline_attachments([*(inline_images or []), *logo_images])
         draft = microsoft.graph("outlook", "POST", f"/me/messages/{mail.id}/createReply", headers=_HTML)
         draft_id = draft.get("id")
         if not draft_id:
             raise ConfigError("Outlook did not create the reply.")
         quoted = (draft.get("body") or {}).get("content") or ""
-        mine = "<div>" + html.escape(body).replace("\n", "<br>") + "</div><br>"
+        suffix = (html_suffix or "").strip()
+        if logo_html or suffix:
+            from gmail_auto.signatures import load_logo_layout, render_body_with_logo_html
+
+            signature, logo_position = load_logo_layout("outlook", _outlook_account(self))
+            mine = render_body_with_logo_html(
+                body,
+                signature=signature,
+                img_html=logo_html,
+                position=logo_position,
+                html_suffix=suffix,
+            ) + "<br>"
+        else:
+            mine = _escaped_html(body)
         microsoft.graph(
             "outlook",
             "PATCH",
@@ -95,40 +164,71 @@ class OutlookClient:
             body={"body": {"contentType": "HTML", "content": mine + quoted}},
         )
         _add_attachments(draft_id, attachments)
+        _add_inline_images(draft_id, images)
         microsoft.graph("outlook", "POST", f"/me/messages/{draft_id}/send")
         return draft_id
 
     def send_notice(self, to: str, subject: str, body: str) -> None:
         self.send_new(to, subject, body)
 
-    def send_new(self, to: str, subject: str, body: str, attachments: list | None = None, cc: str = "") -> None:
+    def send_new(
+        self,
+        to: str,
+        subject: str,
+        body: str,
+        attachments: list | None = None,
+        cc: str = "",
+        html_suffix: str = "",
+        inline_images: list | None = None,
+    ) -> None:
         """A new email (not a reply). to and cc may hold several addresses separated by commas."""
+        logo_html, logo_images = _saved_outlook_logo(self)
+        images = _inline_attachments([*(inline_images or []), *logo_images])
+        suffix = (html_suffix or "").strip()
+        if logo_html or suffix or images:
+            from gmail_auto.signatures import load_logo_layout, render_body_with_logo_html
+
+            signature, logo_position = load_logo_layout("outlook", _outlook_account(self))
+            content = render_body_with_logo_html(
+                body,
+                signature=signature,
+                img_html=logo_html,
+                position=logo_position,
+                html_suffix=suffix,
+            )
+            body_part = {"contentType": "HTML", "content": content}
+        else:
+            body_part = {"contentType": "Text", "content": body}
         message = {
             "subject": subject,
-            "body": {"contentType": "Text", "content": body},
+            "body": body_part,
             "toRecipients": [{"emailAddress": {"address": address.strip()}} for address in to.split(",") if address.strip()],
         }
         if cc:
             message["ccRecipients"] = [{"emailAddress": {"address": address.strip()}} for address in cc.split(",") if address.strip()]
-        if any(len(data) > _INLINE_BYTES for _, _, data in attachments or []) or sum(len(data) for _, _, data in attachments or []) > _INLINE_BYTES:
+        file_bytes = sum(len(data) for _, _, data in attachments or [])
+        inline_bytes = sum(len(item[3]) for item in [*(inline_images or []), *logo_images])
+        if any(len(data) > _INLINE_BYTES for _, _, data in attachments or []) or file_bytes + inline_bytes > _INLINE_BYTES:
             # Too big to send in one call: make a draft, add the files (big ones through an upload session), send it.
             draft = microsoft.graph("outlook", "POST", "/me/messages", body=message)
             draft_id = draft.get("id")
             if not draft_id:
                 raise ConfigError("Outlook did not create the email.")
             _add_attachments(draft_id, attachments)
+            _add_inline_images(draft_id, images)
             microsoft.graph("outlook", "POST", f"/me/messages/{draft_id}/send")
             return
-        if attachments:
-            message["attachments"] = [
-                {
-                    "@odata.type": "#microsoft.graph.fileAttachment",
-                    "name": filename,
-                    "contentType": mime or "application/octet-stream",
-                    "contentBytes": base64.b64encode(data).decode("ascii"),
-                }
-                for filename, mime, data in attachments
-            ]
+        files = [
+            {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": filename,
+                "contentType": mime or "application/octet-stream",
+                "contentBytes": base64.b64encode(data).decode("ascii"),
+            }
+            for filename, mime, data in attachments or []
+        ]
+        if files or images:
+            message["attachments"] = files + images
         microsoft.graph("outlook", "POST", "/me/sendMail", body={"message": message})
 
     def mark_read(self, message_id: str) -> None:
@@ -292,6 +392,84 @@ def _timestamp(value: str) -> float:
 # Graph takes a file inside one request up to 3 MB; bigger ones go through an upload session in pieces.
 _INLINE_BYTES = 3_000_000
 _CHUNK = 320 * 1024 * 12  # pieces must be multiples of 320 KiB
+
+
+def _outlook_account(client) -> str:
+    account = getattr(client, "_email", "") or ""
+    if not account:
+        connected = False
+        try:
+            record = microsoft.status("outlook")
+            connected = bool(record.get("connected"))
+            account = (record.get("account") or "").strip()
+        except Exception:
+            connected = False
+        if not account and connected:
+            try:
+                account = (client.get_user_email() or "").strip()
+            except Exception:
+                account = ""
+    return account
+
+
+def _saved_outlook_logo(client) -> tuple[str, list]:
+    """Saved logo for this Outlook mailbox, with a content id we generate."""
+    account = _outlook_account(client)
+    if not account:
+        return "", []
+    from gmail_auto.signatures import load_logo
+    import secrets
+
+    logo = load_logo("outlook", account)
+    if not logo:
+        return "", []
+    filename, mime, data = logo
+    subtype = "img"
+    if isinstance(mime, str) and "/" in mime:
+        subtype = mime.split("/", 1)[1].split("+", 1)[0]
+    subtype = "".join(ch for ch in subtype.lower() if ch.isalnum())[:12] or "img"
+    cid = f"logo.{subtype}.{secrets.token_hex(6)}@autogmail"
+    image = f'<img src="cid:{html.escape(cid, quote=True)}" alt="Company logo" width="120" style="display:block;max-width:160px;height:auto;">'
+    return image, [(cid, filename or "logo", mime or "image/png", data)]
+
+
+def _escaped_html(body: str) -> str:
+    return "<div>" + html.escape(body or "").replace("\n", "<br>") + "</div><br>"
+
+
+def _inline_attachments(images: list | None) -> list[dict]:
+    """Graph inline files. A logo bigger than one request can hold is refused, not sent as a download."""
+    parts: list[dict] = []
+    for item in images or []:
+        if not isinstance(item, (tuple, list)) or len(item) != 4:
+            raise ConfigError("An inline image needs a content id, filename, type, and bytes.")
+        content_id, filename, mime, data = item
+        cid = str(content_id or "").strip()
+        if cid.lower().startswith("cid:"):
+            cid = cid[4:].strip()
+        if cid.startswith("<") and cid.endswith(">"):
+            cid = cid[1:-1].strip()
+        if not cid or any(mark in cid for mark in ' "\'<>'):
+            raise ConfigError("An inline image needs a content id.")
+        raw = bytes(data)
+        if len(raw) > _INLINE_BYTES:
+            raise ConfigError(f"{filename or 'The signature image'} is too large to embed in the email.")
+        parts.append(
+            {
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": filename or "image",
+                "contentType": mime or "image/png",
+                "contentBytes": base64.b64encode(raw).decode("ascii"),
+                "isInline": True,
+                "contentId": cid,
+            }
+        )
+    return parts
+
+
+def _add_inline_images(message_id: str, images: list[dict]) -> None:
+    for image in images:
+        microsoft.graph("outlook", "POST", f"/me/messages/{message_id}/attachments", body=image)
 
 
 def _add_attachments(message_id: str, attachments: list | None) -> None:

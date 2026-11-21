@@ -7,7 +7,14 @@
     <h1>Inbox</h1>
     <p class="sub">
       {% if accounts %}
-        {% for item in accounts %}<span class="chip {{ item.provider }}">{{ item.label }} · {{ item.email }}</span>{% endfor %}
+        {% if accounts|length > 1 %}
+        <a class="chip{% if not mailbox %} on{% endif %}" href="{{ url_for('home', show=show) }}" {% if not mailbox %}aria-current="page"{% endif %}>All mailboxes</a>
+        {% endif %}
+        {% for item in accounts %}
+        <a class="chip {{ item.provider }}{% if mailbox == item.provider %} on{% endif %}" href="{{ url_for('home', show=show, mailbox=item.provider) }}" {% if mailbox == item.provider %}aria-current="page"{% endif %}>
+          {{ item.label }} · {{ item.email }}{% if item.provider in provider_counts %} · {{ provider_counts[item.provider] }} loaded{% endif %}
+        </a>
+        {% endfor %}
       {% else %}
         No mailbox connected yet
       {% endif %}
@@ -16,6 +23,7 @@
   <div class="head-actions">
     <a class="button quiet" href="{{ url_for('write_start') }}" {% if not connected %}aria-disabled="true"{% endif %}>Write email</a>
     <form method="get" action="{{ url_for('inbox_refresh') }}" data-busy="Reading mailbox…">
+      {% if mailbox %}<input type="hidden" name="mailbox" value="{{ mailbox }}">{% endif %}
       <button class="quiet" type="submit" {% if not connected %}disabled{% endif %}>Refresh list</button>
     </form>
     <form method="post" action="{{ url_for('run_now') }}" data-busy="Checking mail…" {% if live %}data-confirm="Sending is on. This round will really answer unread mail that has not been handled yet."{% endif %}>
@@ -72,16 +80,16 @@
 {% endif %}
 <nav class="tabs-row" aria-label="Filter">
   {% for name, label in filters.items() %}
-  <a class="tab {% if show == name %}on{% endif %}" href="{{ url_for('home', show=name) }}">{{ label }}<span>{{ counts[name] }}</span></a>
+  <a class="tab {% if show == name %}on{% endif %}" href="{{ url_for('home', show=name, mailbox=mailbox) }}">{{ label }}<span>{{ counts[name] }}</span></a>
   {% endfor %}
   {% if show == 'todo' and nav_waiting %}<a class="tab-side" href="{{ url_for('approvals_page') }}">All {{ nav_waiting }} drafts on one page</a>{% endif %}
 </nav>
 
-<div class="inbox-desk">
+<div class="inbox-desk" {% if inbox_more %}data-inbox-more="1"{% endif %}>
 <div class="split">
   <section class="list" aria-label="Emails">
     {% for row in rows %}
-    <a class="row {% if opened and opened.key == row.key %}on{% endif %} {% if row.unread %}unread{% endif %}" href="{{ url_for('home', show=show, open=row.key) }}" data-thread="{{ row.thread_id or '' }}" data-story="{{ row.story_id or '' }}" {% if opened and opened.key == row.key %}aria-current="true" data-current{% endif %}>
+    <a class="row {% if opened and opened.key == row.key %}on{% endif %} {% if row.unread %}unread{% endif %}" href="{{ url_for('home', show=show, mailbox=mailbox, open=row.key) }}" data-thread="{{ row.thread_id or '' }}" data-story="{{ row.story_id or '' }}" {% if opened and opened.key == row.key %}aria-current="true" data-current{% endif %}>
       <span class="row-top">
         <span class="row-who" translate="no">{{ row.who }}</span>
         <span class="row-date">{{ row.short_date }}</span>
@@ -100,13 +108,13 @@
     {% if pager and pager.pages > 1 %}
     <nav class="pager" aria-label="Inbox pages">
       {% if pager.prev %}
-      <a class="button quiet small" href="{{ url_for('home', show=show, page=pager.prev) }}">Newer</a>
+      <a class="button quiet small" href="{{ url_for('home', show=show, mailbox=mailbox, page=pager.prev) }}">Newer</a>
       {% else %}
       <span class="button quiet small" aria-disabled="true">Newer</span>
       {% endif %}
       <span class="pager-status">{{ pager.page }} / {{ pager.pages }}</span>
       {% if pager.next %}
-      <a class="button quiet small" href="{{ url_for('home', show=show, page=pager.next) }}">Older</a>
+      <a class="button quiet small" href="{{ url_for('home', show=show, mailbox=mailbox, page=pager.next) }}">Older</a>
       {% else %}
       <span class="button quiet small" aria-disabled="true">Older</span>
       {% endif %}
@@ -138,13 +146,13 @@
       {% endif %}
       {% if story and not (matter and matter.id == story.id) %}
       <p class="matter-jump">
-        <a href="{{ url_for('home', show=show, open=opened.key, story=story.id) }}">Open storyline</a>
+        <a href="{{ url_for('home', show=show, mailbox=mailbox, open=opened.key, story=story.id) }}">Open storyline</a>
         <span class="muted">{{ story.size }} letters{% if story.label %} · {{ story.label }}{% endif %}</span>
       </p>
       {% endif %}
       <form method="post" action="{{ url_for('calendar_from_mail') }}" class="button-row" data-busy="Adding to calendar…">
         <input type="hidden" name="key" value="{{ opened.key }}">
-        <input type="hidden" name="next" value="{{ url_for('home', show=show, open=opened.key) }}">
+        <input type="hidden" name="next" value="{{ url_for('home', show=show, mailbox=mailbox, open=opened.key) }}">
         <input type="hidden" name="show" value="{{ show }}">
         {% if opened.handled %}
         <button class="quiet small" type="submit" formaction="{{ url_for('mail_handled') }}" name="handled" value="0">Not handled yet</button>
@@ -179,7 +187,7 @@
         {% if waiting_item.reason %}<p class="hint">Why it is asking: {{ waiting_item.reason }}</p>{% endif %}
       </div>
       <form method="post" action="{{ url_for('approvals_act', item_id=waiting_item.id, action='send') }}" enctype="multipart/form-data" data-busy="Sending…" data-confirm="Send this reply now?">
-        <input type="hidden" name="next" value="{{ url_for('home', show=show, open=opened.key) }}">
+        <input type="hidden" name="next" value="{{ url_for('home', show=show, mailbox=mailbox, open=opened.key) }}">
         <textarea name="draft" rows="9" maxlength="5000" required>{{ waiting_item.draft }}</textarea>
         {% if waiting_item.sources %}
         <p class="sources">Written using {% for title in waiting_item.sources %}<span class="chip tiny">{{ title }}</span>{% endfor %}</p>
@@ -192,7 +200,7 @@
         </div>
       </form>
       <form method="post" action="{{ url_for('approvals_act', item_id=waiting_item.id, action='rewrite') }}" class="rewrite-row" data-busy="Rewriting…">
-        <input type="hidden" name="next" value="{{ url_for('home', show=show, open=opened.key) }}">
+        <input type="hidden" name="next" value="{{ url_for('home', show=show, mailbox=mailbox, open=opened.key) }}">
         <input type="text" name="instruction" maxlength="1000" required placeholder="What to change, e.g. shorter, say we can do Friday 2pm" aria-label="What to change">
         <button class="quiet" type="submit">Rewrite</button>
       </form>
@@ -237,7 +245,7 @@
   </header>
   <div class="story-rail-list">
     {% for card in stories %}
-    <a class="story-card {% if matter and matter.id == card.id %}on{% endif %}" href="{{ url_for('home', show=show, open=card.open_key, story=card.id) }}">
+    <a class="story-card {% if matter and matter.id == card.id %}on{% endif %}" href="{{ url_for('home', show=show, mailbox=mailbox, open=card.open_key, story=card.id) }}">
       <span class="story-card-top">
         <span class="story-card-title" translate="no">{{ card.title }}</span>
         <span class="tag {{ card.status }}">{{ card.label }}</span>
@@ -247,14 +255,14 @@
       <span class="story-card-foot">{{ card.size }} letters{% if card.date %} · {{ card.date }}{% endif %}</span>
     </a>
     {% else %}
-    <p class="empty">No open storylines. When a thread has more than one letter, it appears here.</p>
+    <p class="empty">Conversations with two or more messages appear here.</p>
     {% endfor %}
   </div>
 </aside>
 </div>
 
 {% if matter %}
-<a class="matter-scrim" href="{{ url_for('home', show=show, open=opened.key if opened else matter.open_key) }}" aria-label="Close storyline"></a>
+<a class="matter-scrim" href="{{ url_for('home', show=show, mailbox=mailbox, open=opened.key if opened else matter.open_key) }}" aria-label="Close storyline"></a>
 <aside class="matter-drawer" role="dialog" aria-labelledby="matter-title">
   <header class="matter-drawer-head">
     <div>
@@ -262,7 +270,7 @@
       <h2 id="matter-title">{{ matter.title }}</h2>
       <p class="meta">{{ matter.who }}{% if matter.label %} · {{ matter.label }}{% endif %} · {{ matter.size }} letters</p>
     </div>
-    <a class="button quiet small" href="{{ url_for('home', show=show, open=opened.key if opened else matter.open_key) }}">Close</a>
+    <a class="button quiet small" href="{{ url_for('home', show=show, mailbox=mailbox, open=opened.key if opened else matter.open_key) }}">Close</a>
   </header>
   <p class="ai-note"><b>Status</b> {{ matter.label or 'In progress' }}</p>
   <h3 class="matter-h">Timeline</h3>
@@ -272,7 +280,7 @@
       {% if step.outbound %}
       <span class="story-who">{{ step.who }}</span>
       {% else %}
-      <a class="story-who" href="{{ url_for('home', show=show, open=step.key, story=matter.id) }}">{{ step.who }}</a>
+      <a class="story-who" href="{{ url_for('home', show=show, mailbox=mailbox, open=step.key, story=matter.id) }}">{{ step.who }}</a>
       {% endif %}
       <span class="story-date">{{ step.date }}</span>
       <span class="story-summary" translate="no">{{ step.summary }}</span>
@@ -286,7 +294,7 @@
   <ul class="matter-letters">
     {% for letter in matter.letters %}
     <li>
-      <a href="{{ url_for('home', show=show, open=letter.key, story=matter.id) }}">
+      <a href="{{ url_for('home', show=show, mailbox=mailbox, open=letter.key, story=matter.id) }}">
         <strong>{{ letter.who }}</strong>
         <span>{{ letter.subject }}</span>
         <span class="muted">{{ letter.date }} · {{ letter.status }}</span>
@@ -296,10 +304,40 @@
   </ul>
   <form method="post" action="{{ url_for('story_hide') }}" class="matter-actions" data-confirm="Remove this matter from the storyline? The letters stay in Inbox.">
     <input type="hidden" name="story" value="{{ matter.id }}">
-    <input type="hidden" name="next" value="{{ url_for('home', show=show, open=opened.key if opened else '') }}">
+    <input type="hidden" name="next" value="{{ url_for('home', show=show, mailbox=mailbox, open=opened.key if opened else '') }}">
     <button class="quiet danger-text" type="submit">Remove from storyline</button>
   </form>
 </aside>
 {% endif %}
+{% endif %}
+{% if inbox_more %}
+<script>
+(function () {
+  var key = "autopilot-inbox-fill";
+  if (Number(sessionStorage.getItem(key) || "0") >= 6) {
+    sessionStorage.removeItem(key);
+    return;
+  }
+  function finish() {
+    sessionStorage.removeItem(key);
+    location.reload();
+  }
+  function step() {
+    var seen = Number(sessionStorage.getItem(key) || "0") + 1;
+    sessionStorage.setItem(key, String(seen));
+    if (seen > 6) { finish(); return; }
+    fetch("{{ url_for('inbox_more') }}", { headers: { "Accept": "application/json" } })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (!data) { sessionStorage.removeItem(key); return; }
+        if (data.hasMore && data.added) step();
+        else if (!data.hasMore) finish();
+        else sessionStorage.removeItem(key);
+      })
+      .catch(function () { sessionStorage.removeItem(key); });
+  }
+  step();
+})();
+</script>
 {% endif %}
 {% endblock %}

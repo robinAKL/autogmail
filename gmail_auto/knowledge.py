@@ -10,7 +10,6 @@ import json
 import math
 import re
 import secrets
-import time
 from datetime import datetime
 
 from gmail_auto.envfile import has_openai_key
@@ -18,7 +17,8 @@ from gmail_auto.errors import ConfigError, ReplyError, named_error
 from gmail_auto.filters import is_sensitive
 from gmail_auto.llm import complete, parse_json
 from gmail_auto.profile_store import profile_as_prompt
-from gmail_auto.storage import LOCK, delete_doc, load_doc, save_doc
+from gmail_auto.storage import LOCK, delete_doc, load_doc, save_doc, workspace_operation
+from gmail_auto.tenant import saas_enabled
 
 SOURCES = {
     "upload": "Uploaded file",
@@ -90,6 +90,11 @@ KINDS = {
         "label": "Decisions",
         "locked": False,
         "hint": "Calls you have already made that later mail should not reopen.",
+    },
+    "storyline": {
+        "label": "Storylines",
+        "locked": False,
+        "hint": "A thread you have replied in more than once. Later replies can follow the arc.",
     },
 }
 _KIND_ORDER = tuple(KINDS)
@@ -434,12 +439,91 @@ def rebuild_model(profile: dict) -> str:
     with LOCK:
         index = load_index()
         index["model"] = {"items": merged, "updated_at": _now()}
-        rules = [item["text"] for item in live if item["kind"] == "rule"]
+        rules = [item["text"] for item in live if item["kind"] == "rule" and item["origin"] != "analysis"]
         if rules:
             index["rules"] = rules[:MAX_RULES]
         index["brief"] = {"text": text, "updated_at": _now(), "stale": False}
         _save_index(index)
     return text
+
+
+def merge_analysis(extracted: list[dict]) -> None:
+    """Merge event-backed cards while preserving user edits and multiple periods of a fact."""
+    if not extracted:
+        return
+    with workspace_operation("kb_index_analysis"), LOCK:
+        index = load_index()
+        items = index["model"]["items"]
+        by_key = {_analysis_key(item): pos for pos, item in enumerate(items)}
+        rule_texts = []
+        for raw in extracted:
+            if str(raw.get("kind") or "").strip().lower() in ("rule", "preference"):
+                rule_texts.append(raw.get("text") or "")
+                continue
+            item = _clean_item(raw, origin="analysis")
+            if not item:
+                continue
+            key = _analysis_key(item)
+            if key in by_key:
+                old = items[by_key[key]]
+                if old["origin"] != "analysis" or old["status"] != "active":
+                    continue
+                if item["kind"] == "storyline":
+                    items[by_key[key]] = dict(
+                        old,
+                        text=item["text"],
+                        source=item["source"],
+                        evidence=item["evidence"],
+                        steps=item.get("steps") or [],
+                        observed_at=item.get("observed_at") or old.get("observed_at") or "",
+                        updated_at=_now(),
+                    )
+                    continue
+                sources = {source["source_id"]: source for source in old["evidence"] + item["evidence"]}
+                latest = sorted(sources.values(), key=lambda source: source["observed_at"], reverse=True)[:5]
+                if latest:
+                    primary = latest[0]
+                    items[by_key[key]] = dict(
+                        old, evidence=latest, observed_at=primary["observed_at"], source=primary["source"],
+                    )
+            else:
+                by_key[key] = len(items)
+                items.append(item)
+        if rule_texts:
+            index["rules"] = _extend_rules(index["rules"], rule_texts)
+            items = _sync_rules(items, index["rules"])
+        now = _now()
+        index["model"]["items"] = items
+        index["model"]["updated_at"] = now
+        index["brief"] = {"text": brief_from_items(items, index["rules"]), "updated_at": now, "stale": False}
+        _save_index(index)
+
+
+def _story_steps(raw: dict) -> list[dict]:
+    steps = []
+    for source in (raw.get("steps") if isinstance(raw.get("steps"), list) else [])[:40]:
+        if not isinstance(source, dict):
+            continue
+        summary = re.sub(r"\s+", " ", str(source.get("summary") or "").strip())
+        if not summary:
+            continue
+        steps.append({
+            "at": _as_of(source.get("at")),
+            "who": str(source.get("who") or "")[:80],
+            "outbound": bool(source.get("outbound")),
+            "summary": summary[:160],
+        })
+    return steps
+
+
+def _analysis_key(item: dict) -> tuple[str, ...]:
+    if item.get("kind") == "storyline" and item.get("evidence"):
+        return ("storyline", str(item["evidence"][0].get("source_id") or ""))
+    return (
+        item["kind"], item["text"].strip().casefold(), item.get("temporal", ""),
+        item.get("valid_from", "")[:10] if item.get("temporal") == "dated" else "",
+        item.get("valid_until", "")[:10] if item.get("temporal") == "dated" else "",
+    )
 
 
 def list_items(kind: str = "", active_only: bool = False) -> list[dict]:
@@ -479,7 +563,7 @@ def update_item(item_id: str, text: str) -> dict:
         index["model"]["items"] = items
         index["model"]["updated_at"] = _now()
         if found["kind"] == "rule":
-            index["rules"] = [item["text"] for item in items if item["kind"] == "rule"][:MAX_RULES]
+            index["rules"] = [item["text"] for item in items if item["kind"] == "rule" and item["origin"] != "analysis"][:MAX_RULES]
         index["brief"]["stale"] = True
         _save_index(index)
     return found
@@ -496,7 +580,7 @@ def delete_item(item_id: str) -> bool:
         index["model"]["items"] = [item for item in index["model"]["items"] if item["id"] != item_id]
         index["model"]["updated_at"] = _now()
         if found["kind"] == "rule":
-            index["rules"] = [item["text"] for item in index["model"]["items"] if item["kind"] == "rule"]
+            index["rules"] = [item["text"] for item in index["model"]["items"] if item["kind"] == "rule" and item["origin"] != "analysis"]
         index["brief"]["stale"] = True
         _save_index(index)
     return True
@@ -519,7 +603,7 @@ def end_item(item_id: str) -> dict:
         index["model"]["items"] = items
         index["model"]["updated_at"] = _now()
         if found["kind"] == "rule":
-            index["rules"] = [item["text"] for item in items if item["kind"] == "rule" and is_active(item)]
+            index["rules"] = [item["text"] for item in items if item["kind"] == "rule" and item["origin"] != "analysis" and is_active(item)]
         index["brief"]["stale"] = True
         _save_index(index)
     return found
@@ -567,11 +651,24 @@ def items_from_brief(text: str) -> list[dict]:
     return [item for item in items if item]
 
 
+def is_shown(item: dict) -> bool:
+    """Rules stay in the editable list. A mail date alone does not make a fact."""
+    if item.get("kind") == "rule":
+        return False
+    return not (
+        item.get("kind") == "fact"
+        and item.get("origin") == "analysis"
+        and item.get("temporal") == "unknown"
+    )
+
+
 def is_active(item: dict) -> bool:
     status = str(item.get("status") or "active")
     if status in ("ended", "superseded"):
         return False
     until = str(item.get("valid_until") or "").strip()
+    if item.get("temporal") == "dated":
+        return not until or until[:10] >= _now()[:10]
     if until and until <= _now():
         return False
     return True
@@ -582,6 +679,12 @@ def brief_from_items(items: list[dict], rules: list[str] | None = None) -> str:
     for item in items:
         if not is_active(item):
             continue
+        if item.get("origin") == "analysis":
+            if item.get("temporal") != "stable":
+                continue
+            if item["kind"] == "rule":
+                groups["experience"].append(f"Observed reply practice: {item['text']}")
+                continue
         groups.get(item["kind"], groups["fact"]).append(item["text"])
     if rules:
         for rule in rules:
@@ -600,14 +703,17 @@ def brief_from_items(items: list[dict], rules: list[str] | None = None) -> str:
             block("Ongoing topics and commitments", groups["topic"] + groups["decision"]),
             block("How I write", groups["preference"] + groups["experience"]),
             block("How to handle my mail", groups["rule"]),
+            block("Storylines", groups["storyline"][:8]),
         ]
     )
 
 
 def graph_view(items: list[dict] | None = None) -> dict:
     """Topology for the D3 map: you, kind hubs, and current items. Layout is done in the browser."""
+    from gmail_auto.story import display_title
+
     items = items if items is not None else load_index()["model"]["items"]
-    items = [item for item in items if is_active(item)]
+    items = [item for item in items if is_shown(item) and is_active(item)]
     present = [kind for kind in _KIND_ORDER if any(item["kind"] == kind for item in items)]
     nodes = [
         {
@@ -629,19 +735,22 @@ def graph_view(items: list[dict] | None = None) -> dict:
                 "kind": kind,
                 "label": KINDS[kind]["label"],
                 "title": KINDS[kind]["hint"],
-                "href": f"/knowledge?kind={kind}#cards",
+                "href": "#storylines" if kind == "storyline" else f"/knowledge?kind={kind}#cards",
             }
         )
         edges.append({"from": "you", "to": hub, "related": False})
         for item in [row for row in items if row["kind"] == kind][:8]:
+            label = item["text"]
+            if kind == "storyline":
+                label = _storyline_card(item, display_title)["title"]
             nodes.append(
                 {
                     "id": item["id"],
                     "role": "leaf",
                     "kind": kind,
-                    "label": _short_label(item["text"]),
-                    "title": item["text"],
-                    "href": f"/knowledge?kind={kind}#item-{item['id']}",
+                    "label": _short_label(label),
+                    "title": label,
+                    "href": ("#item-" + item["id"]) if kind == "storyline" else f"/knowledge?kind={kind}#item-{item['id']}",
                 }
             )
             edges.append({"from": hub, "to": item["id"], "related": False})
@@ -655,7 +764,7 @@ def graph_view(items: list[dict] | None = None) -> dict:
 def memory_tiles(items: list[dict] | None = None, preview: int = 4) -> list[dict]:
     """Compact Memory view: one tile per kind, with the live bullets on top."""
     items = items if items is not None else load_index()["model"]["items"]
-    live = [item for item in items if is_active(item)]
+    live = [item for item in items if is_shown(item) and is_active(item)]
     tiles = []
     for kind in _KIND_ORDER:
         cards = [item for item in live if item["kind"] == kind]
@@ -673,9 +782,149 @@ def memory_tiles(items: list[dict] | None = None, preview: int = 4) -> list[dict
     return tiles
 
 
+_STORY_TEXT = re.compile(
+    r"^With (?P<who>.+?) about (?P<title>.+?)\. (?P<count>\d+) letters, (?P<sent>\d+) written by you\.(?: Latest: (?P<latest>.+))?$"
+)
+_STORY_STATUS = {
+    "waiting_on_me": "Waiting on you",
+    "waiting_on_them": "Waiting on them",
+    "in_progress": "In progress",
+}
+
+
+def storyline_cards(items: list[dict] | None = None) -> list[dict]:
+    """Compact storylines. The list shows title, person and status. The timeline stays closed."""
+    from gmail_auto.story import display_title
+
+    items = items if items is not None else load_index()["model"]["items"]
+    cards = []
+    for item in items:
+        if item.get("kind") != "storyline" or not is_shown(item) or not is_active(item):
+            continue
+        cards.append(_storyline_card(item, display_title))
+    cards.sort(key=lambda card: (card["date"] or "", card["title"].casefold()), reverse=True)
+    return cards
+
+
+def _storyline_card(item: dict, display_title) -> dict:
+    who, title, count, sent, latest = _storyline_parts(item)
+    steps = []
+    for raw in item.get("steps") or []:
+        if not isinstance(raw, dict):
+            continue
+        summary = re.sub(r"\s+", " ", str(raw.get("summary") or "")).strip()
+        if not summary:
+            continue
+        when = _as_of(raw.get("at")) or _date_in_text(summary)
+        summary = _story_sentence(summary)
+        steps.append({
+            "who": str(raw.get("who") or ("You" if raw.get("outbound") else who))[:80],
+            "date": when,
+            "outbound": bool(raw.get("outbound")),
+            "summary": summary[:160],
+        })
+    if not steps and latest:
+        sentence = _story_sentence(latest)
+        steps.append({
+            "who": "You", "date": _date_in_text(latest), "outbound": True, "summary": sentence[:160],
+        })
+    steps.sort(key=lambda step: step["date"])
+    newest = steps[-1] if steps else {}
+    if newest.get("outbound"):
+        status = "waiting_on_them"
+    elif newest:
+        status = "waiting_on_me"
+    else:
+        status = "in_progress"
+    for index, step in enumerate(steps):
+        step["current"] = index == len(steps) - 1
+        step["day"] = _story_day(step["date"])
+    return {
+        "id": item.get("id") or "",
+        "title": display_title(title or item.get("source") or ""),
+        "who": _story_person(who),
+        "status": status,
+        "label": _STORY_STATUS[status],
+        "size": count,
+        "sent": sent,
+        "date": newest.get("date") or "",
+        "day": _story_day(newest.get("date") or ""),
+        "steps": steps,
+    }
+
+
+def _storyline_parts(item: dict) -> tuple[str, str, int, int, str]:
+    match = _STORY_TEXT.match(re.sub(r"\s+", " ", str(item.get("text") or "").strip()))
+    if not match:
+        return "", item.get("source") or item.get("text") or "", 0, 0, ""
+    return (
+        match.group("who"),
+        match.group("title"),
+        int(match.group("count")),
+        int(match.group("sent")),
+        (match.group("latest") or "").strip(),
+    )
+
+
+_STORY_MONTHS = ("", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _story_sentence(text: str) -> str:
+    line = " ".join(str(text or "").split())
+    line = re.sub(r"(?i)^subject:\s*", "", line)
+    line = re.split(r"\s+On\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*,", line, maxsplit=1)[0]
+    line = re.split(r"\s+On\s+.{0,80}?wrote:", line, maxsplit=1)[0]
+    return line.strip()
+
+
+def _date_in_text(text: str) -> str:
+    months = {
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+        "jul": 7, "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+    }
+    match = re.search(
+        r"\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+(\d{4})\b",
+        str(text or ""),
+        re.I,
+    )
+    if not match:
+        return ""
+    day = int(match.group(1))
+    name = match.group(2).lower()
+    month = months["sept" if name.startswith("sept") else name[:3]]
+    if not 1 <= day <= 31:
+        return ""
+    return f"{int(match.group(3)):04d}-{month:02d}-{day:02d} 00:00"
+
+
+def _story_day(value: str) -> str:
+    match = re.match(r"(\d{4})-(\d{2})-(\d{2})", str(value or ""))
+    if not match:
+        return ""
+    month = int(match.group(2))
+    if not 1 <= month <= 12:
+        return ""
+    return f"{int(match.group(3))} {_STORY_MONTHS[month]}"
+
+
+def _story_person(value: str) -> str:
+    text = " ".join(str(value or "").replace(";", ",").split())
+    if not text:
+        return "The correspondent"
+    first = text.split(",")[0].strip()
+    name = first.split("<", 1)[0].strip().strip('"')
+    if name and "@" not in name:
+        return name
+    address = first
+    if "<" in first and ">" in first:
+        address = first.split("<", 1)[1].split(">", 1)[0]
+    return address.split("@", 1)[0] or "The correspondent"
+
+
 def timeline(items: list[dict] | None = None) -> list[dict]:
     """Newest-first days. Each event is when something became true, was replaced, or ended."""
     items = items if items is not None else load_index()["model"]["items"]
+    items = [item for item in items if is_shown(item)]
     events = []
     by_id = {item["id"]: item for item in items}
     for item in items:
@@ -683,7 +932,7 @@ def timeline(items: list[dict] | None = None) -> list[dict]:
             {
                 "when": item.get("at") or item.get("valid_from") or "",
                 "action": "added",
-                "label": "Became current",
+                "label": "Observed in a source" if item.get("origin") == "analysis" else "Became current",
                 "item": item,
             }
         )
@@ -724,6 +973,9 @@ def refresh_brief_if_stale(profile: dict) -> None:
         return
     if not index["docs"] and not index["rules"] and not index["brief"]["text"]:
         return
+    if any(item["origin"] == "analysis" for item in index["model"]["items"]):
+        save_brief(brief_from_items(index["model"]["items"], index["rules"]))
+        return
     try:
         rebuild_brief(profile)
     except ConfigError:
@@ -750,9 +1002,13 @@ def learn_from_mailbox(client, limit: int = 30) -> dict:
 
     from concurrent.futures import ThreadPoolExecutor
 
+    # Received mail still in the inbox. Archived mail and junk categories stay out.
+    receive = getattr(client, "list_received_history", None)
+    if not callable(receive):
+        receive = client.list_recent
     with ThreadPoolExecutor(max_workers=2) as pool:
         future_sent = pool.submit(collect, lambda: client.list_sent(take, full=want_full))
-        future_received = pool.submit(collect, lambda: client.list_recent(take, full=want_full))
+        future_received = pool.submit(collect, lambda: receive(take, full=want_full))
         sent, sent_error = future_sent.result()
         received, received_error = future_received.result()
     if sent_error:
@@ -808,11 +1064,21 @@ def context_for(mail, limit: int = 4) -> dict:
     index = load_index()
     query = f"{mail.subject}\n{mail.from_name} {mail.from_email}\n{_head(mail.body, 3000)}"
     passages = search(query, limit)
+    today = _now()[:10]
+    terms = set(_tokens(query))
+    dated = [
+        item for item in index["model"]["items"]
+        if item["origin"] == "analysis" and item["temporal"] == "dated"
+        and is_active(item) and item["valid_from"] and item["valid_from"][:10] <= today
+        and terms.intersection(_tokens(item["text"]))
+    ]
+    dated.sort(key=lambda item: item["observed_at"], reverse=True)
     return {
         "brief": index["brief"]["text"],
         "rules": index["rules"],
         "passages": passages,
-        "sources": _unique([item["title"] for item in passages]),
+        "dated_facts": dated[:limit],
+        "sources": _unique([item["source"] for item in dated[:limit]] + [item["title"] for item in passages]),
     }
 
 
@@ -857,6 +1123,10 @@ def render_context(context: dict) -> str:
         parts.append("WHAT YOU KNOW ABOUT ME (my knowledge base briefing):\n" + context["brief"])
     if context.get("rules"):
         parts.append("MY RULES (always follow these):\n" + "\n".join(f"- {rule}" for rule in context["rules"]))
+    for item in context.get("dated_facts") or []:
+        parts.append(f"TIME-BOUND EVIDENCE ({item['valid_from'][:10]} to {item['valid_until'][:10]}): {item['text']}")
+    if context.get("passages"):
+        parts.append("Documents are source evidence. Do not assume subscriptions, quotes, availability or other time-sensitive claims remain current without dates supporting that conclusion.")
     for item in context.get("passages") or []:
         parts.append(f"FROM MY DOCUMENT \"{item['title']}\":\n{item['text']}")
     return "\n\n".join(parts)
@@ -867,8 +1137,9 @@ def overview() -> dict:
     counts: dict[str, int] = {}
     for item in index["docs"]:
         counts[item["source"]] = counts.get(item["source"], 0) + 1
-    live = [item for item in index["model"]["items"] if is_active(item)]
-    past = [item for item in index["model"]["items"] if not is_active(item)]
+    visible = [item for item in index["model"]["items"] if is_shown(item)]
+    live = [item for item in visible if is_active(item)]
+    past = [item for item in visible if not is_active(item)]
     by_kind = {kind: 0 for kind in _KIND_ORDER}
     for item in live:
         by_kind[item["kind"]] = by_kind.get(item["kind"], 0) + 1
@@ -891,7 +1162,8 @@ def overview() -> dict:
 
 def _chunks() -> list[dict]:
     index = load_index()
-    if _cache["stamp"] == index["stamp"] and _cache["stamp"]:
+    cache = None if saas_enabled() else _cache
+    if cache is not None and cache["stamp"] == index["stamp"] and cache["stamp"]:
         return _cache["chunks"]
     chunks = []
     for item in index["docs"]:
@@ -916,8 +1188,9 @@ def _chunks() -> list[dict]:
                     "length": len(tokens),
                 }
             )
-    _cache["stamp"] = index["stamp"]
-    _cache["chunks"] = chunks
+    if cache is not None:
+        cache["stamp"] = index["stamp"]
+        cache["chunks"] = chunks
     return chunks
 
 
@@ -957,7 +1230,7 @@ def _tokens(text: str) -> list[str]:
 
 
 def _save_index(index: dict) -> None:
-    index["stamp"] = time.time()
+    index["stamp"] = secrets.token_hex(8)
     save_doc("kb_index", {key: index[key] for key in ("docs", "rules", "brief", "model", "stamp")})
 
 
@@ -1022,19 +1295,37 @@ def _clean_item(raw: dict, origin: str = "") -> dict | None:
         if label and label not in related:
             related.append(label[:80])
     item_id = re.sub(r"[^a-zA-Z0-9]", "", str(raw.get("id") or ""))[:16]
+    evidence = []
+    for source in (raw.get("evidence") if isinstance(raw.get("evidence"), list) else [])[:5]:
+        if isinstance(source, dict) and source.get("source_id"):
+            evidence.append({
+                "source_id": str(source["source_id"])[:512],
+                "source": str(source.get("source") or "")[:160],
+                "type": str(source.get("type") or "")[:16],
+                "observed_at": _as_of(source.get("observed_at")),
+            })
+    observed = _as_of(raw.get("observed_at"))
+    temporal = raw.get("temporal")
+    if temporal not in ("stable", "dated", "unknown"):
+        temporal = ""
     now = _now()
-    at = _as_of(raw.get("at") or raw.get("as_of") or raw.get("valid_from")) or now
-    valid_from = _as_of(raw.get("valid_from") or raw.get("as_of")) or at
+    at = _as_of(raw.get("at") or observed or raw.get("as_of") or raw.get("valid_from")) or now
+    valid_from = _as_of(raw.get("valid_from") or raw.get("as_of")) or ("" if temporal else at)
     valid_until = _as_of(raw.get("valid_until"))
     status = str(raw.get("status") or "active").strip().lower()
     if status not in ("active", "superseded", "ended"):
         status = "ended" if valid_until else "active"
-    return {
+    built = {
         "id": item_id or secrets.token_hex(5),
         "kind": kind,
         "text": text[:300],
         "related": related[:6],
         "source": str(raw.get("source") or "").strip()[:160],
+        "evidence": evidence,
+        "observed_at": observed,
+        "temporal": temporal,
+        "recipient": str(raw.get("recipient") or "").strip()[:160],
+        "tone": str(raw.get("tone") or "").strip()[:80],
         "origin": origin or str(raw.get("origin") or "extract"),
         "locked": bool(KINDS[kind]["locked"]),
         "at": at,
@@ -1045,10 +1336,26 @@ def _clean_item(raw: dict, origin: str = "") -> dict | None:
         "replaces": str(raw.get("replaces") or "")[:16],
         "key": _item_key({"kind": kind, "text": text}),
     }
+    if kind == "storyline":
+        built["steps"] = _story_steps(raw)
+    return built
+
+
+def _extend_rules(rules: list[str], texts: list[str]) -> list[str]:
+    """Add reply rules the user can still edit. Existing lines stay first."""
+    seen = {rule.strip().casefold() for rule in rules}
+    out = list(rules)
+    for raw in texts:
+        text = re.sub(r"\s+", " ", str(raw or "").strip())[:300]
+        if not text or text.casefold() in seen or len(out) >= MAX_RULES:
+            continue
+        out.append(text)
+        seen.add(text.casefold())
+    return out
 
 
 def _sync_rules(items: list[dict], rules: list[str]) -> list[dict]:
-    kept = [item for item in items if item["kind"] != "rule" or item.get("origin") == "extract"]
+    kept = [item for item in items if item["kind"] != "rule" or item.get("origin") in ("extract", "analysis")]
     have = {item["text"] for item in kept if item["kind"] == "rule"}
     for rule in rules:
         if rule in have:
@@ -1060,8 +1367,8 @@ def _sync_rules(items: list[dict], rules: list[str]) -> list[dict]:
 def _merge_items(extracted: list[dict], previous: list[dict]) -> list[dict]:
     """Keep history. Same-topic facts with new wording supersede the old ones instead of deleting them."""
     now = _now()
-    live = [item for item in previous if is_active(item)]
-    history = [item for item in previous if not is_active(item)]
+    live = [item for item in previous if is_active(item) and item["origin"] != "analysis"]
+    history = [item for item in previous if not is_active(item) or item["origin"] == "analysis"]
     taken: set[str] = set()
     out: list[dict] = []
     for new in extracted:
