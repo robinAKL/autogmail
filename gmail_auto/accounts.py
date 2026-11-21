@@ -252,7 +252,7 @@ def _clean_ip(value: str) -> str:
 def _ensure_allowed(email: str) -> None:
     raw = os.getenv("ALLOWED_EMAILS", "").strip()
     if not raw:
-        if os.environ.get("VERCEL") and not saas_enabled():
+        if (os.environ.get("VERCEL") or os.environ.get("WORKSPACE_HOSTED")) and not saas_enabled():
             raise ConfigError("Sign-in is temporarily unavailable.")
         return
     allowed = {normalize_email(item) for item in raw.split(",") if item.strip()}

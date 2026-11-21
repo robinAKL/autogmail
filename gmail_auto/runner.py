@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import os
 import re
 import threading
@@ -33,6 +34,8 @@ from gmail_auto.store import (
 )
 
 LOCK = threading.Lock()
+_SCAN_PAGE = 20
+logger = logging.getLogger(__name__)
 
 
 def check_interval_seconds() -> int:
@@ -90,6 +93,9 @@ def start_scheduler() -> None:
         time.sleep(5)
         while True:
             try:
+                # Reminder-only work does not require an AI key or unread mail.
+                from gmail_auto.matters import tick
+                tick()
                 run_once()
             except ConfigError:
                 pass
@@ -141,11 +147,18 @@ def send_daily_digest(now: datetime | None = None, clients: list | None = None) 
         language=settings.get("ui_language") or "en",
         jobs=bool(settings.get("digest_jobs")),
     )
-    set_state("digest_day", local.date().isoformat())
+    try:
+        from gmail_auto.matters import digest_block
+        block = digest_block()
+        if block:
+            text = block + '\n\n' + text
+    except ConfigError:
+        pass
     try:
         whatsapp.send_text(text)
     except ConfigError:
         return False
+    set_state("digest_day", local.date().isoformat())
     set_state("digest_sent_at", now_text())
     if records:
         # "1", "2"... on WhatsApp now open the letters in this report.
@@ -212,20 +225,13 @@ def _run_locked(gmail=None, generate=None) -> RunReport:
         pass
 
     already = 0
-    scanned_any = False
     for client in clients:
         try:
             already += _run_mailbox(client, generate, profile, settings, live, report)
-            scanned_any = True
         except ConfigError as exc:
             if len(clients) == 1:
                 raise
             report.lines.append(named_error(getattr(client, "provider", "mailbox").title(), exc))
-    if scanned_any:
-        try:
-            set_state("scan_since_ts", max(_scan_since_ts(), int(time.time()) - 60))
-        except ConfigError:
-            pass
     if already and report.checked == 0:
         report.lines.append(f"{already} unread letters were already handled and were not answered again.")
     try:
@@ -236,6 +242,12 @@ def _run_locked(gmail=None, generate=None) -> RunReport:
         pass
     except Exception:
         pass
+    try:
+        from gmail_auto.matters import notify_due, refresh_followups
+        refresh_followups(clients)
+        notify_due()
+    except ConfigError:
+        report.lines.append('Follow-up reminders were not sent yet. See the Matters page.')
     report.lines = report.lines[:40]
     try:
         send_daily_digest(clients=clients)
@@ -244,8 +256,24 @@ def _run_locked(gmail=None, generate=None) -> RunReport:
     return report
 
 
-def _scan_since_ts() -> int:
-    """High-water mark for real-time scanning; first run defaults to the last 24 hours."""
+def _scan_key(client) -> str:
+    provider = getattr(client, "provider", "gmail") or "gmail"
+    try:
+        email = (client.get_user_email() or "").strip().lower()
+    except Exception:
+        email = ""
+    return f"scan_since:{provider}:{email}"
+
+
+def _scan_since_ts(client=None) -> int:
+    """Per-mailbox high-water mark. An older global mark is used until that mailbox has its own."""
+    if client is not None:
+        try:
+            saved = int(get_state(_scan_key(client), 0) or 0)
+        except (ConfigError, TypeError, ValueError):
+            saved = 0
+        if saved > 0:
+            return saved
     try:
         saved = int(get_state("scan_since_ts", 0) or 0)
     except (ConfigError, TypeError, ValueError):
@@ -255,21 +283,33 @@ def _scan_since_ts() -> int:
     return int(time.time()) - 86400
 
 
-def _list_unread(client, since_ts: int) -> list[Mail]:
+def _advance_scan(client) -> None:
+    mark = max(_scan_since_ts(client), int(time.time()) - 60)
+    set_state(_scan_key(client), mark)
+
+
+def _list_unread(client, since_ts: int) -> tuple[list[Mail], bool]:
     try:
-        mails = client.list_unread(20, since_ts=since_ts)
+        mails = client.list_unread(_SCAN_PAGE, since_ts=since_ts)
     except TypeError:
-        mails = client.list_unread(20)
-    return [mail for mail in mails if not mail.received_ts or mail.received_ts >= since_ts]
+        mails = client.list_unread(_SCAN_PAGE)
+    kept = [mail for mail in mails if not mail.received_ts or mail.received_ts >= since_ts]
+    return kept, len(mails) < _SCAN_PAGE
 
 
 def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, report: RunReport) -> int:
     user = client.get_user_email()
-    since_ts = _scan_since_ts()
+    since_ts = _scan_since_ts(client)
     already = 0
-    for mail in _list_unread(client, since_ts):
+    mails, caught_up = _list_unread(client, since_ts)
+    for mail in mails:
         if not mail.account:
             mail.account = user
+        try:
+            from gmail_auto.matters import note_inbound
+            note_inbound(mail)
+        except ConfigError:
+            report.lines.append('Matter progress was not synced. It will be retried on the next run.')
         if get_processed(mail.key):
             already += 1
             continue
@@ -292,7 +332,7 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
                     preserve_langs=settings.get("preserve_langs", []),
                 )
             except Exception:
-                pass
+                logger.warning("Inbound translation failed for %s", mail.id, exc_info=True)
         try:
             from gmail_auto.calendars import maybe_create_from_mail
 
@@ -300,7 +340,7 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
             if added:
                 report.lines.append(f"Calendar: {added}")
         except Exception:
-            pass
+            logger.warning("Calendar create failed for %s", mail.id, exc_info=True)
         from gmail_auto.worker import brief_mail, remember_verdict
 
         brief = brief_mail(mail)
@@ -399,6 +439,11 @@ def _run_mailbox(client, generate, profile: dict, settings: dict, live: bool, re
                     _tell_owner(f"Replied automatically to {mail.from_name or mail.from_email} — \"{subject}\":\n\n{draft.reply}")
         except ConfigError as exc:
             _fail(client, mail, report, str(exc))
+    if caught_up:
+        try:
+            _advance_scan(client)
+        except ConfigError:
+            logger.warning("Scan cursor was not saved for %s", user, exc_info=True)
     return already
 
 

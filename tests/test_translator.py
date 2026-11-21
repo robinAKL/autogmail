@@ -50,6 +50,11 @@ class TestTranslator(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(missing, [])
 
+        dst_dropped_currency = "请汇款 500 到 billing@company.com 或访问 https://pay.example.com"
+        ok_currency, missing_currency = verify_entities_preserved(src, dst_dropped_currency)
+        self.assertFalse(ok_currency)
+        self.assertTrue(any("Currency missing" in item for item in missing_currency))
+
         dst_missing_amount = "请汇款到 billing@company.com 或访问 https://pay.example.com"
         ok2, missing2 = verify_entities_preserved(src, dst_missing_amount)
         self.assertFalse(ok2)
@@ -93,7 +98,7 @@ class TestTranslator(unittest.TestCase):
         self.assertEqual(res_mail.detected_lang, "en")
         self.assertTrue(res_mail.translated_subject.startswith("翻译后：Invoice inquiry"))
         self.assertIn("翻译后：Could you check invoice #1234?", res_mail.translated_body)
-        self.assertIn("--- 原始邮件引用 / Quoted message ---", res_mail.translated_body)
+        self.assertIn("--- 原始邮件引用 ---", res_mail.translated_body)
         self.assertIn("On yesterday Bob wrote:", res_mail.translated_body)
 
     def test_translate_inbound_mail_already_l1(self):

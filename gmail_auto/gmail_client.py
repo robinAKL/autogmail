@@ -215,10 +215,24 @@ class GmailClient:
             raise _translate(exc) from exc
         return sent.get("id", "")
 
-    def send_notice(self, to: str, subject: str, body: str) -> None:
-        self.send_new(to, subject, body)
+    def list_thread(self, thread_id: str) -> list[Mail]:
+        try:
+            result = self.service.users().threads().get(userId='me', id=thread_id, format='full').execute()
+            return [self._stamp(parse_message(m)) for m in result.get('messages', [])]
+        except Exception as exc:
+            raise _translate(exc) from exc
 
-    def send_new(self, to: str, subject: str, body: str, attachments: list | None = None, cc: str = "") -> None:
+    def latest_thread_timestamp(self, thread_id: str) -> float:
+        try:
+            thread = self.service.users().threads().get(userId='me', id=thread_id, format='minimal').execute()
+            return max((float(m.get('internalDate', 0)) / 1000 for m in thread.get('messages', [])), default=0)
+        except Exception as exc:
+            raise _translate(exc) from exc
+
+    def send_notice(self, to: str, subject: str, body: str) -> str:
+        return self.send_new(to, subject, body)
+
+    def send_new(self, to: str, subject: str, body: str, attachments: list | None = None, cc: str = "") -> str:
         """A new email (not a reply). to and cc may hold several addresses separated by commas."""
         from gmail_auto.signatures import load_logo, load_logo_layout
 
@@ -242,10 +256,10 @@ class GmailClient:
             message.add_attachment(data, maintype=maintype or "application", subtype=subtype or "octet-stream", filename=filename)
         raw = message.as_bytes()
         if len(raw) > _SIMPLE_SEND_BYTES:
-            self._send_large(message)
-            return
+            return self._send_large(message)
         try:
-            self.service.users().messages().send(userId="me", body=_send_payload(raw)).execute()
+            sent = self.service.users().messages().send(userId="me", body=_send_payload(raw)).execute()
+            return sent.get("id", "")
         except Exception as exc:
             raise _translate(exc) from exc
 

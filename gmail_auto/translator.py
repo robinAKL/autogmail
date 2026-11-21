@@ -45,6 +45,7 @@ _QUOTE_PATTERNS = [
 _EMAIL_RE = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 _URL_RE = re.compile(r"https?://[^\s<>\"']+")
 _AMOUNT_RE = re.compile(r"(?:[\$€£¥元]|NZD|USD|EUR|GBP|AUD|RMB|CAD)\s*[\d,]+(?:\.\d+)?|\b\d+(?:\.\d+)?\s*(?:dollars?|yuan|cents?)", re.IGNORECASE)
+_CURRENCY_CUE = re.compile(r"[\$€£¥元]|NZD|USD|EUR|GBP|AUD|RMB|CAD", re.IGNORECASE)
 
 
 def detect_language(text: str) -> str:
@@ -141,6 +142,13 @@ def detect_language(text: str) -> str:
         return "id"
 
     return "en"
+
+
+def _quote_label(user_lang: str) -> str:
+    """The line between the translated message and the untranslated history, in the reader's language."""
+    from gmail_auto.i18n import text
+
+    return text("--- Quoted message ---", user_lang)
 
 
 def split_mail_body(body: str) -> Tuple[str, str]:
@@ -253,7 +261,7 @@ def translate_inbound_mail(mail: Mail, user_lang: str = "zh", preserve_langs: Li
     if active_body:
         translated_active = translate_text(active_body, detected, user_lang, context=context)
         if quoted_history:
-            mail.translated_body = f"{translated_active}\n\n--- 原始邮件引用 / Quoted message ---\n{quoted_history}"
+            mail.translated_body = f"{translated_active}\n\n{_quote_label(user_lang)}\n{quoted_history}"
         else:
             mail.translated_body = translated_active
     else:
@@ -312,11 +320,14 @@ def verify_entities_preserved(src: str, dst: str) -> Tuple[bool, List[str]]:
         if url not in dst:
             missing.append(f"URL missing or altered: {url}")
 
-    # Verify amount figures (digits)
+    # Digits and the currency marker both have to survive. "500" alone is not "$500".
     for amt in src_entities["amounts"]:
         digits = re.findall(r"\d+", amt)
         for d in digits:
             if d not in dst:
                 missing.append(f"Amount/figure missing: {d} (from {amt})")
+        for cue in _CURRENCY_CUE.findall(amt):
+            if cue.lower() not in dst_lower and cue not in dst:
+                missing.append(f"Currency missing: {cue} (from {amt})")
 
     return (len(missing) == 0, missing)

@@ -148,10 +148,14 @@ def get(session_id: str) -> dict | None:
 
 def edit(
     session_id: str, to: str | None = None, subject: str | None = None, body: str | None = None, detach: str = "", language: str | None = None,
-    cc: str | None = None, provider: str | None = None,
+    cc: str | None = None, provider: str | None = None, followup_days: int | None = None,
 ) -> dict:
     """The owner typed into the draft directly. A new language is stored; see relanguage()."""
     session = _open(session_id)
+    if followup_days is not None:
+        if followup_days not in (0,1,3,5,7):
+            raise ConfigError('Choose a supported follow-up interval.')
+        session['followup_days'] = followup_days
     if language in LANGUAGES:
         session["language"] = language
     if provider is not None:
@@ -322,6 +326,8 @@ def _queue(session_id: str, provider: str) -> dict:
     session["status"] = "queued"
     _store(session)
     _sync(session)
+    if 'followup_days' in session:
+        approvals.configure_review(item['id'], session['followup_days'])
     return approvals.get(item["id"])
 
 

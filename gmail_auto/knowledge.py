@@ -160,7 +160,9 @@ def load_index() -> dict:
         "docs": docs,
         "rules": rules,
         "brief": {
-            "text": str(brief.get("text") or ""),
+            # A manual review/end/preference decision must take effect immediately,
+            # even before the next model-assisted reorganisation.
+            "text": brief_from_items(items, rules) if brief.get('stale') and items else str(brief.get("text") or ""),
             "updated_at": str(brief.get("updated_at") or ""),
             "stale": bool(brief.get("stale")),
         },
@@ -584,6 +586,43 @@ def delete_item(item_id: str) -> bool:
         index["brief"]["stale"] = True
         _save_index(index)
     return True
+
+
+def restore_review_items(previous: list[dict]) -> None:
+    """Undo review status changes without rewriting extracted fact wording."""
+    with LOCK:
+        index = load_index()
+        for old in previous:
+            item = next((i for i in index['model']['items'] if i['id']==old['id']),None)
+            if not item or item['text'] != old['text']:
+                raise ConfigError('The knowledge base was reorganized, so this cannot be undone safely. Review it by hand.')
+            for key in ('status','valid_until','confirmed_at'):
+                item[key] = old.get(key,'')
+        index['brief']['stale'] = True
+        _save_index(index)
+
+
+def confirm_item(item_id: str, valid_until: str = '') -> dict:
+    from datetime import date
+    if valid_until:
+        try:
+            date.fromisoformat(valid_until)
+        except ValueError as exc:
+            raise ConfigError('Enter the valid-until date as YYYY-MM-DD.') from exc
+        if valid_until <= date.today().isoformat():
+            raise ConfigError('The valid-until date must be in the future.')
+    with LOCK:
+        index = load_index()
+        item = next((i for i in index['model']['items'] if i['id']==item_id),None)
+        if not item:
+            raise ConfigError('This knowledge item has changed. Refresh the page.')
+        item['confirmed_at'] = _now()
+        item['valid_until'] = valid_until
+        item['status'] = 'active'
+        item['updated_at'] = _now()
+        index['brief']['stale'] = True
+        _save_index(index)
+        return item
 
 
 def end_item(item_id: str) -> dict:
@@ -1332,6 +1371,7 @@ def _clean_item(raw: dict, origin: str = "") -> dict | None:
         "updated_at": _as_of(raw.get("updated_at")) or at,
         "valid_from": valid_from,
         "valid_until": valid_until,
+        "confirmed_at": str(raw.get('confirmed_at') or ''),
         "status": status,
         "replaces": str(raw.get("replaces") or "")[:16],
         "key": _item_key({"kind": kind, "text": text}),

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_attach.html" import attach_box %}
+{% from '_approval_review.html' import review, controls, reviewed %}
 {% block title %}Inbox{% endblock %}
 {% block body %}
 <header class="page-head">
@@ -24,13 +25,14 @@
     <a class="button quiet" href="{{ url_for('write_start') }}" {% if not connected %}aria-disabled="true"{% endif %}>Write email</a>
     <form method="get" action="{{ url_for('inbox_refresh') }}" data-busy="Reading mailbox…">
       {% if mailbox %}<input type="hidden" name="mailbox" value="{{ mailbox }}">{% endif %}
-      <button class="quiet" type="submit" {% if not connected %}disabled{% endif %}>Refresh list</button>
+      <button class="quiet" type="submit" {% if not connected %}disabled{% endif %} title="Refresh the list only; does not run automatic replies">Refresh list</button>
     </form>
     <form method="post" action="{{ url_for('run_now') }}" data-busy="Checking mail…" {% if live %}data-confirm="Sending is on. This round will really answer unread mail that has not been handled yet."{% endif %}>
       <button type="submit" {% if not connected %}disabled{% endif %}>Check mail now</button>
     </form>
   </div>
 </header>
+<div class="workspace-summary"><a href="{{ url_for('approvals_page') }}">Waiting for your OK <b>{{ nav_waiting }}</b></a>{% if workspace_summary.available %}<a href="{{ url_for('workspace.index',show='due') }}">Due today <b>{{ workspace_summary.due }}</b></a><a href="{{ url_for('workspace.index',show='waiting_on_them') }}">Waiting on them <b>{{ workspace_summary.them }}</b></a>{% else %}<span class="hint">Matters unavailable — check the database connection.</span>{% endif %}<a href="{{ url_for('workspace.index',show='all') }}">View matters →</a></div>
 
 {% if placeholder %}
 <p class="banner warn">Your profile is still the placeholder example. Drafts work, but real sending stays off until you <a href="{{ url_for('profile_page') }}#voice">fill it in</a>.</p>
@@ -124,7 +126,8 @@
 
   <section class="reader" aria-label="Selected email">
     {% if opened %}
-    <header class="reader-head">
+    <header class="reader-head" data-email-open>
+      <a class="button quiet small mobile-reader-back" href="{{ url_for('home',show=show) }}">← Back to inbox</a>
       <div class="reader-title">
         <h2 translate="no">{{ opened.subject }}</h2>
         {% if opened.translated_subject and opened.raw_subject and opened.translated_subject != opened.raw_subject %}
@@ -150,6 +153,7 @@
         <span class="muted">{{ story.size }} letters{% if story.label %} · {{ story.label }}{% endif %}</span>
       </p>
       {% endif %}
+      <div class="button-row"><a class="button quiet small" href="{{ url_for('workspace.index',show='all',title=opened.subject,mail_key=opened.key,provider=opened.provider,account=opened.account or '',thread_id=opened.thread_id or '') }}#new-matter">Create matter / Follow up</a><details class="mail-more"><summary class="button quiet small">More actions</summary>
       <form method="post" action="{{ url_for('calendar_from_mail') }}" class="button-row" data-busy="Adding to calendar…">
         <input type="hidden" name="key" value="{{ opened.key }}">
         <input type="hidden" name="next" value="{{ url_for('home', show=show, mailbox=mailbox, open=opened.key) }}">
@@ -171,6 +175,7 @@
         <button class="quiet small" type="submit" formaction="{{ url_for('contracts_new') }}" data-busy="Filling in the contract…">Create contract</button>
         {% endif %}
       </form>
+      </details></div>
     </header>
 
     {% if opened.has_body %}
@@ -186,6 +191,9 @@
         <h3>Reply waiting for your OK</h3>
         {% if waiting_item.reason %}<p class="hint">Why it is asking: {{ waiting_item.reason }}</p>{% endif %}
       </div>
+      {{ review(waiting_item) }}
+      {{ reviewed(waiting_item) }}
+      <p class="hint"><b>Actual text to send</b></p>
       <form method="post" action="{{ url_for('approvals_act', item_id=waiting_item.id, action='send') }}" enctype="multipart/form-data" data-busy="Sending…" data-confirm="Send this reply now?">
         <input type="hidden" name="next" value="{{ url_for('home', show=show, mailbox=mailbox, open=opened.key) }}">
         <textarea name="draft" rows="9" maxlength="5000" required>{{ waiting_item.draft }}</textarea>
@@ -193,6 +201,7 @@
         <p class="sources">Written using {% for title in waiting_item.sources %}<span class="chip tiny">{{ title }}</span>{% endfor %}</p>
         {% endif %}
         {{ attach_box(waiting_item, attach_docs, files_ready, file_limit) }}
+        {{ controls(waiting_item) }}
         <div class="button-row">
           <button type="submit">Send reply</button>
           <button class="quiet" type="submit" formaction="{{ url_for('approvals_act', item_id=waiting_item.id, action='save') }}" data-skip-confirm>Save changes</button>
@@ -238,8 +247,8 @@
 <aside class="story-rail" aria-label="Storylines">
   <header class="story-rail-head">
     <div>
-      <h2>Storylines</h2>
-      <p class="hint">Open matters, summarised. Remove one when it is finished.</p>
+      <h2>Related matters</h2>
+      <p class="hint">Suggestions from mail threads. <a href="{{ url_for('workspace.index',show='all') }}">Manage saved matters →</a></p>
     </div>
     {% if stories %}<span class="chip tiny">{{ stories|length }}</span>{% endif %}
   </header>
@@ -273,6 +282,7 @@
     <a class="button quiet small" href="{{ url_for('home', show=show, mailbox=mailbox, open=opened.key if opened else matter.open_key) }}">Close</a>
   </header>
   <p class="ai-note"><b>Status</b> {{ matter.label or 'In progress' }}</p>
+  <a class="button quiet" href="{{ url_for('workspace.index',show='all',title=matter.title,source_story=matter.id,mail_key=matter.open_key,provider=opened.provider if opened else '',account=opened.account if opened else '',thread_id=opened.thread_id if opened else '') }}#new-matter">Save as a matter and set the next step</a>
   <h3 class="matter-h">Timeline</h3>
   <ol class="story-line">
     {% for step in matter.steps %}

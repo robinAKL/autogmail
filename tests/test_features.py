@@ -1631,7 +1631,54 @@ class RealtimeScanTests(TempHome):
         report = run_once(gmail=fake, generate=lambda *_: Draft(action="skip", reason="ok"))
         self.assertEqual(seen_since, [now - 300])
         self.assertEqual(report.checked, 1)
-        self.assertGreaterEqual(int(get_state("scan_since_ts", 0)), now - 60)
+        self.assertGreaterEqual(int(get_state("scan_since:gmail:me@example.com", 0)), now - 60)
+        self.assertEqual(int(get_state("scan_since_ts", 0)), now - 300)
+
+    def test_a_full_page_does_not_move_the_cursor_past_older_mail(self):
+        import time
+        from gmail_auto.runner import run_once
+        from gmail_auto.store import get_state, set_state
+
+        now = int(time.time())
+        set_state("scan_since_ts", now - 3000)
+        mails = [sample(id=f"bulk-{i}", subject=f"Letter {i}", received_ts=now - 1000 + i) for i in range(20)]
+
+        class _Full(FakeGmail):
+            def list_unread(self, limit=20, since_ts=None):
+                return self.mails[:limit]
+
+        report = run_once(gmail=_Full(mails), generate=lambda *_: Draft(action="skip", reason="ok"))
+        self.assertEqual(report.checked, 20)
+        self.assertEqual(int(get_state("scan_since:gmail:me@example.com", 0) or 0), 0)
+        self.assertEqual(int(get_state("scan_since_ts", 0)), now - 3000)
+
+    def test_one_mailbox_failing_does_not_move_the_other_cursor(self):
+        import time
+        from gmail_auto.runner import run_once
+        from gmail_auto.store import get_state, set_state
+
+        now = int(time.time())
+        set_state("scan_since_ts", now - 300)
+
+        class _Ok(FakeGmail):
+            def list_unread(self, limit=20, since_ts=None):
+                return [sample(id="kept", subject="Kept", received_ts=now - 20)]
+
+        class _Bad(FakeGmail):
+            provider = "outlook"
+
+            def get_user_email(self):
+                return "other@example.com"
+
+            def list_unread(self, limit=20, since_ts=None):
+                raise ConfigError("outlook down")
+
+        with patch("gmail_auto.mailboxes.connected_clients", return_value=([_Ok([]), _Bad([])], [])):
+            report = run_once(generate=lambda *_: Draft(action="skip", reason="ok"))
+        self.assertGreaterEqual(int(get_state("scan_since:gmail:me@example.com", 0)), now - 60)
+        self.assertEqual(int(get_state("scan_since:outlook:other@example.com", 0) or 0), 0)
+        self.assertEqual(int(get_state("scan_since_ts", 0)), now - 300)
+        self.assertTrue(any("outlook down" in line for line in report.lines))
 
     def test_realtime_important_notice_uses_llm_summary_and_knowledge(self):
         import time

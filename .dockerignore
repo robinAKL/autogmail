@@ -1,0 +1,15 @@
+.git
+.luffy
+.venv
+__pycache__
+.pytest_cache
+.env
+.env.*
+credentials.json
+client_secret*.json
+token.json
+profile.json
+data
+output
+课后邮件
+*.log

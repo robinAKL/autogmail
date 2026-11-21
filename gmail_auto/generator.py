@@ -100,6 +100,20 @@ def draft_reply(mail: Mail, profile: dict, detected: str) -> Draft:
             summary=_line(data.get("summary")),
         )
     draft.sources = context["sources"]
+    try:
+        from gmail_auto.reviews import unresolved_conflicts
+        relevant_sources = set(draft.sources)
+        conflicts = [r for r in unresolved_conflicts() if r['a'].get('source') in relevant_sources or r['b'].get('source') in relevant_sources]
+        if conflicts and draft.action != 'skip':
+            draft.hold = True
+            draft.action = 'ask'
+            draft.reason = 'Related knowledge has a number conflict to check. Confirm it on the knowledge review page first. ' + (draft.reason or '')
+    except Exception:
+        # Review infrastructure is optional to drafting; uncertainty still needs review.
+        if draft.action != 'skip':
+            draft.hold = True
+            draft.action = 'ask'
+            draft.reason = 'Knowledge review is unavailable right now. Check the sources yourself. ' + (draft.reason or '')
     draft.reply_lang = language
     first_lang = settings.get("first_language", "zh")
     if translation_mode != "off" and draft.reply:

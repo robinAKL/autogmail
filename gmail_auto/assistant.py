@@ -122,6 +122,11 @@ def _recent_chat() -> str:
 
 def _handle(incoming: whatsapp.Incoming, clients: list | None = None) -> str:
     text = incoming.text.strip()
+    from gmail_auto.workspace_db import available
+    from gmail_auto.matters import is_command
+    if available() and is_command(text):
+        from gmail_auto.matters import whatsapp_command
+        return whatsapp_command(text)
     action, target = _button(incoming.button)
     waiting = approvals.open_items()
     if action == "approve":
