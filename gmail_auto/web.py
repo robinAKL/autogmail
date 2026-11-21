@@ -75,7 +75,7 @@ def create_app() -> Flask:
 
 
 def configure_app(app: Flask) -> None:
-    hosted = bool(os.environ.get("VERCEL"))
+    hosted = bool(os.environ.get("VERCEL") or os.environ.get('WORKSPACE_HOSTED'))
     app.config["MAX_CONTENT_LENGTH"] = 4_400_000 if hosted else 30_000_000
     app.config["TEMPLATES_AUTO_RELOAD"] = True
     app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
@@ -83,6 +83,13 @@ def configure_app(app: Flask) -> None:
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     app.config["SESSION_COOKIE_SECURE"] = hosted
     app.jinja_env.filters["md"] = render_markdown
+    from gmail_auto.workspace_web import blueprint, _summary
+    from gmail_auto.matters import display_time
+    app.register_blueprint(blueprint())
+    app.jinja_env.filters['workspace_time'] = display_time
+    from gmail_auto.approval_checks import insight
+    app.jinja_env.filters['approval_insight'] = insight
+    app.context_processor(lambda: {'workspace_summary': _summary()})
 
     @app.before_request
     def local_only():
@@ -109,7 +116,7 @@ def configure_app(app: Flask) -> None:
             "nav_mode": mode,
             "nav_mode_label": _MODES[mode][0],
             "user": session.get("user", ""),
-            "hosted": bool(os.environ.get("VERCEL")),
+            "hosted": bool(os.environ.get("VERCEL") or os.environ.get('WORKSPACE_HOSTED')),
             "direct_upload": bool(os.environ.get("VERCEL")) and files.direct_ready(),
             "file_max": files.MAX_FILE_BYTES,
             "ui_lang": _ui_language(),
@@ -159,15 +166,17 @@ def configure_app(app: Flask) -> None:
         if not _email_ok(email):
             return _login_view(mode=mode, email=email, error="Enter your email address."), 400
         try:
-            code, otp = start_verification(email, mode, session.get("otp"))
+            code = start_verification(email, mode, remote=_remote_addr())
             try:
                 deliver_code(email, code)
             except ConfigError:
-                session.pop("otp", None)
+                from gmail_auto.accounts import clear_verification
+
+                clear_verification(email)
                 raise
         except ConfigError as exc:
             return _login_view(mode=mode, email=email, error=str(exc)), 400
-        session["otp"] = otp
+        session.pop("otp", None)
         session["pending_email"] = email.strip().lower()
         session["pending_mode"] = mode
         return redirect(url_for("login_page", mode=mode, sent=1))
@@ -181,11 +190,9 @@ def configure_app(app: Flask) -> None:
             return _login_view(mode=mode, email=email, error="Enter your email address."), 400
         if not code:
             return _login_view(mode=mode, email=email, sent=True, error="Enter the code from the email."), 400
-        otp = dict(session.get("otp") or {})
         try:
-            user = finish_verification(email, mode, code, otp)
+            user = finish_verification(email, mode, code)
         except ConfigError as exc:
-            session["otp"] = otp
             return _login_view(mode=mode, email=email, sent=True, error=str(exc)), 400
         session["user"] = user
         session.pop("otp", None)
@@ -397,7 +404,12 @@ def configure_app(app: Flask) -> None:
                 )
             if action in ("send", "attach", "detach") and request.form.get("draft") is not None:
                 approvals.set_draft(item_id, request.form.get("draft"))
-            if action == "send":
+            if action in ('send','save') and request.form.get('followup_present'):
+                approvals.configure_review(item_id, int(request.form.get('followup_days') or 0))
+            if action == 'reviewed':
+                approvals.configure_review(item_id, reviewed=True)
+                flash('Check recorded. Read the draft again before sending.')
+            elif action == "send":
                 _attach_to(item_id)
                 item = approvals.approve(item_id, "web")
                 flash(f"Reply sent to {item.get('from_name') or item.get('from_email')}.")
@@ -719,6 +731,8 @@ def configure_app(app: Flask) -> None:
 
         back = redirect(url_for("write_page", session_id=session_id) + "#end")
         try:
+            if request.form.get('followup_present'):
+                writer.edit(session_id, followup_days=int(request.form.get('followup_days') or 0))
             if action == "say":
                 writer.say(session_id, request.form.get("text", ""), load_profile())
             elif action in ("edit", "language"):
@@ -754,10 +768,15 @@ def configure_app(app: Flask) -> None:
             elif action == "queue":
                 writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
                 item = writer.queue(session_id)
+                if request.form.get('followup_present'):
+                    approvals.configure_review(item['id'], int(request.form.get('followup_days') or 0))
                 flash(f"The email to {item['to']} is waiting in Approvals. Send it from there, or on WhatsApp.")
                 return redirect(url_for("approvals_page") + f"#a{item['id']}")
             elif action == "send":
                 writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"))
+                queued = writer.queue(session_id)
+                if request.form.get('followup_present'):
+                    approvals.configure_review(queued['id'], int(request.form.get('followup_days') or 0))
                 item = writer.send(session_id)
                 flash(f"Sent to {item['to']}.")
                 return redirect(url_for("home"))
@@ -1532,17 +1551,21 @@ def configure_app(app: Flask) -> None:
             flash("Google did not return a long-lived grant. Choose Connect Gmail again.", "error")
             return redirect(url_for("connections_page"))
         raw = creds.to_json()
-        session["gmail_token"] = raw
+        session.pop("gmail_token", None)
         session.pop("oauth_state", None)
         session.pop("code_verifier", None)
         session.pop("auth_error", None)
         if storage_ready():
             save_token_raw(raw)
-        elif not os.environ.get("VERCEL"):
+        elif os.environ.get("VERCEL"):
+            flash("Gmail needs storage before it can be connected. Connect Redis, then try again.", "error")
+            return redirect(url_for("connections_page"))
+        else:
             try:
                 atomic_write(root() / "token.json", raw)
             except OSError:
-                pass
+                flash("The Gmail grant could not be saved on this computer.", "error")
+                return redirect(url_for("connections_page"))
         gmail_email = session.get("user") or ""
         try:
             from gmail_auto.gmail_client import GmailClient
@@ -2509,6 +2532,7 @@ def _row_from_mail(mail, record, user_email: str) -> dict:
         "unread": "UNREAD" in (mail.label_ids or []),
         "labels": [item for item in (mail.label_ids or []) if str(item).startswith("CATEGORY_")],
         "thread_id": mail.thread_id or "",
+        "account": user_email,
         "received_ts": float(mail.received_ts or 0),
         "status": label,
         "kind": kind,
@@ -2914,8 +2938,13 @@ def _auth_failed(message: str) -> None:
     flash(message, "error")
 
 
+def _remote_addr() -> str:
+    forwarded = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    return forwarded or (request.remote_addr or "")
+
+
 def _login_required():
-    if os.environ.get("VERCEL") and not session.get("user"):
+    if (os.environ.get("VERCEL") or os.environ.get('WORKSPACE_HOSTED')) and not session.get("user"):
         return redirect(url_for("login_page"))
     return None
 
@@ -3066,6 +3095,12 @@ def _origin_host(origin: str) -> str:
 def _host_allowed(host: str) -> bool:
     if os.environ.get("VERCEL"):
         return True
+    if os.environ.get('WORKSPACE_HOSTED'):
+        return True
+    import fnmatch
+    rules = re.split(r'[,\s]+', os.environ.get('LUFFY_PREVIEW_ORIGINS',''))
+    if any(rule and fnmatch.fnmatch(host, rule.replace('https://','').replace('http://','')) for rule in rules):
+        return True
     return host in _ALLOWED_HOSTS
 
 
@@ -3073,8 +3108,15 @@ def _secret() -> str:
     configured = os.environ.get("FLASK_SECRET_KEY", "").strip()
     if configured:
         return configured
+    if os.environ.get('WORKSPACE_HOSTED'):
+        from gmail_auto.workspace_db import transaction, get, put
+        with transaction() as db:
+            record = get(db, 'server', 'session-secret')
+            if record is None:
+                record = put(db, 'server', {'id':'session-secret','value':secrets.token_hex(32)})
+            return record['value']
     if os.environ.get("VERCEL"):
-        return "autogmail-vercel"
+        raise ConfigError("Set FLASK_SECRET_KEY in Vercel before this site can start. A fixed session key is not used.")
     try:
         path = data_dir() / "web_secret.txt"
         if path.exists():

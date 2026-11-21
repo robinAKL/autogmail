@@ -18,11 +18,18 @@ _STORAGE_NAME = re.compile(r"KV|REDIS|UPSTASH", re.IGNORECASE)
 _client: dict = {"url": None, "client": None}
 
 
+def _postgres_ready():
+    from gmail_auto.workspace_db import available
+    return bool(os.getenv('WORKSPACE_HOSTED')) and available()
+
+
 def storage_ready() -> bool:
-    return _redis() is not None or _tcp_url() is not None
+    return _postgres_ready() or _redis() is not None or _tcp_url() is not None
 
 
 def storage_kind() -> str:
+    if _postgres_ready():
+        return 'PostgreSQL workspace'
     if _redis() is not None:
         return "Redis (Upstash REST)"
     if _tcp_url() is not None:
@@ -86,6 +93,19 @@ def save_token_raw(raw: str) -> bool:
     return True
 
 
+def claim_key(key: str, ttl: int = 180) -> bool:
+    """True when this process owns the key. Local runs have no shared store, so the caller uses its own lock."""
+    if not storage_ready():
+        return True
+    result = _command(["SET", key, "1", "NX", "EX", str(int(ttl))])
+    return bool(result)
+
+
+def release_key(key: str) -> None:
+    if storage_ready():
+        kv_delete(key)
+
+
 def clear_token() -> None:
     if storage_ready():
         _command(["DEL", _KEY])
@@ -129,7 +149,32 @@ def _tcp_url() -> str | None:
     return None
 
 
+def _postgres_command(command):
+    import time
+    from gmail_auto import workspace_db as db
+    op, key = command[0], command[1]
+    with db.transaction() as conn:
+        item = db.get(conn, 'legacy-kv', key)
+        if item and item.get('expires') and item['expires'] <= time.time():
+            conn.execute('DELETE FROM workspace_records WHERE scope=%s AND kind=%s AND id=%s', (db.scope(),'legacy-kv',key))
+            item = None
+        if op=='GET':
+            return item.get('value') if item else None
+        if op=='DEL':
+            conn.execute('DELETE FROM workspace_records WHERE scope=%s AND kind=%s AND id=%s', (db.scope(),'legacy-kv',key))
+            return 1 if item else 0
+        if op=='SET':
+            if 'NX' in command[3:] and item:
+                return None
+            expires = time.time()+int(command[command.index('EX')+1]) if 'EX' in command[3:] else 0
+            db.put(conn,'legacy-kv',{'id':key,'value':command[2],'expires':expires})
+            return 'OK'
+        raise ConfigError('Unsupported PostgreSQL storage operation.')
+
+
 def _command(command: list[str]):
+    if _postgres_ready():
+        return _postgres_command(command)
     pair = _redis()
     if pair is not None:
         return _rest(pair, command)

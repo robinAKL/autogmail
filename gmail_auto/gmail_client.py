@@ -126,10 +126,24 @@ class GmailClient:
             raise _translate(exc) from exc
         return sent.get("id", "")
 
-    def send_notice(self, to: str, subject: str, body: str) -> None:
-        self.send_new(to, subject, body)
+    def list_thread(self, thread_id: str) -> list[Mail]:
+        try:
+            result = self.service.users().threads().get(userId='me', id=thread_id, format='full').execute()
+            return [self._stamp(parse_message(m)) for m in result.get('messages', [])]
+        except Exception as exc:
+            raise _translate(exc) from exc
 
-    def send_new(self, to: str, subject: str, body: str, attachments: list | None = None, cc: str = "") -> None:
+    def latest_thread_timestamp(self, thread_id: str) -> float:
+        try:
+            thread = self.service.users().threads().get(userId='me', id=thread_id, format='minimal').execute()
+            return max((float(m.get('internalDate', 0)) / 1000 for m in thread.get('messages', [])), default=0)
+        except Exception as exc:
+            raise _translate(exc) from exc
+
+    def send_notice(self, to: str, subject: str, body: str) -> str:
+        return self.send_new(to, subject, body)
+
+    def send_new(self, to: str, subject: str, body: str, attachments: list | None = None, cc: str = "") -> str:
         """A new email (not a reply). to and cc may hold several addresses separated by commas."""
         message = EmailMessage()
         message["To"] = to
@@ -142,11 +156,11 @@ class GmailClient:
             maintype, _, subtype = (mime or "application/octet-stream").partition("/")
             message.add_attachment(data, maintype=maintype or "application", subtype=subtype or "octet-stream", filename=filename)
         if len(message.as_bytes()) > _SIMPLE_SEND_BYTES:
-            self._send_large(message)
-            return
+            return self._send_large(message)
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode("ascii")
         try:
-            self.service.users().messages().send(userId="me", body={"raw": raw}).execute()
+            sent = self.service.users().messages().send(userId="me", body={"raw": raw}).execute()
+            return sent.get('id', '')
         except Exception as exc:
             raise _translate(exc) from exc
 
@@ -310,15 +324,29 @@ def web_client_config() -> dict | None:
 
 
 def load_credentials(allow_browser: bool):
-    from gmail_auto.token_store import load_token_raw
+    from gmail_auto.token_store import load_token_raw, save_token_raw, storage_ready
 
     stored = load_token_raw()
     if stored:
+        _forget_session_token()
         return _refresh_saved(_credentials_from_raw(stored), None, persist_remote=True)
 
     in_session = _session_token()
     if in_session:
-        return _refresh_saved(_credentials_from_raw(in_session), None, persist_remote=False, persist_session=True)
+        # Move a grant left in an older cookie onto the server, and only then take it out of the browser.
+        if storage_ready():
+            save_token_raw(in_session)
+            _forget_session_token()
+        elif not os.environ.get("VERCEL"):
+            try:
+                atomic_write(root() / "token.json", in_session)
+            except OSError:
+                pass
+            else:
+                _forget_session_token()
+        else:
+            raise NotConnected("Gmail needs storage before it can be used. Connect Redis, then open Connections again.")
+        return _refresh_saved(_credentials_from_raw(in_session), None, persist_remote=False)
 
     env_creds = _credentials_from_env()
     if env_creds is not None:
@@ -403,6 +431,16 @@ def _session_token() -> str | None:
     if isinstance(raw, str) and raw.strip():
         return raw
     return None
+
+
+def _forget_session_token() -> None:
+    try:
+        from flask import has_request_context, session
+    except ImportError:
+        return
+    if has_request_context() and session.get("gmail_token"):
+        session.pop("gmail_token", None)
+        session.modified = True
 
 
 def _remember_session_token(raw: str) -> None:

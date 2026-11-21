@@ -217,6 +217,7 @@ class SafetyTests(unittest.TestCase):
         self.assertEqual(reply_language("en", "zh"), "en")
         self.assertEqual(reply_language("match", "zh"), "zh")
         self.assertEqual(reply_language("match", "en"), "en")
+        self.assertEqual(reply_language("match", "ja"), "ja")
         self.assertEqual(reply_language("bilingual", "en"), "bilingual")
 
     def test_blocks_invented_number_link_email_and_wrong_language(self):
@@ -493,6 +494,31 @@ class RunnerTests(TempHome):
         with self.assertRaises(ConfigError):
             approvals.approve(waiting[0]["id"], "web", client=fake)
         self.assertEqual(len(fake.sent), 1)
+
+    def test_a_lost_send_response_is_not_sent_again(self):
+        from gmail_auto import approvals
+
+        write_test_profile()
+        set_live(True)
+        fake = FakeGmail([sample(id="m3b", subject="Can we meet Friday?")])
+
+        def generate(*_args):
+            return Draft(action="ask", reply="Friday at 2pm works.", reason="It commits to a time.")
+
+        run_once(gmail=fake, generate=generate)
+        waiting = approvals.pending()
+
+        def lose(_mail, _body, _user):
+            raise TimeoutError("The mailbox timed out")
+
+        fake.send_reply = lose
+        with self.assertRaises(ConfigError) as caught:
+            approvals.approve(waiting[0]["id"], "web", client=fake)
+        self.assertIn("did not confirm", str(caught.exception))
+        self.assertEqual(approvals.get(waiting[0]["id"])["status"], "unconfirmed")
+        with self.assertRaises(ConfigError):
+            approvals.approve(waiting[0]["id"], "web", client=fake)
+        self.assertEqual(fake.sent, [])
 
     def test_ask_every_time_holds_even_routine_replies_and_reject_sends_nothing(self):
         from gmail_auto import approvals

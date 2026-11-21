@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_attach.html" import attach_box %}
+{% from '_approval_review.html' import review, controls, reviewed %}
 {% block title %}Approvals{% endblock %}
 {% block body %}
 <header class="page-head">
@@ -30,6 +31,8 @@
       </div>
       <span class="tag waiting">Waiting for your OK</span>
     </header>
+    {{ review(item) }}
+    {{ reviewed(item) }}
     <div class="approval-grid">
       <div class="approval-side">
         {% if item.mode != 'new' %}
@@ -63,6 +66,9 @@
         {% else %}
         <label for="draft{{ item.id }}">Reply{% if item.edited %} <span class="muted">(edited)</span>{% endif %}</label>
         {% endif %}
+        {% if item.status == 'unconfirmed' %}
+        <p class="banner warn">The last send was not confirmed. Check Sent. If this reply is not there, send it again. The text below is what will be sent.</p>
+        {% endif %}
         {% if item.draft_l1 and item.draft_l1 != item.draft %}
         <div class="seamless-bilingual" style="margin-bottom:12px;padding:10px 12px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:6px;">
           <div style="font-size:12px;font-weight:600;color:#166534;margin-bottom:4px;">First language draft preview (How you understand it):</div>
@@ -70,11 +76,13 @@
         </div>
         <div style="font-size:12px;font-weight:600;color:#64748b;margin-bottom:4px;">Actual reply to send ({{ item.reply_lang|upper if item.reply_lang else 'Recipient language' }}):</div>
         {% endif %}
+        <p class="hint"><b>Actual text to send</b> · Edits here change what the recipient receives.</p>
         <textarea id="draft{{ item.id }}" name="draft" rows="10" maxlength="5000" required>{{ item.draft }}</textarea>
         {% if item.sources %}
         <p class="sources">Written using {% for title in item.sources %}<span class="chip tiny">{{ title }}</span>{% endfor %}</p>
         {% endif %}
         {{ attach_box(item, attach_docs, files_ready, file_limit) }}
+        {{ controls(item) }}
         <div class="button-row">
           <button type="submit">Send reply</button>
           <button class="quiet" type="submit" formaction="{{ url_for('approvals_act', item_id=item.id, action='save') }}" data-skip-confirm>Save changes</button>
@@ -109,7 +117,7 @@
             {% elif item.status == 'rejected' %}<span class="tag skipped">Not sent</span>
             {% else %}<span class="tag skipped">{{ item.status|title }}</span>{% endif %}
           </td>
-          <td>{{ {'whatsapp': 'WhatsApp', 'web': 'This page', 'timeout': 'No answer'}.get(item.via, item.via) }}</td>
+          <td>{{ {'whatsapp': 'WhatsApp', 'web': 'This page', 'timeout': 'No answer'}.get(item.via, item.via) }}{% if item.followup_error %}<p class="danger-text">Sent, but the reminder could not be enabled. Create a matter manually; do not send again.</p>{% endif %}</td>
         </tr>
         {% endfor %}
       </tbody>

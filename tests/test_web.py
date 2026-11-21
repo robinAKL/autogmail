@@ -854,22 +854,35 @@ class SignInTests(WebCase):
         self.assertEqual(wrong.status_code, 400)
         done = self.client.post("/login", data={"email": "lee@example.com", "mode": "register", "code": sent["code"]}, follow_redirects=True)
         self.assertIn("You are signed in", done.get_data(as_text=True))
+        with self.client.session_transaction() as current:
+            self.assertNotIn("otp", current)
+            self.assertNotIn("hash", json.dumps(dict(current)))
         again = self.client.post("/login/code", data={"email": "lee@example.com", "mode": "register"})
         self.assertIn("already registered", again.get_data(as_text=True))
+        other = self.client.post("/login/code", data={"email": "other@example.com", "mode": "register"})
+        self.assertIn("already has an owner", other.get_data(as_text=True))
         missing = self.client.post("/login/code", data={"email": "new@example.com", "mode": "login"})
         self.assertIn("not registered yet", missing.get_data(as_text=True))
 
-    def test_verification_code_does_not_need_vercel_kv(self):
+    def test_hosted_sign_in_without_storage_is_refused(self):
         os.environ["VERCEL"] = "1"
-        sent = {}
-        with patch("gmail_auto.web.deliver_code", lambda _to, code: sent.update(code=code)):
-            started = self.client.post("/login/code", data={"email": "lee@example.com", "mode": "register"}, follow_redirects=True)
-        self.assertNotIn("Vercel KV", started.get_data(as_text=True))
-        done = self.client.post("/login", data={"email": "lee@example.com", "mode": "register", "code": sent["code"]}, follow_redirects=True)
-        text = done.get_data(as_text=True)
-        self.assertIn("You are signed in", text)
-        _, connections = self.page("/connections")
-        self.assertIn("has no storage connected", connections)
+        started = self.client.post("/login/code", data={"email": "lee@example.com", "mode": "register"}, follow_redirects=True)
+        text = started.get_data(as_text=True)
+        self.assertIn("Sign-in needs storage", text)
+        self.assertNotIn("You are signed in", text)
+
+    def test_hosted_site_refuses_a_fixed_session_secret(self):
+        saved = os.environ.pop("FLASK_SECRET_KEY", None)
+        os.environ["VERCEL"] = "1"
+        try:
+            from gmail_auto.web import _secret
+
+            with self.assertRaises(ConfigError):
+                _secret()
+        finally:
+            os.environ.pop("VERCEL", None)
+            if saved is not None:
+                os.environ["FLASK_SECRET_KEY"] = saved
 
     def test_oauth_keeps_the_grant_in_the_session_without_kv(self):
         os.environ["GMAIL_CLIENT_ID"] = "test.apps.googleusercontent.com"
@@ -900,7 +913,10 @@ class SignInTests(WebCase):
         self.assertIn("Gmail is connected", text)
         self.assertIn("lee@example.com", text)
         with self.client.session_transaction() as current:
-            self.assertIn("refresh-test", current.get("gmail_token", ""))
+            self.assertNotIn("gmail_token", current)
+        from gmail_auto.paths import root
+
+        self.assertIn("refresh-test", (root() / "token.json").read_text(encoding="utf-8"))
 
     def test_cron_on_vercel_requires_the_secret(self):
         os.environ["VERCEL"] = "1"

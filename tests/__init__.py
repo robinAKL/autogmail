@@ -9,6 +9,10 @@ import re
 
 import dotenv
 
+# Workspace integration tests opt in with a unique scope; legacy tests never
+# write matters or preferences to the application's real PostgreSQL workspace.
+os.environ['WORKSPACE_DISABLE_DB'] = '1'
+
 _LIVE = re.compile(r"KV|REDIS|UPSTASH|WHATSAPP|TWILIO|^MS_|^GMAIL_|^SMTP_|^LIVE_SEND$|^CRON_SECRET$", re.IGNORECASE)
 
 dotenv.load_dotenv = lambda *args, **kwargs: False

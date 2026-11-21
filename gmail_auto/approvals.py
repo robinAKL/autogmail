@@ -134,14 +134,14 @@ def pending() -> list[dict]:
     items = [
         item
         for item in _load()["items"].values()
-        if item.get("status") == "pending" and item.get("role") != "notice"
+        if item.get("status") in ("pending", "unconfirmed") and item.get("role") != "notice"
     ]
     items.sort(key=lambda item: item.get("created_at", 0), reverse=True)
     return items
 
 
 def open_items() -> list[dict]:
-    items = [item for item in _load()["items"].values() if item.get("status") == "pending"]
+    items = [item for item in _load()["items"].values() if item.get("status") in ("pending", "unconfirmed")]
     items.sort(key=lambda item: item.get("created_at", 0), reverse=True)
     return items
 
@@ -171,7 +171,7 @@ def find_by_hint(text: str) -> list[dict]:
 
 
 def recent(limit: int = 20) -> list[dict]:
-    items = [item for item in _load()["items"].values() if item.get("status") not in ("pending", "sending")]
+    items = [item for item in _load()["items"].values() if item.get("status") not in ("pending", "sending", "unconfirmed")]
     items.sort(key=lambda item: item.get("decided_at", 0), reverse=True)
     return items[:limit]
 
@@ -212,10 +212,36 @@ def set_draft(item_id: str, text: str) -> dict:
         data = _load()
         item = _pending_item(data, item_id)
         if text != item.get("draft"):
+            original_text = item["draft"]
             item["draft"] = text
+            item["preview_stale"] = bool(item.get('draft_l1')) or bool(item.get('preview_stale'))
             item["edited"] = True
             item["role"] = "ask"
+            item["draft_l1"] = ""
             _save(data)
+            try:
+                from gmail_auto.reviews import record_edit
+                record_edit(item_id, original_text, text)
+            except ConfigError:
+                pass  # Preference learning must not discard a saved draft.
+        return item
+
+
+def configure_review(item_id: str, followup_days: int | None = None, reviewed: bool = False) -> dict:
+    with LOCK:
+        data = _load()
+        item = _pending_item(data, item_id)
+        if followup_days is not None:
+            if followup_days not in (0, 1, 3, 5, 7):
+                raise ConfigError('Choose a supported follow-up interval.')
+            if followup_days:
+                from gmail_auto.workspace_db import available
+                if not available():
+                    raise ConfigError('Set up the matters database before turning on follow-up reminders.')
+            item['followup_days'] = followup_days
+        if reviewed:
+            item['reviewed_at'] = time.time()
+        _save(data)
         return item
 
 
@@ -259,10 +285,29 @@ def revise(item_id: str, instruction: str, profile: dict, rewrite=None) -> dict:
 
 
 def approve(item_id: str, via: str, client=None) -> dict:
-    """Send the waiting reply. Safe to call twice: only the first call sends."""
+    """Send the waiting reply. A second call does not send again unless Sent was checked and the letter is absent."""
+    current = get(item_id)
+    if current is None:
+        raise ConfigError("That reply was not found.")
+    if current.get("status") == "unconfirmed":
+        if client is None:
+            from gmail_auto.mailboxes import client_for
+
+            client = client_for(current.get("provider") or "gmail")
+        looked = _already_sent(client, current)
+        if looked is True:
+            _release_send(item_id)
+            return _finish_sent(item_id, via, client, current)
+        if looked is None:
+            raise ConfigError(
+                "The mailbox did not confirm whether this reply was sent. Check Sent before sending it again."
+            )
+        _release_send(item_id)
     with LOCK:
         data = _load()
         item = _pending_item(data, item_id)
+        if not _claim_send(item_id):
+            raise ConfigError("That reply is already being sent.")
         item["status"] = "sending"
         _save(data)
     try:
@@ -270,24 +315,36 @@ def approve(item_id: str, via: str, client=None) -> dict:
             from gmail_auto.mailboxes import client_for
 
             client = client_for(item.get("provider") or "gmail")
+        from gmail_auto.approval_checks import validate, check_latest
+        validate(item)
+        check_latest(item, client)
         mail = _mail(item)
         attached = _attachment_bytes(item)
+        outbound_id = ''
         if item.get("mode") == "new":
             if item.get("cc"):
-                client.send_new(item["to"], item.get("subject") or "", item["draft"], attachments=attached or None, cc=item["cc"])
+                outbound_id = client.send_new(item["to"], item.get("subject") or "", item["draft"], attachments=attached or None, cc=item["cc"])
             elif attached:
-                client.send_new(item["to"], item.get("subject") or "", item["draft"], attachments=attached)
+                outbound_id = client.send_new(item["to"], item.get("subject") or "", item["draft"], attachments=attached)
             else:
-                client.send_notice(item["to"], item.get("subject") or "", item["draft"])
+                outbound_id = client.send_notice(item["to"], item.get("subject") or "", item["draft"])
         elif attached:
-            client.send_reply(mail, item["draft"], client.get_user_email(), attachments=attached)
+            outbound_id = client.send_reply(mail, item["draft"], client.get_user_email(), attachments=attached)
         else:
-            client.send_reply(mail, item["draft"], client.get_user_email())
-    except Exception:
+            outbound_id = client.send_reply(mail, item["draft"], client.get_user_email())
+    except Exception as exc:
+        if _send_uncertain(exc):
+            _set_status(item_id, "unconfirmed")
+            raise ConfigError(
+                "The mailbox did not confirm whether this reply was sent. Check Sent before sending it again."
+            ) from exc
+        _release_send(item_id)
         _set_status(item_id, "pending")
         raise
+    _release_send(item_id)
     waited = time.time() - float(item.get("created_at") or time.time())
     item = _decide(item_id, "sent", via)
+    _activate_followup(item, outbound_id or '', client)
     if item.get("mode") == "new":
         stats.note_decision(waited, edited=bool(item.get("edited")))
         return item
@@ -345,7 +402,7 @@ def _decide(item_id: str, status: str, via: str) -> dict:
         data = _load()
         item = data["items"][str(item_id)]
         item.update({"status": status, "decided_at": time.time(), "decided_text": _now(), "via": via})
-        decided = [value for value in data["items"].values() if value.get("status") not in ("pending", "sending")]
+        decided = [value for value in data["items"].values() if value.get("status") not in ("pending", "sending", "unconfirmed")]
         if len(decided) > _KEEP_DECIDED:
             decided.sort(key=lambda value: value.get("decided_at", 0))
             for old in decided[: len(decided) - _KEEP_DECIDED]:
@@ -367,9 +424,92 @@ def _pending_item(data: dict, item_id: str) -> dict:
     item = data["items"].get(str(item_id))
     if item is None:
         raise ConfigError("That reply was not found.")
-    if item.get("status") != "pending":
+    if item.get("status") not in ("pending", "unconfirmed"):
         raise ConfigError("That reply is no longer waiting.")
     return item
+
+
+_UNCERTAIN = ("timed out", "timeout", "could not reach", "did not respond", "connection reset", "connection aborted")
+
+
+def _send_uncertain(exc: Exception) -> bool:
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError)) and not isinstance(exc, ConfigError):
+        return True
+    text = str(exc).lower()
+    return any(part in text for part in _UNCERTAIN)
+
+
+def _claim_name(item_id: str) -> str:
+    return f"autogmail:sending:{item_id}"
+
+
+def _claim_send(item_id: str) -> bool:
+    from gmail_auto.token_store import claim_key
+
+    return claim_key(_claim_name(item_id))
+
+
+def _release_send(item_id: str) -> None:
+    from gmail_auto.token_store import release_key
+
+    release_key(_claim_name(item_id))
+
+
+def _already_sent(client, item: dict) -> bool | None:
+    """True when Sent has this letter, False when a listing proved it does not, None when Sent could not be read."""
+    listing = getattr(client, "list_sent", None)
+    if listing is None:
+        return None
+    try:
+        try:
+            sent = listing(15, full=False)
+        except TypeError:
+            sent = listing(15)
+    except Exception:
+        return None
+    thread = str(item.get("thread_id") or "")
+    subject = " ".join(str(item.get("subject") or "").split())
+    for mail in sent or []:
+        if thread and str(getattr(mail, "thread_id", "") or "") == thread:
+            return True
+        if subject and " ".join(str(getattr(mail, "subject", "") or "").split()) == subject:
+            return True
+    return False
+
+
+def _finish_sent(item_id: str, via: str, client, item: dict) -> dict:
+    mail = _mail(item)
+    decided = _decide(item_id, "sent", via)
+    if item.get("mode") != "new":
+        update_processed(item["key"], {"action": "sent", "approved": True, "reply": item["draft"], "via": via})
+        stats.note_outcome("approved_sent", mail, sources=item.get("sources"))
+    return decided
+
+
+def _activate_followup(item, outbound_id='', client=None):
+    if not item.get('followup_days'):
+        return
+    try:
+        from gmail_auto import matters
+        linked = dict(item)
+        if client and not linked.get('account'):
+            linked['account'] = client.get_user_email()
+        if client and outbound_id and not linked.get('thread_id'):
+            try:
+                sent_mail = client.get_message(outbound_id)
+                linked['thread_id'] = sent_mail.thread_id
+            except Exception:
+                pass  # Keep a visible reminder even if automatic thread matching is unavailable.
+        matters.after_send(linked, outbound_id)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception('Sent successfully but follow-up activation failed: approval %s', item['id'])
+        # Never tell the caller that sending failed after the provider accepted it.
+        with LOCK:
+            data = _load()
+            if item['id'] in data['items']:
+                data['items'][item['id']]['followup_error'] = True
+                _save(data)
 
 
 def _attachment_bytes(item: dict) -> list[tuple[str, str, bytes]]:

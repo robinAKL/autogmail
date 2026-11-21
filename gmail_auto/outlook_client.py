@@ -98,6 +98,20 @@ class OutlookClient:
         microsoft.graph("outlook", "POST", f"/me/messages/{draft_id}/send")
         return draft_id
 
+    def list_thread(self, thread_id: str) -> list[Mail]:
+        safe = thread_id.replace("'", "''")
+        data = microsoft.graph('outlook','GET','/me/messages',params={'$filter':f"conversationId eq '{safe}'",'$select':_SELECT,'$top':100},headers=_HTML)
+        if data.get('@odata.nextLink'):
+            raise ConfigError('This thread has too many messages to check automatically. Check the follow-up status yourself.')
+        return [self._stamp(parse_message(m)) for m in data.get('value', [])]
+
+    def latest_thread_timestamp(self, thread_id: str) -> float:
+        safe = thread_id.replace("'", "''")
+        data = microsoft.graph('outlook', 'GET', '/me/messages', params={'$filter': f"conversationId eq '{safe}'", '$select':'receivedDateTime,sentDateTime', '$top':100})
+        if data.get('@odata.nextLink'):
+            raise ConfigError('This thread has too many messages to check automatically. Check the newest mail in Outlook.')
+        return max((_timestamp(m.get('receivedDateTime') or m.get('sentDateTime') or '') for m in data.get('value',[])), default=0)
+
     def send_notice(self, to: str, subject: str, body: str) -> None:
         self.send_new(to, subject, body)
 

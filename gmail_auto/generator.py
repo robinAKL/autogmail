@@ -63,7 +63,10 @@ def reply_language(setting: str, detected: str) -> str:
     if setting == "bilingual":
         return "bilingual"
     if setting == "match":
-        return "zh" if detected == "zh" else "en"
+        from gmail_auto.translator import SUPPORTED_LANGUAGES
+
+        code = (detected or "en").strip().lower()
+        return code if code in SUPPORTED_LANGUAGES else "en"
     return "en"
 
 
@@ -72,7 +75,13 @@ def draft_reply(mail: Mail, profile: dict, detected: str) -> Draft:
     from gmail_auto.knowledge import context_for, render_context
     from gmail_auto.settings import load_settings
 
-    language = reply_language(load_settings()["reply_language"], detected)
+    settings = load_settings()
+    detected_full = detected
+    if settings.get("reply_language") == "match":
+        from gmail_auto.translator import detect_language as detect_full
+
+        detected_full = detect_full(f"{mail.subject}\n{mail.body}")
+    language = reply_language(settings["reply_language"], detected_full)
     context = context_for(mail)
     knowledge = render_context(context)
     from gmail_auto.story import format_history, history_for_mail
@@ -92,10 +101,46 @@ def draft_reply(mail: Mail, profile: dict, detected: str) -> Draft:
             summary=_line(data.get("summary")),
         )
     draft.sources = context["sources"]
+    try:
+        from gmail_auto.reviews import unresolved_conflicts
+        relevant_sources = set(draft.sources)
+        conflicts = [r for r in unresolved_conflicts() if r['a'].get('source') in relevant_sources or r['b'].get('source') in relevant_sources]
+        if conflicts and draft.action != 'skip':
+            draft.hold = True
+            draft.action = 'ask'
+            draft.reason = 'Related knowledge has a number conflict to check. Confirm it on the knowledge review page first. ' + (draft.reason or '')
+    except Exception:
+        # Review infrastructure is optional to drafting; uncertainty still needs review.
+        if draft.action != 'skip':
+            draft.hold = True
+            draft.action = 'ask'
+            draft.reason = 'Knowledge review is unavailable right now. Check the sources yourself. ' + (draft.reason or '')
     draft.reply_lang = language
-    translation_mode = load_settings().get("translation_mode", "off")
-    first_lang = load_settings().get("first_language", "zh")
-    if translation_mode != "off" and draft.reply:
+    translation_mode = settings.get("translation_mode", "off")
+    first_lang = settings.get("first_language", "zh")
+    if settings.get("translate_outgoing") and draft.reply and language != "bilingual":
+        from gmail_auto.translator import SUPPORTED_LANGUAGES, detect_language as detect_full
+        from gmail_auto.translator import translate_text, verify_entities_preserved
+
+        recipient = detect_full(f"{mail.subject}\n{mail.body}")
+        if recipient in SUPPORTED_LANGUAGES and recipient != language:
+            original = draft.reply
+            try:
+                outgoing = translate_text(original, language, recipient, must_translate=True)
+                ok, missing = verify_entities_preserved(original, outgoing)
+                if not ok:
+                    draft.hold = True
+                    draft.reason = (draft.reason or "") + f" Outgoing translation changed {', '.join(missing[:2])}, so this waits."
+                else:
+                    if language == first_lang:
+                        draft.reply_l1 = original
+                    draft.reply = outgoing
+                    draft.reply_lang = recipient
+                    language = recipient
+            except ReplyError as exc:
+                draft.hold = True
+                draft.reason = (draft.reason or "") + f" {exc}"
+    if translation_mode != "off" and draft.reply and not draft.reply_l1:
         if language.lower() != first_lang.lower():
             try:
                 from gmail_auto.translator import translate_text, verify_entities_preserved

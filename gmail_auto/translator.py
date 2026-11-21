@@ -43,6 +43,7 @@ _QUOTE_PATTERNS = [
 _EMAIL_RE = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+")
 _URL_RE = re.compile(r"https?://[^\s<>\"']+")
 _AMOUNT_RE = re.compile(r"(?:[\$€£¥元]|NZD|USD|EUR|GBP|AUD|RMB|CAD)\s*[\d,]+(?:\.\d+)?|\b\d+(?:\.\d+)?\s*(?:dollars?|yuan|cents?)", re.IGNORECASE)
+_CURRENCY_CUE = re.compile(r"[\$€£¥元]|NZD|USD|EUR|GBP|AUD|RMB|CAD", re.IGNORECASE)
 
 
 def detect_language(text: str) -> str:
@@ -111,6 +112,13 @@ def detect_language(text: str) -> str:
     return "en"
 
 
+def _quote_label(user_lang: str) -> str:
+    """The line between the translated message and the untranslated history, in the reader's language."""
+    from gmail_auto.i18n import text
+
+    return text("--- Quoted message ---", user_lang)
+
+
 def split_mail_body(body: str) -> Tuple[str, str]:
     """Split email body into (active_message, quoted_history).
     
@@ -131,13 +139,21 @@ def split_mail_body(body: str) -> Tuple[str, str]:
     return body.strip(), ""
 
 
-def translate_text(text: str, from_lang: str, to_lang: str, context: str = "") -> str:
-    """Translate text from from_lang to to_lang with entity protection and business tone."""
+def translate_text(text: str, from_lang: str, to_lang: str, context: str = "", must_translate: bool = False) -> str:
+    """Translate text from from_lang to to_lang with entity protection and business tone.
+
+    must_translate=True raises instead of handing back the original. A failed translation must not
+    be sent as if it were the recipient's language.
+    """
     if not text or not text.strip():
         return text
     if from_lang and to_lang and from_lang.lower() == to_lang.lower():
         return text
     if not model_ready():
+        if must_translate:
+            from gmail_auto.errors import ReplyError
+
+            raise ReplyError("The reply could not be translated, so it was not prepared for sending.")
         return text
 
     target_name = SUPPORTED_LANGUAGES.get(to_lang.lower(), to_lang)
@@ -161,9 +177,21 @@ def translate_text(text: str, from_lang: str, to_lang: str, context: str = "") -
 
     try:
         translated = complete(system_prompt, user_prompt, max_tokens=1500, temperature=0.2, role="worker")
-        return translated.strip() if translated else text
+        if translated and translated.strip():
+            return translated.strip()
+        if must_translate:
+            from gmail_auto.errors import ReplyError
+
+            raise ReplyError("The translation came back empty, so the reply was not prepared for sending.")
+        return text
     except Exception as exc:
-        logger.warning(f"Translation failed: {exc}")
+        from gmail_auto.errors import ReplyError
+
+        if isinstance(exc, ReplyError):
+            raise
+        logger.warning("Translation failed: %s", exc)
+        if must_translate:
+            raise ReplyError("The reply could not be translated, so it was not prepared for sending.") from exc
         return text
 
 
@@ -197,7 +225,7 @@ def translate_inbound_mail(mail: Mail, user_lang: str = "zh", preserve_langs: Li
     if active_body:
         translated_active = translate_text(active_body, detected, user_lang, context=context)
         if quoted_history:
-            mail.translated_body = f"{translated_active}\n\n--- 原始邮件引用 / Quoted message ---\n{quoted_history}"
+            mail.translated_body = f"{translated_active}\n\n{_quote_label(user_lang)}\n{quoted_history}"
         else:
             mail.translated_body = translated_active
     else:
@@ -219,7 +247,7 @@ def translate_outbound_reply(reply_text: str, target_lang: str, user_lang: str =
     if target_lang.lower() == user_lang.lower():
         return reply_text
 
-    return translate_text(reply_text, user_lang, target_lang)
+    return translate_text(reply_text, user_lang, target_lang, must_translate=True)
 
 
 def extract_entities(text: str) -> Dict[str, List[str]]:
@@ -251,11 +279,14 @@ def verify_entities_preserved(src: str, dst: str) -> Tuple[bool, List[str]]:
         if url not in dst:
             missing.append(f"URL missing or altered: {url}")
 
-    # Verify amount figures (digits)
+    # Digits and the currency marker both have to survive. "500" alone is not "$500".
     for amt in src_entities["amounts"]:
         digits = re.findall(r"\d+", amt)
         for d in digits:
             if d not in dst:
                 missing.append(f"Amount/figure missing: {d} (from {amt})")
+        for cue in _CURRENCY_CUE.findall(amt):
+            if cue.lower() not in dst_lower and cue not in dst:
+                missing.append(f"Currency missing: {cue} (from {amt})")
 
     return (len(missing) == 0, missing)
