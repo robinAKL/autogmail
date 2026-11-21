@@ -955,7 +955,7 @@ class SignInTests(WebCase):
         self.assertEqual(still.status_code, 302)
         self.assertIn("/login", still.headers["Location"])
 
-    def test_verification_code_does_not_need_vercel_kv(self):
+    def test_hosted_sign_in_without_storage_is_refused(self):
         os.environ["VERCEL"] = "1"
         os.environ["ALLOWED_EMAILS"] = "lee@example.com"
         sent = {}

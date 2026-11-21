@@ -71,8 +71,11 @@ class WriterPageTests(WebCase):
 
         box = NewMailbox()
         with patch("gmail_auto.mailboxes.client_for", return_value=box):
-            self.client.post(f"/write/{session_id}/send", data={"to": "lee@abcbuild.example", "subject": "Coaching", "body": "Dear Lee, see attached."})
-        self.assertEqual(box.new, [("lee@abcbuild.example", "Coaching", "Dear Lee, see attached.", [])])
+            blocked = self.client.post(f"/write/{session_id}/send", data={"to": "lee@abcbuild.example", "subject": "Coaching", "body": "Dear Lee, see attached."}, follow_redirects=True)
+            self.assertEqual(box.new, [])
+            self.assertIn('mentions an attachment', blocked.get_data(as_text=True))
+            self.client.post(f"/write/{session_id}/send", data={"to": "lee@abcbuild.example", "subject": "Coaching", "body": "Dear Lee, let us discuss coaching."})
+        self.assertEqual(box.new, [("lee@abcbuild.example", "Coaching", "Dear Lee, let us discuss coaching.", [])])
         self.assertEqual(writer.get(session_id)["status"], "sent")
         late = self.client.post(f"/write/{session_id}/say", data={"text": "one more thing"}, follow_redirects=True)
         self.assertIn("already sent", late.get_data(as_text=True))

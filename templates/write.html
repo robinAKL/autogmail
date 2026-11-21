@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Write email{% endblock %}
+{% from '_approval_review.html' import controls %}
 {% block body %}
 <header class="page-head">
   <div>
@@ -113,6 +114,7 @@
         <p class="hint">Set up R2 file storage to attach files.</p>
         {% endif %}
       </div>
+      {{ controls(session) }}
       <div class="button-row draft-actions">
         <button hidden type="submit" formaction="{{ url_for('write_act', session_id=session.id, action='language') }}" data-language data-busy="Rewriting in the new language…">Change language</button>
         <button class="quiet" type="submit">Save changes</button>

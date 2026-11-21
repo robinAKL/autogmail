@@ -5,6 +5,7 @@
   <div>
     <h1>Knowledge</h1>
     <p class="sub">Connected mail and documents become facts you can use, and storylines from threads you have replied in. Reply rules are written into Rules that always win, where you can edit them. The timeline records when any of that was true.</p>
+    <p class="sub"><a href="{{ url_for('workspace.review') }}">Review knowledge / Writing preferences →</a></p>
   </div>
   <form id="kb-analyze-form" method="post" action="/knowledge/analyze" data-has-key="{{ '1' if has_key else '0' }}" data-has-sources="{{ '1' if has_sources else '0' }}">
     <button id="kb-analyze-btn" type="submit" {% if not has_key or not has_sources %}disabled{% endif %}>Analyse knowledge</button>
@@ -241,6 +242,7 @@
         </form>
         {% else %}
         <p>{{ item.text }}</p>
+        <details><summary class="hint">Validity / Last confirmed {{ item.confirmed_at or 'Not confirmed' }}</summary><form class="stack" method="post" action="{{ url_for('workspace.review_act',ident='confirm:' ~ item.id) }}"><input type="hidden" name="action" value="confirm"><input type="hidden" name="item_id" value="{{ item.id }}"><label>Valid until (leave blank for no expiry)<input type="date" name="valid_until" value="{{ (item.valid_until or '')[:10] }}"></label><button class="quiet small">Confirm this is still current</button></form></details>
         <p class="meta">Current since {{ item.valid_from or item.at }}{% if item.valid_until %} until {{ item.valid_until }}{% endif %}
           {% if item.source %} · {{ item.source }}{% elif item.origin == 'user' %} · added by you{% endif %}
           {% if item.locked %}<span class="tag read">Locked fact</span>{% endif %}</p>

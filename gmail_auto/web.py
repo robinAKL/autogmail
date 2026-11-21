@@ -84,10 +84,10 @@ def create_app() -> Flask:
 
 
 def configure_app(app: Flask) -> None:
-    hosted = bool(os.environ.get("VERCEL"))
+    hosted = bool(os.environ.get("VERCEL") or os.environ.get('WORKSPACE_HOSTED'))
     if saas_enabled():
         _configured_saas_origin()
-        if hosted and not storage_ready():
+        if os.environ.get("VERCEL") and not storage_ready():
             raise ConfigError("Connect persistent Redis storage before enabling hosted SaaS mode.")
     app.config["MAX_CONTENT_LENGTH"] = 4_400_000 if hosted else 30_000_000
     app.config["TEMPLATES_AUTO_RELOAD"] = True
@@ -96,6 +96,13 @@ def configure_app(app: Flask) -> None:
     app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
     app.config["SESSION_COOKIE_SECURE"] = hosted or saas_enabled()
     app.jinja_env.filters["md"] = render_markdown
+    from gmail_auto.workspace_web import blueprint, _summary
+    from gmail_auto.matters import display_time
+    app.register_blueprint(blueprint())
+    app.jinja_env.filters['workspace_time'] = display_time
+    from gmail_auto.approval_checks import insight
+    app.jinja_env.filters['approval_insight'] = insight
+    app.context_processor(lambda: {'workspace_summary': _summary()})
 
     @app.before_request
     def local_only():
@@ -162,7 +169,7 @@ def configure_app(app: Flask) -> None:
             "nav_mode": mode,
             "nav_mode_label": _MODES[mode][0],
             "user": session.get("user", ""),
-            "hosted": bool(os.environ.get("VERCEL")),
+            "hosted": bool(os.environ.get("VERCEL") or os.environ.get('WORKSPACE_HOSTED')),
             "direct_upload": bool(os.environ.get("VERCEL")) and files.direct_ready(),
             "file_max": files.MAX_FILE_BYTES,
             "ui_lang": _ui_language(),
@@ -502,7 +509,12 @@ def configure_app(app: Flask) -> None:
                 approvals.set_draft(
                     item_id, request.form["draft"], translate=request.form.get("translate_draft") == "1"
                 )
-            if action == "send":
+            if action in ('send','save') and request.form.get('followup_present'):
+                approvals.configure_review(item_id, int(request.form.get('followup_days') or 0))
+            if action == 'reviewed':
+                approvals.configure_review(item_id, reviewed=True)
+                flash('Check recorded. Read the draft again before sending.')
+            elif action == "send":
                 _attach_to(item_id)
                 item = approvals.approve(item_id, "web")
                 flash(f"Reply sent to {item.get('from_name') or item.get('from_email')}.")
@@ -845,6 +857,8 @@ def configure_app(app: Flask) -> None:
 
         back = redirect(url_for("write_page", session_id=session_id) + "#end")
         try:
+            if request.form.get('followup_present'):
+                writer.edit(session_id, followup_days=int(request.form.get('followup_days') or 0))
             if action == "say":
                 writer.say(session_id, request.form.get("text", ""), load_profile())
             elif action in ("edit", "language"):
@@ -881,10 +895,15 @@ def configure_app(app: Flask) -> None:
             elif action == "queue":
                 writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"), provider=request.form.get("provider"))
                 item = writer.queue(session_id)
+                if request.form.get('followup_present'):
+                    approvals.configure_review(item['id'], int(request.form.get('followup_days') or 0))
                 flash(f"The email to {item['to']} is waiting in Approvals. Send it from there, or on WhatsApp.")
                 return redirect(url_for("approvals_page") + f"#a{item['id']}")
             elif action == "send":
                 writer.edit(session_id, to=request.form.get("to"), subject=request.form.get("subject"), body=request.form.get("body"), cc=request.form.get("cc"), provider=request.form.get("provider"))
+                queued = writer.queue(session_id)
+                if request.form.get('followup_present'):
+                    approvals.configure_review(queued['id'], int(request.form.get('followup_days') or 0))
                 item = writer.send(session_id)
                 flash(f"Sent to {item['to']}.")
                 return redirect(url_for("home"))
@@ -3207,6 +3226,7 @@ def _row_from_mail(mail, record, user_email: str) -> dict:
         "unread": "UNREAD" in (mail.label_ids or []),
         "labels": [item for item in (mail.label_ids or []) if str(item).startswith("CATEGORY_")],
         "thread_id": mail.thread_id or "",
+        "account": user_email,
         "received_ts": float(mail.received_ts or 0),
         "status": label,
         "kind": kind,
@@ -3667,7 +3687,7 @@ def _auth_failed(message: str) -> None:
 def _login_required():
     if saas_enabled() and not session.get("user_id"):
         return redirect(url_for("login_page"))
-    if os.environ.get("VERCEL") and not session.get("user"):
+    if (os.environ.get("VERCEL") or os.environ.get('WORKSPACE_HOSTED')) and not session.get("user"):
         return redirect(url_for("login_page"))
     return None
 
@@ -3894,6 +3914,12 @@ def _host_allowed(host: str) -> bool:
             return host == urlsplit(origin).hostname
     if os.environ.get("VERCEL"):
         return True
+    if os.environ.get('WORKSPACE_HOSTED'):
+        return True
+    import fnmatch
+    rules = re.split(r'[,\s]+', os.environ.get('LUFFY_PREVIEW_ORIGINS',''))
+    if any(rule and fnmatch.fnmatch(host, rule.replace('https://','').replace('http://','')) for rule in rules):
+        return True
     return host in _ALLOWED_HOSTS
 
 
@@ -3903,6 +3929,13 @@ def _secret() -> str:
         return configured
     if saas_enabled():
         raise ConfigError("Set a private FLASK_SECRET_KEY before enabling SaaS mode.")
+    if os.environ.get('WORKSPACE_HOSTED'):
+        from gmail_auto.workspace_db import transaction, get, put
+        with transaction() as db:
+            record = get(db, 'server', 'session-secret')
+            if record is None:
+                record = put(db, 'server', {'id':'session-secret','value':secrets.token_hex(32)})
+            return record['value']
     if os.environ.get("VERCEL"):
         return "autogmail-vercel"
     try:

@@ -127,6 +127,19 @@ def save_token_raw(raw: str) -> bool:
     return True
 
 
+def claim_key(key: str, ttl: int = 180) -> bool:
+    """True when this process owns the key. Local runs have no shared store, so the caller uses its own lock."""
+    if not storage_ready():
+        return True
+    result = _command(["SET", key, "1", "NX", "EX", str(int(ttl))])
+    return bool(result)
+
+
+def release_key(key: str) -> None:
+    if storage_ready():
+        kv_delete(key)
+
+
 def clear_token() -> None:
     key = _token_key()
     if storage_ready():

@@ -455,6 +455,9 @@ ZH = {
 }
 
 # Sentences with a name, number or file in them. The groups are translated too when they are themselves listed.
+from gmail_auto.workspace_i18n import ZH as WORKSPACE_ZH
+ZH.update(WORKSPACE_ZH)
+
 _MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December"
 _DAYS = "Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday"
 MONTH_ZH = {name: f"{index} 月" for index, name in enumerate(_MONTHS.split("|"), 1)}
@@ -463,6 +466,21 @@ ZH.update(MONTH_ZH)
 ZH.update(DAY_ZH)
 
 PATTERNS = [
+    (re.compile(r"Check before sending: (.+?) (The text still has placeholders to fill in\.)"), "发送前检查：{0} {1}"),
+    (re.compile(r"Check before sending: (.+)"), "发送前检查：{0}"),
+    (re.compile(r"Related knowledge has a number conflict to check\. Confirm it on the knowledge review page first\.(?: (.*))?"), "相关知识存在待核对的数字冲突，请先到知识复核页确认。 {0}"),
+    (re.compile(r"Knowledge review is unavailable right now\. Check the sources yourself\.(?: (.*))?"), "知识复核暂时不可用，请人工核对依据。 {0}"),
+    (re.compile(r"Reminders checked\. Tried to send (\d+) notifications; every due matter can be handled here\."), "已检查提醒。{0} 项通知已尝试发送；所有到期事项都可在网页处理。"),
+    (re.compile(r"Follow-up reminder: (.+)"), "跟进提醒：{0}"),
+    (re.compile(r"Matter updated: (.+)\. No email was sent\."), "事项已更新：{0}。没有发送邮件。"),
+    (re.compile(r'(\d+) working days after sending'), '{0} 个工作日后提醒我'),
+    (re.compile(r'Timezone: (.+)'), '时区：{0}'),
+    (re.compile(r'Due date \((.+)\)'), '截止时间（{0}）'),
+    (re.compile(r'Remind at \((.+)\)'), '提醒时间（{0}）'),
+    (re.compile(r'Due: (.+)'), '截止：{0}'),
+    (re.compile(r'Reminder: (.+)'), '提醒：{0}'),
+    (re.compile(r'Validity / Last confirmed (.+)'), '有效期 / 最近确认 {0}'),
+    (re.compile(r'You shortened (\d+) different drafts\.'), '你在 {0} 封不同草稿中缩短了正文。'),
     (re.compile(r"(.+) · Mail Autopilot"), "{0} · 邮件自动驾驶"),
     (re.compile(rf"({_MONTHS}) (\d{{4}})"), "{1} 年 {0}"),
     (re.compile(rf"({_DAYS}) (\d{{1,2}}) ({_MONTHS})"), "{2} {1} 日 {0}"),

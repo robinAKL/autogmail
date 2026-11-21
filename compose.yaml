@@ -1,0 +1,23 @@
+services:
+  web:
+    build: .
+    expose:
+      - "3000"
+    labels:
+      luffy.entrypoint: "true"
+      luffy.port: "3000"
+      luffy.migrate: "python -m gmail_auto.workspace_db"
+    environment:
+      PORT: "3000"
+      WORKSPACE_HOSTED: "1"
+      DATABASE_URL: ${DATABASE_URL}
+      WORKSPACE_TIMEZONE: ${WORKSPACE_TIMEZONE:-Pacific/Auckland}
+      WORKSPACE_OWNER: ${WORKSPACE_OWNER:-private-workspace}
+      ALLOWED_EMAILS: ${ALLOWED_EMAILS:-}
+      FLASK_SECRET_KEY: ${FLASK_SECRET_KEY:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/healthz')"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
